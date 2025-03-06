@@ -21,6 +21,8 @@ An advanced python-based interactive simulation and design tool for autonomous r
 - **Cross‑Platform Compatibility:** Works on both Mac and Linux using standard Python libraries.
 - **Time Estimation:** Estimate time taken to physically run the routine through kinematics and advanced physical computations, allowing quick node rearrangement and routine optimizations.
 
+![Screenshot 2025-03-06 164258](https://github.com/user-attachments/assets/e6c44d22-49a3-4597-a8ee-2746fd1274e9)
+
 ## Installation
 
 1. **Clone the Repository:**
