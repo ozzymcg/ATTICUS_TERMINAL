@@ -26,8 +26,8 @@ An advanced python-based interactive simulation and design tool for autonomous r
 1. **Clone the Repository:**
 
    ```bash
-   git clone https://github.com/ozzymcg/atticus_terminal.git
-   cd atticus_terminal
+   git clone https://github.com/ozzymcg/ATTICUS_TERMINAL.git
+   cd ATTICUS_TERMINAL
    ```
 
 2. **Install Dependencies:**
