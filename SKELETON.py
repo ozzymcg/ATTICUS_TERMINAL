@@ -4,7 +4,7 @@ from tkinter import filedialog, simpledialog
 # python3-tk
 
 # Solely Created by 15800A Atticus, Austin McGrath
-icon_path = os.path.join(os.path.dirname(__file__), 'ATTICUS.png')
+icon_path = os.path.join(os.path.dirname(sys.executable), 'ATTICUS.png')
 pygame.display.set_icon(pygame.image.load(icon_path))
 
 undo_stack = []
