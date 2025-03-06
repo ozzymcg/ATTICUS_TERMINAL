@@ -1,0 +1,6 @@
+# Requirements for atticus_terminal
+
+pygame>=2.1.0
+
+# Optional: Only needed if you want to build the executable with cx_Freeze
+cx_Freeze>=6.1
