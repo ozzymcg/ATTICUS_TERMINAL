@@ -1,5 +1,5 @@
 ![Screenshot 2025-03-06 153523](https://github.com/user-attachments/assets/a6203b8f-e6f0-457e-a4ea-95d4199b1c20)
-# ATTICUS_TERMINAL
+# ATTICUS_TERMINAL: HIGH STAKES
 
 An advanced python-based interactive simulation and design tool for autonomous routines. It allows users to define a robot’s path by placing waypoints on a virtual VEX field, and then simulates realistic motion while providing visual, analytical feedback and detailed logging.
 
@@ -9,16 +9,17 @@ An advanced python-based interactive simulation and design tool for autonomous r
 - **Visual Feedback & Logging:** Renders the robot’s position, heading, and key indicators (such as mobile-goal outlines) in real time. Detailed logs record distances, turning angles, travel times, and odometry data.
 - **Automatic Routine Refinement:** The program refines nodes and paths so that the robot maximizes performance while staying within field boundaries.
 
-For a complete breakdown of the simulation’s features and calculations, see the detailed [documentation](https://docs.google.com/document/d/1JHx0ViyM55vY7PmEMuhL2EYdnSzU5H1-IpEfy5h2yIw/edit?usp=sharing)
+![Screenshot 2025-03-06 155455](https://github.com/user-attachments/assets/73d57cd9-ebe1-4196-a9e1-2b4ef15fb90b)
 
 ## Features
 
 - **Grid-Based Node Placement:** Easily add, move, and delete nodes on a 12 ft × 12 ft virtual field.
-- **Physics & Kinematics:** Compute acceleration, constant speed, and turning dynamics using standard kinematic equations.
 - **Mobile-Goal Handling:** Calculate and adjust mobile-goal (mogo) positions using hexagon geometry.
+- **Bezier Curve Estimations:** Using physical variables, visually estimate brakeless node curves.
+- **Optimization Offsetting:** Customizable offsets to acquire rings, mogos, and wall stakes perfectly.
 - **PROS Mode Support:** Convert travel distances into different output units for integration with PROS (e.g. encoder degrees, rotations, and ticks).
 - **Cross‑Platform Compatibility:** Works on both Mac and Linux using standard Python libraries.
-- **Advanced Logging & State Management:** Includes undo/redo capabilities and detailed logging for autonomous routine analysis.
+- **Time Estimation:** Estimate time taken to physically run the routine through kinematics and advanced physical computations, allowing quick node rearrangement and routine optimizations.
 
 ## Installation
 
@@ -46,7 +47,7 @@ python AUTONTERMINAL.py
 ```
 Alternatively, create an executable:
 ```bash
-python setup.py build`
+python setup.py build
 ```
 The executable will be in the build folder.
 
@@ -62,10 +63,48 @@ The executable will be in the build folder.
 
 ## Configuration
 
-A JSON configuration file (`auton_config.json`) is automatically created on first run. You can edit this file to adjust simulation parameters such as robot weight, drivetrain properties, and PROS mode options. It is highly recommended to configure these to be as accurate as possible.
+A JSON configuration file (`auton_config.json`) is automatically created on first run. You can edit this file to adjust simulation parameters.
+
+### Configuration File Variable Descriptions
+
+- **Physical Variables:**
+  - **weight (lbs):** The robot's weight, which influences acceleration.
+  - **rpm:** Drivetrain rotations per minute at 12 V (this is not the motor RPM).
+  - **volts_straight:** Voltage used (# out of 12) during straight-line maneuvers.
+  - **volts_turn:** Voltage used (# out of 12) during turning
+  - **diameter (inches):** Wheel diameter
+  - **t_buffer (seconds):** Delay buffer added before and after each move.
+
+- **Offsets:**
+  - **clamp_offset_in (inches):** Distance from the robot’s closest drivetrain edge to the furthest internal edge of the mobile goal during clamp.
+  - **ring_node_offset_in (inches):** Correction factor for ring/field-mogo nodes to prevent overshooting.
+  - **wallstake_node_offset_in (inches):** Correction factor for wall stake nodes.
+  - **padding_in (inches):** Space between mobile-goals and corner field boundaries to prevent collisions.
+
+- **Orientation Settings:**
+  - **plane_mode (Boolean):**
+    - `True`: VEX conventional (Up = 0°, Right = 90°).
+    - `False`: Unit circle (Up = 90°, Right = 0°).
+  - **field_centric (Boolean):**
+    - If `true`, odometry is computed relative to the field center (logical (3,3)); otherwise, relative to the initial robot position.
+
+- **Bot Dimensions:**
+  - **width & length (inches):** Physical dimensions of the robot.
+  - **dt_width & dt_length (inches):** Drivetrain dimensions used for turning calculations.
+
+- **Drivetrain Positioning:**
+  - **x (inches) and y (inches):** Offsets to adjust the robot’s center relative to the drivetrain.
+
+- **PROS Support:**
+  - **pros_mode:** Determines output units:
+    - `0`: Inches
+    - `1`: Encoder degrees
+    - `2`: Encoder rotations
+    - `3`: Encoder counts/ticks
+  - **gear_ratio:** The gear ratio of the drivetrain (e.g., 18 for an 18:1 gear setup).
 
 ## Information & Support
 
-For detailed documentation—including the underlying physics, kinematics, PROS mode calculations, drivetrain offset adjustments, and advanced configuration options—please refer to the [Atticus Terminal Documentation](https://github.com/ozzymcg/atticus_terminal/blob/main/Documentation.md) or the provided documentation file.
+For detailed documentation—including the underlying physics, kinematics, PROS mode calculations, drivetrain offset adjustments, and advanced configuration options—please refer to the [Atticus Terminal Documentation](https://docs.google.com/document/d/1JHx0ViyM55vY7PmEMuhL2EYdnSzU5H1-IpEfy5h2yIw/edit?usp=sharing).
 
 For bug reporting or assistance, contact Austin/Ozzy of 15800A through most public VEX servers. (Feel free to mention this program in your notebook or interview, that would be much appreciated.)
