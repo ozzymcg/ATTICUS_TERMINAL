@@ -43,7 +43,7 @@ An advanced python-based interactive simulation and design tool for autonomous r
 Start the simulation with:
 
 ```bash
-python AUTONTERMINAL.py
+python ATTICUS_TERMINAL.py
 ```
 Alternatively, create an executable:
 ```bash
