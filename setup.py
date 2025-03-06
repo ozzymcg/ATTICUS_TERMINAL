@@ -15,5 +15,5 @@ setup(
     version="1.5.1",
     description="VEX Field and Autonomous Simulation.",
     options={"build_exe": build_exe_options},
-    executables=[Executable("SKELETON.py")],
+    executables=[Executable("ATTICUS_TERMINAL.py")],
 )
