@@ -2,8 +2,10 @@
 A python-based interactive simulation and design tool for autonomous routines. It allows users to define a robot’s path by placing waypoints on a virtual VEX field, and then simulates realistic motion while providing visual, analytical feedback and detailed logging.
 
 # Installation
-Install cx_Freeze: 'pip install cx_Freeze'
-Run the setup script: 'python setup.py build'
+Install cx_Freeze: pip install cx_Freeze
+
+Run the setup script: python setup.py build
+
 The executable will be in the build folder.
 
 This program is not the most user-friendly and may require a mild amount of time to adjust to.
