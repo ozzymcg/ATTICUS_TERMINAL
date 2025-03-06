@@ -5,7 +5,8 @@ build_exe_options = {
     "packages": ["os", "sys", "pygame", "tkinter"],
     # to rename or move them, use tuples: (source, destination)
     "include_files": [
-        "ATTICUS.png"
+        "ATTICUS.png",
+        "prototype_auton.json"
     ],
 }
 
