@@ -4,7 +4,14 @@ from tkinter import filedialog, simpledialog
 # python3-tk
 
 # Solely Created by 15800A Atticus, Austin McGrath
-icon_path = os.path.join(os.path.dirname(sys.executable), 'ATTICUS.png')
+if getattr(sys, 'frozen', False):
+    # Running as a bundled exe
+    base_path = os.path.dirname(sys.executable)
+else:
+    # Running as a script (.py)
+    base_path = os.path.dirname(__file__)
+
+icon_path = os.path.join(base_path, 'ATTICUS.png')
 pygame.display.set_icon(pygame.image.load(icon_path))
 
 undo_stack = []
@@ -127,7 +134,7 @@ def calc_adjustment(node, heading, corneronly=False, width=None, height=None):
         center = node["pos"]
         pixels_per_inch = PIXELS_PER_2FT / 24  
         width_px = (width if width else bot_dimensions["width"]) * pixels_per_inch
-        height_px = (height if height else bot_dimensions["height"]) * pixels_per_inch
+        height_px = (height if height else bot_dimensions["length"]) * pixels_per_inch
         half_width = width_px / 2
         half_height = height_px / 2
 
@@ -203,7 +210,7 @@ def calc_mogo(node, heading, clamp_offset_in=None, short_width_in=10, padding_in
     # Compute the unadjusted hexagon center.
     pixels_per_inch = PIXELS_PER_2FT / 24.0
     padding_offset_px = padding_in * pixels_per_inch
-    clamp_offset_px = ((bot_dimensions["dt_height"] / 2) + 5 - clamp_offset_in) * pixels_per_inch # + padding_offset_px # border is 2px
+    clamp_offset_px = ((bot_dimensions["dt_length"] / 2) + 5 - clamp_offset_in) * pixels_per_inch # + padding_offset_px # border is 2px
     rad = math.radians(heading)
     forward = (math.cos(rad), -math.sin(rad))
     hex_center_unadj = (normal_adj[0] - clamp_offset_px * forward[0],
@@ -305,7 +312,7 @@ def get_mogo_vertices(bot_center, heading, clamp_offset_in=None, short_width_in=
     if clamp_offset_in is None:
         clamp_offset_in = offsets["clamp_offset_in"]
     pixels_per_inch = PIXELS_PER_2FT / 24.0
-    clamp_offset_px = ((bot_dimensions["dt_height"] / 2) + 5 - clamp_offset_in) * pixels_per_inch
+    clamp_offset_px = ((bot_dimensions["dt_length"] / 2) + 5 - clamp_offset_in) * pixels_per_inch
     rad_heading = math.radians(heading)
     forward = (math.cos(rad_heading), -math.sin(rad_heading))
     # Compute the hexagon center based on the bot's center.
@@ -393,9 +400,9 @@ def draw_nodes(surface, nodes):
             corners = calc_adjustment({"pos": center_for_border}, node_heading, True)
             pygame.draw.polygon(surface, default_border_color, corners, 2)  # Grey border for drivetrain
 
-            # Drivetrain border (dt_width x dt_height)
+            # Drivetrain border (dt_width x dt_length)
             corners_dt = calc_adjustment({"pos": center_for_border}, node_heading, True, 
-                                        width=bot_dimensions["dt_width"], height=bot_dimensions["dt_height"])
+                                        width=bot_dimensions["dt_width"], height=bot_dimensions["dt_length"])
             pygame.draw.polygon(surface, (255, 255, 255), corners_dt, 2)  # Grey border for drivetrain
 
         else:
@@ -650,7 +657,7 @@ def draw_mogo_border(surface, bot_center, heading, clamp_offset_in=None, short_w
 
     # Conversion: inches to pixels (PIXELS_PER_2FT is defined globally)
     pixels_per_inch = PIXELS_PER_2FT / 24.0
-    clamp_offset_px = ((bot_dimensions["dt_height"] / 2) + 5 - clamp_offset_in) * pixels_per_inch
+    clamp_offset_px = ((bot_dimensions["dt_length"] / 2) + 5 - clamp_offset_in) * pixels_per_inch
 
     # Distance from bot edge to mogo edge: short diagonal (10in) - clamp offset
 
@@ -1053,7 +1060,7 @@ def load_config():
                 "value": 16,
                 "description": "Robot width in inches (Distance from left to rightmost point PRONE TO HITTING WALL)"
             },
-            "height": {
+            "length": {
                 "value": 18,
                 "description": "Robot length in inches (Distance from back to frontmost point PRONE TO HITTING WALL)"
             },
@@ -1061,9 +1068,9 @@ def load_config():
                 "value": 16,
                 "description": "Base width; Length from edge to edge, left to right"
             },            
-            "dt_height": {
+            "dt_length": {
                 "value": 15,
-                "description": "Base height; Length from edge edge to edge, front to back"
+                "description": "Base length; Length from edge edge to edge, front to back"
             }
         },
         "dtposition_offset": {
@@ -1072,13 +1079,13 @@ def load_config():
                 "description": "Horizontal offset (in inches) from the robot's geometric center"
             },
             "y": {
-                "value": 0,
+                "value": 1.5,
                 "description": "Vertical offset (in inches) from the robot's geometric center"
             }
         },
         "pros_mode": {
             "value": 0,
-            "description": "Display unit: 0 = inches, 1 = encoder degrees, 2 = encoder rotations, 3 = encoder counts/ticks"
+            "description": "Output Units: 0 = inches, 1 = encoder degrees, 2 = encoder rotations, 3 = encoder counts/ticks"
         },
         "gear_ratio": {
             "value": 18,
@@ -1211,8 +1218,23 @@ def main():
                         elif len(nodes) > 1:
                             log_lines.clear()
                             log_lines.append(f"Odometry axis key:(x,y):(vertical,horizontal)")
-                            log_lines.append(f"Modes: Field Centric: {config['field_centric']['value']} | Conventional Orientation (0 Up, 270 Left): {config['plane_mode']['value']}")
+                            log_lines.append(f"Modes: Field Centric: {config['field_centric']['value']} | Conventional Orientation (0 Up, 90 Right): {config['plane_mode']['value']}")
                             log_lines.append(f"Initial Heading: {convert_heading_input(initial_state['heading'], config['plane_mode']['value'])}°")
+                            print(f"Initial Heading: {convert_heading_input(initial_state['heading'], config['plane_mode']['value'])}°")
+
+                            # Convert the initial position (in pixels) to logical coordinates
+                            initial_logical = pixel_to_logical(initial_state["position"], rounded=True)
+
+                            # If field centric mode is enabled, use the field center (3,3) as reference
+                            if config["field_centric"]["value"]:
+                                reference_logical = (3, 3)
+                                # Compute odometry as the difference from the reference, scaled (24 inches per logical unit)
+                                odometry_initial = (
+                                    24 * (initial_logical[0] - reference_logical[0]),
+                                    24 * (initial_logical[1] - reference_logical[1])
+                                )
+                                log_lines.append(f"Initial Odometry Position: ({odometry_initial[1]:.3f}, {odometry_initial[0]:.3f}) inches")
+                                print(f"Initial Odometry Position: ({odometry_initial[1]:.3f}, {odometry_initial[0]:.3f}) inches")
 
                             moving = True
                             paused = False
