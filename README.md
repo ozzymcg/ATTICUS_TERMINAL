@@ -20,7 +20,7 @@ An advanced python-based interactive simulation and design tool for autonomous r
 - **PROS Mode Support:** Convert travel distances into different output units for integration with PROS (e.g. encoder degrees, rotations, and ticks).
 - **Cross‑Platform Compatibility:** Works on both Mac and Linux using standard Python libraries.
 - **Time Estimation:** Estimate time taken to physically run the routine through kinematics and advanced physical computations, allowing quick node rearrangement and routine optimizations.
-- **Compiled Routine Directions:** After running the routine, compile distances, angles, odometry, positions, etc. into a directions (.txt) file.
+- **Compiled Routine Directions & Data:** After running the routine, compile distances, angles, odometry, positions, etc. into a directions (.txt) file.
 
 ![Screenshot 2025-03-06 164258](https://github.com/user-attachments/assets/e6c44d22-49a3-4597-a8ee-2746fd1274e9)
 
