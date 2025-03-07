@@ -75,7 +75,7 @@ A JSON configuration file (`auton_config.json`) is automatically created on firs
   - **volts_straight:** Voltage used (# out of 12) during straight-line maneuvers.
   - **volts_turn:** Voltage used (# out of 12) during turning
   - **diameter (inches):** Wheel diameter
-  - **t_buffer (seconds):** Delay buffer added before and after each move.
+  - **t_buffer (seconds):** Delay buffer added before and after each move. Estimate this the best that you can.
 
 - **Offsets:**
   - **clamp_offset_in (inches):** Distance from the robot’s closest drivetrain edge to the furthest internal edge of the mobile goal during clamp.
