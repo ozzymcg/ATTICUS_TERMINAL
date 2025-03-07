@@ -63,7 +63,7 @@ print("""
                     C               - Compile Directions + Coordinates After Running
                     SPACE           - Start/Pause Animation
                     CTRL + SPACE    - Stop Animation & Reset
-                    V               - ESTIMATE AUTON TIME
+                    V               - Load Variables & Estimate Auton Routine Time
                     B               - Curved Pathing (Brakeless/Coast)
                     F               - Bot Center Drives to an offset before node
                                         press a second time for wall stakes.
@@ -1038,7 +1038,7 @@ def load_config():
             },
             "t_buffer": {
                 "value": 0.2,
-                "description": "Buffer time in seconds (stop time in go, stop, turn, stop, go when auton coded go, turn, go)"
+                "description": "Buffer time in seconds (the unintended stop time between bot moves)"
             }
         },
         "offsets": {
@@ -1048,11 +1048,11 @@ def load_config():
             },
             "ring_node_offset_in": {
                 "value": 5,
-                "description": "Picking up mogo/ring on field offset in inches; saves distance"
+                "description": "F nodes; Picking up object on field offset in inches; saves distance"
             },
             "wall_stake_offset_in": {
                 "value": 15,  
-                "description": "Offset for wall stakes in inches when F is pressed a second time."
+                "description": "F nodes; Offset for wall stakes in inches when F is pressed a second time."
             },
             "padding_in": {
                 "value": 2.5,
@@ -1069,15 +1069,15 @@ def load_config():
         },
         "bot_dimensions": {
             "width": {
-                "value": 16,
-                "description": "Robot width in inches (Distance from left to rightmost point PRONE TO HITTING WALL)"
+                "value": 15,
+                "description": "Robot width in inches (Distance from left to rightmost point prone to collision)"
             },
             "length": {
                 "value": 18,
-                "description": "Robot length in inches (Distance from back to frontmost point PRONE TO HITTING WALL)"
+                "description": "Robot length in inches (Distance from back to frontmost point prone to collision)"
             },
             "dt_width": {
-                "value": 16,
+                "value": 15,
                 "description": "Base width; Length from edge to edge, left to right"
             },            
             "dt_length": {
@@ -1092,7 +1092,7 @@ def load_config():
             },
             "y": {
                 "value": 1.5,
-                "description": "Vertical offset (in inches) from the robot's geometric center"
+                "description": "Vertical offset (inches) from the robot's geometric center"
             }
         },
         "pros_mode": {
@@ -1382,7 +1382,7 @@ def main():
                     C               - Compile Directions + Coordinates After Running
                     SPACE           - Start/Pause Animation
                     CTRL + SPACE    - Stop Animation & Reset
-                    V               - ESTIMATE AUTON TIME
+                    V               - Load Variables & Estimate Auton Routine Time
                     B               - Curved Pathing (Brakeless/Coast)
                     F               - Bot Center Drives to an offset before node
                                         press a second time for wall stakes.
