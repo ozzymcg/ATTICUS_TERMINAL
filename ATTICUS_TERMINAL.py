@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import filedialog, simpledialog
 # python3-tk
 
-# Solely Created by 15800A Atticus, Austin McGrath
+# Created by 15800A Atticus, Austin McGrath
 if getattr(sys, 'frozen', False):
     # Running as a bundled exe
     base_path = os.path.dirname(sys.executable)
