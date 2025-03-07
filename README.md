@@ -1,5 +1,5 @@
 ![Screenshot 2025-03-06 153523](https://github.com/user-attachments/assets/a6203b8f-e6f0-457e-a4ea-95d4199b1c20)
-# ATTICUS_TERMINAL: HIGH STAKES
+# ATTICUS TERMINAL: HIGH STAKES
 
 An advanced python-based interactive simulation and design tool for autonomous routines. It allows users to define a robot’s path by placing waypoints on a virtual VEX field, and then simulates realistic motion while providing visual, analytical feedback and detailed logging.
 
