@@ -64,7 +64,7 @@ The executable will be in the build folder.
 - **Q:** Toggle grid snapping.
 - **L/S** Load/Save a (.json) auton file.
 - **C** After running a routine, compile directions and data into a (.txt) file.
-- **B, F, R, G:** Access additional functions for curved pathing, mobile-goal actions, reverse mode, and clamp toggling.
+- **B, F, R, G:** Access additional functions for curved pathing, ring/mogo/stake actions, reverse mode, and clamp toggling.
 
 ## Configuration
 
