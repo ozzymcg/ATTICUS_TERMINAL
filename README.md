@@ -107,6 +107,6 @@ A JSON configuration file (`auton_config.json`) is automatically created on firs
 
 ## Information & Support
 
-For detailed documentation—including the underlying physics, kinematics, PROS mode calculations, drivetrain offset adjustments, and advanced configuration options—please refer to the [Atticus Terminal Documentation](https://docs.google.com/document/d/1JHx0ViyM55vY7PmEMuhL2EYdnSzU5H1-IpEfy5h2yIw/edit?usp=sharing).
+For detailed documentation—including the underlying physics, kinematics, calculations, offset adjustments, and advanced configuration options—please refer to the [Atticus Terminal Documentation](https://docs.google.com/document/d/1JHx0ViyM55vY7PmEMuhL2EYdnSzU5H1-IpEfy5h2yIw/edit?usp=sharing). This document additionally includes numerous LaTeX representations of underlying equations and computations.
 
 For bug reporting or assistance, contact Austin/Ozzy of 15800A through most public VEX servers. (Feel free to mention this program in your notebook or interview, that would be much appreciated.)
