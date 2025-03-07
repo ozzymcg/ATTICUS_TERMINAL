@@ -12,7 +12,7 @@ build_exe_options = {
 
 setup(
     name="ATTICUS_TERMINAL",
-    version="1.5.1",
+    version="2.1.1",
     description="VEX Field and Autonomous Simulation.",
     options={"build_exe": build_exe_options},
     executables=[Executable("ATTICUS_TERMINAL.py")],
