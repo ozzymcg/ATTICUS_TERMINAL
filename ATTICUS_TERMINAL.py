@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import filedialog, simpledialog
 # python3-tk
 
-# Created by 15800A Atticus, Austin McGrath
+# Solely Created by 15800A Atticus, Austin McGrath
 if getattr(sys, 'frozen', False):
     # Running as a bundled exe
     base_path = os.path.dirname(sys.executable)
@@ -125,9 +125,12 @@ def calc_angle(current_heading, p_start, p_target, node=None):
     return diff, desired
     # short for calculator guys im just using slang
 
-def calc_adjustment(node, heading, corneronly=False, width=None, height=None):
+def calc_adjustment(node, heading, corneronly=False, width=None, height=None, segment_index=None):
     """Return the four corners of a square  centered on node,
-       rotated by the given heading (in degrees)."""
+       rotated by the given heading (in degrees).
+       
+       If segment_index is provided, segment_rstatus is used to determine if
+       the segment approaching the node is reversed."""
 
     def getcorners(node, heading, width, height):
         "Return corner coordinates"
@@ -145,9 +148,21 @@ def calc_adjustment(node, heading, corneronly=False, width=None, height=None):
             # In our local robot frame, let:
             #   - dt_offset_y be the forward offset,
             #   - dt_offset_x be the lateral offset.
+
+            # Determine the segment's reverse status.
+            if segment_index is not None:
+                # Use the segment leading into this node (ignore node's own reverse flag)
+                if segment_index > 0:
+                    segment_reverse = segment_rstatus(nodes, segment_index - 1)
+            else:
+                segment_reverse = node.get("reverse", False)
+
+            # Use an effective heading for offset calculations.
+            effective_heading = (heading - 180) % 360 if segment_reverse else heading
+
             # Convert these to pixels and rotate them by the heading.
-            offset_px_x = dt_offset_y * pixels_per_inch * math.cos(math.radians(heading)) + dt_offset_x * pixels_per_inch * math.sin(math.radians(heading))
-            offset_px_y = -dt_offset_y * pixels_per_inch * math.sin(math.radians(heading)) + dt_offset_x * pixels_per_inch * math.cos(math.radians(heading))
+            offset_px_x = dt_offset_y * pixels_per_inch * math.cos(math.radians(effective_heading)) + dt_offset_x * pixels_per_inch * math.sin(math.radians(effective_heading))
+            offset_px_y = -dt_offset_y * pixels_per_inch * math.sin(math.radians(effective_heading)) + dt_offset_x * pixels_per_inch * math.cos(math.radians(effective_heading))
             center = (center[0] + offset_px_x, center[1] + offset_px_y)
 
         # Define rectangle corners relative to center:
@@ -440,15 +455,13 @@ def draw_nodes(surface, nodes):
                 
                 node["adjusted_pos"] = final_target
 
-                ghost_corners = calc_adjustment({"pos": final_target}, drawing_heading, True)
+                # Compute the border corners based on the offset target.
+                corners = calc_adjustment({"pos": final_target}, drawing_heading, True, segment_index=i)
 
-                if any(x < 0 or x > WINDOW_WIDTH or y < 0 or y > WINDOW_HEIGHT for (x, y) in ghost_corners):
+                if any(x < 0 or x > WINDOW_WIDTH or y < 0 or y > WINDOW_HEIGHT for (x, y) in corners):
                     border_color = RED
                 else:
                     border_color = GRID_COLOR
-
-                # Compute the border corners based on the offset target.
-                corners = calc_adjustment({"pos": final_target}, drawing_heading, True)
 
             else:
                 # For regular nodes, compute heading from the previous node.
@@ -457,14 +470,14 @@ def draw_nodes(surface, nodes):
                 dy = node["pos"][1] - prev_node["pos"][1]
                 node_heading = math.degrees(math.atan2(-dy, dx)) % 360
                 center_for_border = node["pos"]
-                corners = calc_adjustment({"pos": center_for_border}, node_heading, True)
+                corners = calc_adjustment({"pos": center_for_border}, node_heading, True, segment_index=i)
                 if any(x < 0 or x > WINDOW_WIDTH or y < 0 or y > WINDOW_HEIGHT for (x, y) in corners):
                     node["border_out"] = True
                     border_color = RED
                 else:
                     node["border_out"] = False
                     border_color = GRID_COLOR
-                corners = calc_adjustment({"pos": calc_adjustment({"pos": center_for_border}, node_heading)}, node_heading, True)
+                #corners = calc_adjustment({"pos": calc_adjustment({"pos": center_for_border}, node_heading)}, node_heading, True, segment_index=i)
 
         # Draw the border using the computed color.
         if i != 0:
