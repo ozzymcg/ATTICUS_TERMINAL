@@ -10,7 +10,6 @@ if getattr(sys, 'frozen', False):
 else:
     # Running as a script (.py)
     base_path = os.path.dirname(__file__)
-
 icon_path = os.path.join(base_path, 'ATTICUS.png')
 pygame.display.set_icon(pygame.image.load(icon_path))
 
@@ -967,8 +966,8 @@ def move_robot_along(p_start, p_end, current_heading, fps=60, node=None, start_r
         24 * (logical_p_end[1] - reference_logical[1])
     )
 
-    log_lines.append(f"Odometry Position: ({odometry_pos[1]:.3f}, {odometry_pos[0]:.3f}) inches")
-    print(f"Odometry Position: ({odometry_pos[1]:.3f}, {odometry_pos[0]:.3f}) inches (axis: (x,y):(vertical,horizontal))")
+    log_lines.append(f"Odometry Position: ({odometry_pos[1]:.3f}, {odometry_pos[0]:.3f})in or ({(odometry_pos[1] / 12):.3f}, {(odometry_pos[0] / 12):.3f})ft")
+    print(f"Odometry Position: ({odometry_pos[1]:.3f}, {odometry_pos[0]:.3f})in or ({(odometry_pos[1] / 12):.3f}, {(odometry_pos[0] / 12):.3f})ft")
     return positions, computed_heading
 
 
@@ -1246,8 +1245,8 @@ def main():
                                     24 * (initial_logical[0] - reference_logical[0]),
                                     24 * (initial_logical[1] - reference_logical[1])
                                 )
-                                log_lines.append(f"Initial Odometry Position: ({odometry_initial[1]:.3f}, {odometry_initial[0]:.3f}) inches")
-                                print(f"Initial Odometry Position: ({odometry_initial[1]:.3f}, {odometry_initial[0]:.3f}) inches")
+                                log_lines.append(f"Initial Odometry Position: ({odometry_initial[1]:.3f}, {odometry_initial[0]:.3f})in or ({(odometry_initial[1] / 12):.3f}, {(odometry_initial[0] / 12):.3f})ft")
+                                print(f"Initial Odometry Position: ({odometry_initial[1]:.3f}, {odometry_initial[0]:.3f})in or ({(odometry_initial[1] / 12):.3f}, {(odometry_initial[0] / 12):.3f})ft")
 
                             moving = True
                             paused = False
