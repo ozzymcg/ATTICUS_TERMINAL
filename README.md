@@ -1,7 +1,7 @@
 ![Screenshot 2025-03-06 153523](https://github.com/user-attachments/assets/a6203b8f-e6f0-457e-a4ea-95d4199b1c20)
 # ATTICUS TERMINAL: HIGH STAKES
 
-An advancded interactive simulation and design tool for autonomous routines. It allows users to place waypoints on a virtual VEX field, and then simulates realistic motion while providing analytical feedback and detailed logging.
+An advanced interactive simulation and design tool for autonomous routines. It allows users to place waypoints on a virtual VEX field, and then simulates realistic motion while providing analytical feedback and detailed logging.
 
 ## Overview & Purpose
 
