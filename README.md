@@ -94,7 +94,7 @@ A JSON configuration file (`auton_config.json`) is automatically created on firs
     - If `true`, odometry is computed relative to the field center (logical (3,3)); otherwise, relative to the initial robot position.
 
 - **Bot Dimensions:**
-  - **width & length (inches):** Physical dimensions of the robot.
+  - **width & length (inches):** Physical dimensions of the robot prone to colliding with a wall.
   - **dt_width & dt_length (inches):** Drivetrain dimensions used for turning calculations.
 
 - **Drivetrain Positioning:**
