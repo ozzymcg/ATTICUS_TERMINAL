@@ -20,6 +20,7 @@ An advanced python-based interactive simulation and design tool for autonomous r
 - **PROS Mode Support:** Convert travel distances into different output units for integration with PROS (e.g. encoder degrees, rotations, and ticks).
 - **Cross‑Platform Compatibility:** Works on both Mac and Linux using standard Python libraries.
 - **Time Estimation:** Estimate time taken to physically run the routine through kinematics and advanced physical computations, allowing quick node rearrangement and routine optimizations.
+- **Compiled Routine Directions:** After running the routine, compile distances, angles, odometry, positions, etc. into a directions (.txt) file.
 
 ![Screenshot 2025-03-06 164258](https://github.com/user-attachments/assets/e6c44d22-49a3-4597-a8ee-2746fd1274e9)
 
@@ -61,6 +62,8 @@ The executable will be in the build folder.
 - **SPACE:** Start or pause the simulation.
 - **V:** Estimate autonomous routine time.
 - **Q:** Toggle grid snapping.
+- **L/S** Load/Save a (.json) auton file.
+- **C** After running a routine, compile directions and data into a (.txt) file.
 - **B, F, R, G:** Access additional functions for curved pathing, mobile-goal actions, reverse mode, and clamp toggling.
 
 ## Configuration
