@@ -10,6 +10,7 @@ An advanced interactive simulation and design tool for autonomous routines. It a
 - **Automatic Routine Refinement:** The program refines nodes and paths so that the robot maximizes performance while staying within field boundaries and considering customizable offsets.
 
 ![Screenshot 2025-03-06 155455](https://github.com/user-attachments/assets/73d57cd9-ebe1-4196-a9e1-2b4ef15fb90b)
+![complexdemo](https://github.com/user-attachments/assets/b067ec12-0563-4914-8ab4-0057ae4c15fb)
 
 ## Features
 
@@ -65,6 +66,8 @@ The executable will be in the build folder.
 - **L/S** Load/Save a (.json) auton file.
 - **C** After running a routine, compile directions and data into a (.txt) file.
 - **B, F, R, G:** Access additional functions for curved pathing, ring/mogo/stake actions, reverse mode, and clamp toggling.
+
+![nodeplaceanddrag](https://github.com/user-attachments/assets/ad0ac33a-73d6-4a57-9bc5-3ba219e67b7d)
 
 ## Configuration
 
