@@ -1,0 +1,198 @@
+{
+  "robot_physics": {
+    "rpm": {
+      "value": 450.0
+    },
+    "diameter": {
+      "value": 2.75
+    },
+    "volts_straight": {
+      "value": 12.0
+    },
+    "volts_turn": {
+      "value": 12.0
+    },
+    "weight": {
+      "value": 12.0
+    },
+    "t_buffer": {
+      "value": 0.15
+    },
+    "max_cmd": {
+      "value": 127.0
+    },
+    "point_density_per_in": {
+      "value": 1.0
+    },
+    "curvature_gain": {
+      "value": 0.12162162162162163
+    }
+  },
+  "bot_dimensions": {
+    "width": {
+      "value": 14.0
+    },
+    "length": {
+      "value": 15.0
+    },
+    "dt_width": {
+      "value": 12.0
+    },
+    "dt_length": {
+      "value": 10.5
+    },
+    "full_offset_x_in": {
+      "value": 0.75
+    },
+    "full_offset_y_in": {
+      "value": 0.0
+    },
+    "reshape": {
+      "width": {
+        "value": 14.0
+      },
+      "length": {
+        "value": 18.5
+      },
+      "offset_x_in": {
+        "value": 2.5
+      },
+      "offset_y_in": {
+        "value": 0.0
+      }
+    }
+  },
+  "offsets": {
+    "offset_1_in": {
+      "value": 8.5
+    },
+    "offset_2_in": {
+      "value": 13.0
+    },
+    "padding_in": {
+      "value": 0.5
+    }
+  },
+  "path_config": {
+    "lookahead_in": {
+      "value": 14.399999999999999
+    },
+    "min_speed_ips": {
+      "value": 30.0
+    },
+    "max_speed_ips": {
+      "value": 127.0
+    },
+    "simulate_pursuit": {
+      "value": 0.0
+    }
+  },
+  "plane_mode": {
+    "value": 1
+  },
+  "field_centric": {
+    "value": 1
+  },
+  "distance_units": {
+    "value": 0
+  },
+  "angle_units": {
+    "value": 0
+  },
+  "initial_heading_deg": {
+    "value": 315.0
+  },
+  "gear_ratio": {
+    "value": 0.75
+  },
+  "ui": {
+    "show_hitboxes": {
+      "value": 0
+    },
+    "show_field_objects": {
+      "value": 1
+    }
+  },
+  "codegen": {
+    "style": {
+      "value": "LemLib"
+    },
+    "templates": {
+      "LemLib": {
+        "wait": "pros::delay({MS});",
+        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}});",
+        "turn": "turn({HEADING_DEG});",
+        "face": "turnToFace({HEADING_DEG});",
+        "pose": "pose({X_IN}, {Y_IN}, [placeholder] );",
+        "mech": "// MECH: {NAME}",
+        "tbuffer": "pros::delay({MS});",
+        "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
+        "__optional__": [
+          "setpose"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+        "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});"
+      },
+      "PROS": {
+        "wait": "pros::delay({MS});",
+        "move": "chassis.moveToPoint{{X_IN}, {Y_IN}, {TIMEOUT_MS}};",
+        "turn": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+        "face": "face({HEADING_DEG});",
+        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {.forwards = {FORWARDS}});",
+        "mech": "// MECH: {NAME}",
+        "tbuffer": "pros::delay({MS});",
+        "__optional__": [],
+        "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {FORWARDS});",
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_local"
+        },
+        "turn_global": "turn_to({HEADING_DEG});",
+        "turn_local": "turn_angle({TURN_DELTA_DEG});"
+      },
+      "Custom": {
+        "wait": "pros::delay({MS});",
+        "move": "move({DIST_IN});",
+        "turn": "",
+        "face": "face({HEADING_DEG});",
+        "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "mech": "// MECH: {NAME}",
+        "tbuffer": "pros::delay({MS});",
+        "__optional__": [
+          "reverse_on",
+          "reshape",
+          "reverse_off"
+        ],
+        "path_follow": "follow_path(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD});",
+        "reverse_on": "// reverse handled per-command",
+        "reshape": "// RESHAPE state={STATE}",
+        "reverse_off": "// reverse handled per-command",
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_local"
+        },
+        "turn_global": "face({HEADING_DEG});",
+        "turn_local": "turn_relative({TURN_DELTA_DEG});"
+      },
+      "Action List": {
+        "__optional__": [],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn"
+        }
+      }
+    },
+    "opts": {
+      "time_unit": "ms",
+      "ticks_per_rotation": 360.0,
+      "pad_factor": 1.1,
+      "min_timeout_s": 0.0,
+      "path_lookahead": 15.0
+    }
+  }
+}

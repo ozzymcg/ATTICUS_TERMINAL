@@ -1,0 +1,348 @@
+{
+    "initial": {
+        "position": [
+            300,
+            300
+        ],
+        "heading": 90.0
+    },
+    "nodes": [
+        {
+            "pos": [
+                225,
+                525
+            ],
+            "path_to_next": {
+                "use_path": true,
+                "control_points": [
+                    [
+                        225,
+                        525
+                    ],
+                    [
+                        166,
+                        448
+                    ],
+                    [
+                        106,
+                        444
+                    ],
+                    [
+                        100,
+                        500
+                    ]
+                ]
+            }
+        },
+        {
+            "pos": [
+                100,
+                500
+            ],
+            "path_to_next": {
+                "use_path": false,
+                "control_points": []
+            },
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                100,
+                600
+            ],
+            "offset": 2,
+            "reverse": true,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ]
+        },
+        {
+            "pos": [
+                100,
+                525
+            ],
+            "reverse": true,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                99.0,
+                403.0
+            ],
+            "offset": 1,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 3.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                100,
+                475
+            ],
+            "reverse": true,
+            "path_to_next": {
+                "use_path": true,
+                "control_points": [
+                    [
+                        100,
+                        475
+                    ],
+                    [
+                        200,
+                        285
+                    ],
+                    [
+                        100,
+                        100
+                    ]
+                ]
+            }
+        },
+        {
+            "pos": [
+                100,
+                100
+            ],
+            "offset": 0,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                100,
+                0
+            ],
+            "offset": 2,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                100,
+                125
+            ],
+            "reshape_toggle": true,
+            "reverse": true
+        },
+        {
+            "pos": [
+                100.0,
+                199.0
+            ],
+            "offset": 1,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 3.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                100,
+                147
+            ],
+            "path_to_next": {
+                "use_path": false,
+                "control_points": []
+            },
+            "reverse": true
+        },
+        {
+            "pos": [
+                500,
+                100
+            ],
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                500,
+                0
+            ],
+            "offset": 2,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                500,
+                125
+            ],
+            "offset": 0,
+            "reverse": true,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                500.0,
+                198.0
+            ],
+            "offset": 1,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 3.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                500,
+                150
+            ],
+            "reverse": true,
+            "path_to_next": {
+                "use_path": true,
+                "control_points": [
+                    [
+                        500,
+                        150
+                    ],
+                    [
+                        551,
+                        177
+                    ],
+                    [
+                        547,
+                        429
+                    ],
+                    [
+                        500,
+                        500
+                    ]
+                ]
+            }
+        },
+        {
+            "pos": [
+                500,
+                500
+            ],
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                500,
+                600
+            ],
+            "offset": 2,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                500,
+                475
+            ],
+            "reverse": true,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                500.0,
+                402.0
+            ],
+            "offset": 1,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 3.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                500,
+                450
+            ],
+            "reverse": true,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                400,
+                400
+            ],
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                },
+                {
+                    "type": "reshape"
+                }
+            ]
+        },
+        {
+            "pos": [
+                335.5,
+                335.5
+            ],
+            "offset": 1,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 3.0
+                }
+            ],
+            "reverse": true
+        },
+        {
+            "pos": [
+                375,
+                375
+            ],
+            "offset": 0,
+            "reverse": true,
+            "path_to_next": {
+                "use_path": true,
+                "control_points": [
+                    [
+                        375,
+                        375
+                    ],
+                    [
+                        302,
+                        401
+                    ],
+                    [
+                        300,
+                        554
+                    ]
+                ]
+            }
+        },
+        {
+            "pos": [
+                300,
+                554
+            ],
+            "offset": 0
+        }
+    ]
+}
