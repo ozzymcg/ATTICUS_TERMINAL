@@ -2,7 +2,7 @@
 
 Official Docs and README coming soon
 ## Installation
-
+Requires python, git, pip
 1. **Clone the Repository:**
 
    ```bash
