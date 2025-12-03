@@ -18,7 +18,7 @@ if __package__ is None or __package__ == "":
     )
     from util import (
         oriented_rect_corners_px, rect_oob, get_node_offset_in, 
-        approach_unit, polygons_intersect
+        approach_unit, polygons_intersect, interpret_input_angle
     )
     from geom import convert_heading_input
     from path_utils import generate_bezier_path, calculate_path_heading
@@ -29,7 +29,7 @@ else:
     )
     from .util import (
         oriented_rect_corners_px, rect_oob, get_node_offset_in, 
-        approach_unit, polygons_intersect
+        approach_unit, polygons_intersect, interpret_input_angle
     )
     from .geom import convert_heading_input
     from .path_utils import generate_bezier_path, calculate_path_heading
@@ -94,7 +94,7 @@ def draw_multicolor_circle(surface, pos, radius, colors):
             pts.append((int(cx + radius * math.cos(t)), int(cy - radius * math.sin(t))))
         _aa_polygon(surface, color, pts, 0)
 
-def draw_nodes(surface, nodes, selected_idx, font):
+def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=False):
     """Draw path nodes with colors and labels."""
     # Draw connections (straight lines or path indicators)
     for i in range(len(nodes) - 1):
@@ -132,6 +132,36 @@ def draw_nodes(surface, nodes, selected_idx, font):
             pygame.draw.circle(surface, TEXT_COLOR, node["pos"], 8, 3)
         label = font.render(str(i), True, TEXT_COLOR)
         surface.blit(label, label.get_rect(center=(node["pos"][0], node["pos"][1] - 15)))
+
+        # Draw offset ghost circle/point for nodes with offset ghost angle
+        # Draw offset ghost only in path edit mode
+        try:
+            if cfg is None or i == 0:
+                continue
+            off_type = int(node.get("offset", 0))
+            if off_type == 0 and node.get("offset_custom_in") is None:
+                continue
+            prev_pd = nodes[i - 1].get("path_to_next", {}) if i > 0 else {}
+            off_in = get_node_offset_in(node, cfg, i)
+            ghost_ang = node.get("offset_ghost_angle")
+            if off_in and ghost_ang is None:
+                prev_eff = nodes[i - 1]["pos"]
+                ghost_ang = heading_from_points(prev_eff, node["pos"])
+                node["offset_ghost_angle"] = ghost_ang
+            if off_in and ghost_ang is not None:
+                radius_px = float(off_in) * PPI
+                # Circle only if previous segment is a path and in path edit mode
+                if path_edit_mode and prev_pd.get("use_path", False):
+                    pygame.draw.circle(surface, GREY, (int(node["pos"][0]), int(node["pos"][1])), int(radius_px), 1)
+                rad = math.radians(ghost_ang)
+                gx = node["pos"][0] + math.cos(rad) * radius_px
+                gy = node["pos"][1] - math.sin(rad) * radius_px
+                # Grey dot always for offset ghost
+                pygame.draw.circle(surface, (160,160,160), (int(gx), int(gy)), 6)
+                if path_edit_mode and prev_pd.get("use_path", False):
+                    pygame.draw.circle(surface, (120,120,120), (int(gx), int(gy)), 10, 1)
+        except Exception:
+            pass
 
 def draw_path_curves(surface, nodes):
     """Draw smooth curves for all path segments."""
@@ -331,7 +361,7 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
     bd = cfg["bot_dimensions"]
     pad_px = float(cfg["offsets"].get("padding_in", 0.0)) * PPI
     
-    # Compute effective centers
+    # Compute effective centers (honor ghost offset angles)
     eff = []
     prev_pos = None
     for i, node in enumerate(nodes):
@@ -341,7 +371,12 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
             prev_pos = p
             continue
         node_offset_in = get_node_offset_in(node, cfg, i)
-        if node_offset_in != 0.0 and prev_pos is not None:
+        ghost_ang = node.get("offset_ghost_angle")
+        if node_offset_in != 0.0 and ghost_ang is not None:
+            rad = math.radians(ghost_ang)
+            eff.append((p[0] + math.cos(rad) * node_offset_in * PPI,
+                        p[1] - math.sin(rad) * node_offset_in * PPI))
+        elif node_offset_in != 0.0 and prev_pos is not None:
             ux, uy = approach_unit(prev_pos, p)
             eff.append((p[0] - ux * node_offset_in * PPI, p[1] - uy * node_offset_in * PPI))
         else:
@@ -369,21 +404,47 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
         return calculate_path_heading(pts, len(pts) - 1)
     
     for i, node in enumerate(nodes):
-        if node.get("reverse", False):
-            reverse_state = not reverse_state
-        
-        # Compute heading
+        # Compute heading using effective centers; for middle nodes, use outgoing tangent (path-aware)
         incoming_h = _incoming_path_heading(i)
         if incoming_h is not None:
             base_h = incoming_h
-        elif i == 0 and len(nodes) >= 2:
-            base_h = heading_from_points(eff[0], eff[1])
         elif i < len(nodes) - 1:
-            base_h = heading_from_points(eff[i], eff[i+1])
+            next_pd = nodes[i].get("path_to_next", {})
+            if next_pd.get("use_path", False) and next_pd.get("control_points"):
+                cps = list(next_pd["control_points"])
+                if len(cps) >= 2:
+                    cps[0] = eff[i]
+                    cps[-1] = eff[i+1]
+                    pts = generate_bezier_path(cps, num_samples=20)
+                    if pts:
+                        base_h = calculate_path_heading(pts, 0)
+                    else:
+                        base_h = heading_from_points(eff[i], eff[i+1])
+                else:
+                    base_h = heading_from_points(eff[i], eff[i+1])
+            else:
+                base_h = heading_from_points(eff[i], eff[i+1])
         else:
-            base_h = heading_from_points(eff[i-1], eff[i])
+            base_h = heading_from_points(eff[i-1], eff[i]) if i > 0 else 0.0
         
-        eff_heading = (base_h + (180.0 if reverse_state else 0.0)) % 360.0
+        # Apply reverse state and upcoming reverse toggle for outgoing orientation
+        outgoing_reverse = reverse_state
+        if i < len(nodes) - 1 and nodes[i].get("reverse", False):
+            outgoing_reverse = not outgoing_reverse
+        eff_heading = (base_h + (180.0 if outgoing_reverse else 0.0)) % 360.0
+
+        # If a turn action exists at this node, use its target heading for hitbox facing
+        try:
+            for act in node.get("actions_out", node.get("actions", [])):
+                if act.get("type") == "turn":
+                    tgt = float(act.get("deg", eff_heading))
+                    eff_heading = interpret_input_angle(tgt, cfg.get("plane_mode", 1))
+        except Exception:
+            pass
+
+        # Apply reverse toggle after processing this node so outgoing reflects it
+        if node.get("reverse", False):
+            reverse_state = not reverse_state
         
         # Update reshape state
         if node.get("reshape_toggle", False):

@@ -9,7 +9,7 @@ import math
 from typing import List, Tuple, Dict
 from .config import PPI, WINDOW_WIDTH, WINDOW_HEIGHT
 from .path_export import export_lemlib_path, generate_path_asset_name, field_coords_in
-from .util import pros_convert_inches
+from .util import pros_convert_inches, interpret_input_angle
 from .geom import convert_heading_input
 
 
@@ -22,7 +22,7 @@ def _timeout_tokens(duration_s: float, pad_factor: float, min_s: float):
     return int(fin_ms), round(fin_s, 6)
 
 
-def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous"):
+def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", initial_heading=None):
     """
     Build code export lines from timeline, including path file generation.
     
@@ -40,6 +40,12 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous"):
     style = str(cfg.get("codegen", {}).get("style", "Action List"))
     if style.strip().lower() in ("action list", "actionlist", "list"):
         return None
+
+    # Normalize routine name to string for asset naming
+    try:
+        routine_name = str(routine_name)
+    except Exception:
+        routine_name = "autonomous"
     
         # Template defaults
     defaults = {
@@ -124,7 +130,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous"):
     
     # Determine initial pose (first known position)
     pose_pos = None
-    pose_heading = convert_heading_input(cfg.get("initial_heading_deg", 0.0), cfg.get("plane_mode", 1))
     for seg in timeline:
         if "p0" in seg:
             pose_pos = seg["p0"]
@@ -132,9 +137,23 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous"):
         if "pos" in seg:
             pose_pos = seg["pos"]
             break
+    pose_heading_internal = initial_heading
+    if pose_heading_internal is None:
+        # Try to infer from first segment heading if available
+        for seg in timeline:
+            pose_heading_internal = seg.get("start_heading") or seg.get("heading")
+            if pose_heading_internal is not None:
+                break
+    if pose_heading_internal is None:
+        # Fallback to config initial heading
+        try:
+            pose_heading_internal = interpret_input_angle(float(cfg.get("initial_heading_deg", 0.0) or 0.0), cfg.get("plane_mode", 1))
+        except Exception:
+            pose_heading_internal = float(cfg.get("initial_heading_deg", 0.0) or 0.0)
+    pose_heading_disp = convert_heading_input(pose_heading_internal, cfg.get("plane_mode", 1))
     if style == "LemLib" and pose_pos is not None and "setpose" in tpls:
         x0_in, y0_in = field_coords_in(pose_pos)
-        lines.append(f"chassis.setPose({x0_in:.6f}, {y0_in:.6f}, {pose_heading:.6f});")
+        lines.append(f"chassis.setPose({x0_in:.6f}, {y0_in:.6f}, {pose_heading_disp:.6f});")
         lines.append("")
     
     def _normalize_tpl(val):
@@ -177,7 +196,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous"):
         st = seg.get("type")
         if st == "turn":
             st = "face"
-        to_ms, to_s = _timeout_tokens(T, pad_factor, min_s)
+        # Do not inflate buffer waits with pad_factor
+        eff_pad = 1.0 if seg.get("role") == "buffer" else pad_factor
+        to_ms, to_s = _timeout_tokens(T, eff_pad, min_s)
         tokens_base = {
             "MS": to_ms, "S": to_s, "TIMEOUT_MS": to_ms, "TIMEOUT_S": to_s,
             "STATE": seg.get("state", 0), "NAME": seg.get("name", ""),
@@ -405,6 +426,6 @@ def export_action_list(cfg, timeline, log_lines):
         total_t = max(0.0, total_t - float(tbuf))
     log_lines.append(f"\nEstimated total time: {total_t:.2f} s")
 
-def build_export_lines(cfg, timeline, routine_name="autonomous"):
+def build_export_lines(cfg, timeline, routine_name="autonomous", initial_heading=None):
     """Build code export lines from timeline (path-aware wrapper)."""
-    return build_export_lines_with_paths(cfg, timeline, routine_name)
+    return build_export_lines_with_paths(cfg, timeline, routine_name, initial_heading)

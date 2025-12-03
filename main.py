@@ -67,7 +67,7 @@ CONTROLS = [
     ("Shift+Drag Node", "Constrain drag to 8 global\ndirections from press point"),
     ("RightClick", "Node commands: turn X, wait Y,\n offset Z, reshape"),
     ("P", "Toggle path edit mode for \n hovered/selected node"),
-    ("T", "Toggle path lookahead sim \n(pure pursuit, EXPERIMENTAL)"),
+    ("T", "Toggle path look-ahead simulation \n(Pure Pursuit)"),
     ("SPACE / CTRL+SPACE", "Start-Pause / Reset"),
     ("Q", "Toggle Snap-to-Grid"),
     ("F", "Cycle offset: none → 1 → 2"),
@@ -345,6 +345,8 @@ SELECTION_RADIUS_PX = int(GRID_SIZE_PX // 4)
 dragging = False
 constrain_active = False
 constrain_origin = None
+offset_dragging_idx = None
+offset_drag_prev = None
 
 undo_stack, redo_stack = [], []
 last_snapshot = None
@@ -358,14 +360,16 @@ def auto_lookahead_in(cfg):
     """Auto-compute base lookahead (inches) from robot size."""
     bd = cfg.get("bot_dimensions", {})
     base = float(bd.get("dt_width", bd.get("width", 12.0)))
-    base = max(6.0, min(36.0, base * 1.2))
+    # Slightly tighter, more pragmatic lookahead for pure pursuit/path following
+    base = max(8.0, min(24.0, base * 0.9))
     return base
 
 path_lookahead_enabled = bool(CFG.get("path_config", {}).get("simulate_pursuit", 1))
-path_lookahead_px = auto_lookahead_in(CFG) * PPI
+path_lookahead_px = float(CFG.get("path_config", {}).get("lookahead_in", auto_lookahead_in(CFG))) * PPI
 last_lookahead_point = None
 last_lookahead_radius = path_lookahead_px
 last_heading_target = None
+path_draw_cache = {}  # cache for gradient-drawn path segments
 
 # Path editing state
 path_edit_mode = False
@@ -390,6 +394,61 @@ def path_sig_for_node(node):
         bool(pd.get("use_path", False)),
         cps_sig
     )
+
+def path_shade_key(idx, node):
+    """Build cache key for shaded path rendering."""
+    pd = node.get("path_to_next", {})
+    curv_gain = float(CFG.get("robot_physics", {}).get("curvature_gain", CFG.get("path_config", {}).get("curvature_gain", 0.05)))
+    vmin = pd.get("min_speed_ips", CFG.get("path_config", {}).get("min_speed_ips", 30.0))
+    vmax = pd.get("max_speed_ips", CFG.get("path_config", {}).get("max_speed_ips", 127.0))
+    la_override = pd.get("lookahead_in_override")
+    return (idx, path_sig_for_node(node), round(curv_gain, 6), round(float(vmin), 3), round(float(vmax), 3), None if la_override is None else round(float(la_override), 3))
+
+def build_shaded_segments(node_idx):
+    """Compute gradient-colored path segments for rendering."""
+    node = display_nodes[node_idx]
+    pd = node.get("path_to_next", {})
+    cps = list(pd.get("control_points", []))
+    if len(cps) < 2:
+        return None
+    # Anchor endpoints
+    cps[0] = effective_node_pos(node_idx)
+    cps[-1] = effective_node_pos(node_idx + 1)
+    if not PATH_FEATURES_AVAILABLE:
+        return [("plain", cps)]
+    try:
+        smooth_path = generate_bezier_path(cps, num_samples=50)
+        if len(smooth_path) < 2:
+            return None
+        min_override = pd.get("min_speed_ips")
+        max_override = pd.get("max_speed_ips")
+        # Shading driven by speeds/curvature
+        _, _, sampled, curvs, speeds, _ = path_time_with_curvature(
+            smooth_path, CFG,
+            min_speed_override=min_override,
+            max_speed_override=max_override
+        )
+        if not speeds or len(sampled) != len(speeds):
+            return [("plain", sampled)]
+        v_min = min(speeds); v_max = max(speeds)
+        curv_gain = float(CFG.get("robot_physics", {}).get("curvature_gain", CFG.get("path_config", {}).get("curvature_gain", 0.05)))
+        segs = []
+        for j in range(len(sampled) - 1):
+            v = speeds[j]
+            cv = curvs[j] if curvs else 0.0
+            t = 0.0 if v_max <= v_min else (v - v_min) / (v_max - v_min)
+            curv_in = abs(cv) * PPI
+            c = min(1.0, curv_in * curv_gain * 25.0)
+            base_r, base_g, base_b = 180, 220, 255
+            dark_r, dark_g, dark_b = 10, 60, 140
+            mix = min(1.0, max(0.0, t * 0.8 + c * 0.2))
+            r = int(base_r + (dark_r - base_r) * mix)
+            g = int(base_g + (dark_g - base_g) * mix)
+            b = int(base_b + (dark_b - base_b) * mix)
+            segs.append((sampled[j], sampled[j+1], (r, g, b)))
+        return segs
+    except Exception:
+        return [("plain", cps)]
 
 def _tangent_into_node(idx):
     """Return vector of tangent coming into node idx from previous segment."""
@@ -447,6 +506,12 @@ def sync_all_path_endpoints():
     """Anchor all path endpoints to their owning nodes."""
     for i in range(max(0, len(display_nodes) - 1)):
         sync_path_endpoints_for_node(i)
+        # If the segment is no longer a path, clear ghost angle on the endpoint so offset snaps inline
+        pd = display_nodes[i].get("path_to_next", {})
+        if not pd.get("use_path", False) and (i + 1) < len(display_nodes):
+            display_nodes[i + 1].pop("offset_ghost_angle", None)
+    # Path geometry changed; invalidate cached gradients
+    path_draw_cache.clear()
 
 def remove_path_leading_to(idx):
     """Remove any stored path that ends at idx (path_to_next on idx-1)."""
@@ -487,6 +552,27 @@ def effective_node_pos(idx):
     node = display_nodes[idx]
     prev = display_nodes[idx - 1]["pos"]
     off_in = get_node_offset_in(node, CFG, idx)
+    ghost_ang = node.get("offset_ghost_angle")
+    prev_pd = display_nodes[idx - 1].get("path_to_next", {}) if idx - 1 >= 0 else {}
+    use_radial = prev_pd.get("use_path", False)
+    if use_radial and off_in != 0.0:
+        if ghost_ang is None:
+            try:
+                prev_eff = display_nodes[idx - 1]["pos"] if idx - 1 >= 0 else prev
+            except Exception:
+                prev_eff = prev
+            # Default along path tangent (previous to this node)
+            ghost_ang = heading_from_points(prev_eff, node["pos"])
+            node["offset_ghost_angle"] = ghost_ang
+        if ghost_ang is not None:
+            rad = math.radians(ghost_ang)
+            return (
+                node["pos"][0] + math.cos(rad) * off_in * PPI,
+                node["pos"][1] - math.sin(rad) * off_in * PPI
+            )
+    else:
+        # Straight segments ignore radial; clear ghost if present
+        node.pop("offset_ghost_angle", None)
     if off_in == 0.0:
         return node["pos"]
     ux, uy = approach_unit(prev, node["pos"])
@@ -618,6 +704,11 @@ def enter_path_edit_mode(segment_idx):
             "use_path": True,
             "control_points": cps
         }
+        # Seed offset ghost for endpoint if offset is active
+        end_node = display_nodes[segment_idx + 1]
+        if end_node.get("offset", 0) != 0 or end_node.get("offset_custom_in") is not None:
+            if end_node.get("offset_ghost_angle") is None:
+                end_node["offset_ghost_angle"] = heading_from_points(p0, p1)
     else:
         cps = list(path_data["control_points"])
     
@@ -1074,6 +1165,11 @@ def open_settings_window():
         for node in display_nodes:
             x, y = node["pos"]
             node["pos"] = (2 * cx - x, y)
+            # Mirror any path control points originating from this node
+            pd = node.get("path_to_next", {})
+            cps = pd.get("control_points")
+            if cps:
+                pd["control_points"] = [(2 * cx - cp[0], cp[1]) for cp in cps]
         
         initial_state["position"] = display_nodes[0]["pos"]
         initial_state["heading"] = (180.0 - initial_state["heading"]) % 360.0
@@ -1120,18 +1216,18 @@ def open_settings_window():
                     if len(cps) >= 2:
                         cps[0] = p0
                         cps[-1] = p1
-                        # Analytic tangent at t=0 (n * (p1 - p0)) to align with curve start
-                        if len(cps) >= 2:
-                            hdg = heading_from_points(cps[0], cps[1])
-                            # If degenerate, sample small t along bezier
-                            if math.isclose(cps[0][0], cps[1][0], abs_tol=1e-6) and math.isclose(cps[0][1], cps[1][1], abs_tol=1e-6):
-                                smooth = generate_bezier_path(cps, num_samples=50)
-                                if smooth and len(smooth) > 1:
-                                    hdg = heading_from_points(smooth[0], smooth[1])
-                            disp = convert_heading_input(hdg, CFG["plane_mode"])
-                            init_head.set(f"{disp:.3f}")
-                            on_update()
-                            return
+                        # Use path tangent at start for initial heading
+                        hdg = heading_from_points(cps[0], cps[1])
+                        smooth = generate_bezier_path(cps, num_samples=50)
+                        if smooth and len(smooth) > 1:
+                            try:
+                                hdg = calculate_path_heading(smooth, 0)
+                            except Exception:
+                                hdg = heading_from_points(smooth[0], smooth[1])
+                        disp = convert_heading_input(hdg, CFG["plane_mode"])
+                        init_head.set(f"{disp:.3f}")
+                        on_update()
+                        return
             on_update()
         finally: 
             auto_heading_node1_var.set(0)
@@ -1578,8 +1674,26 @@ def open_settings_window():
             # Handle auto heading to node 1
             use_auto = bool(auto_heading_node1_var.get())
             if use_auto and len(display_nodes) >= 2:
-                p0, p1 = display_nodes[0]["pos"], display_nodes[1]["pos"]
-                target_internal = heading_from_points(p0, p1)
+                p0 = effective_node_pos(0)
+                p1 = effective_node_pos(1)
+                pd = display_nodes[0].get("path_to_next", {})
+                if pd.get("use_path", False) and pd.get("control_points"):
+                    cps = list(pd["control_points"])
+                    if len(cps) >= 2:
+                        cps[0] = p0
+                        cps[-1] = p1
+                        smooth = generate_bezier_path(cps, num_samples=50)
+                        if smooth and len(smooth) > 1:
+                            try:
+                                target_internal = calculate_path_heading(smooth, 0)
+                            except Exception:
+                                target_internal = heading_from_points(smooth[0], smooth[1])
+                        else:
+                            target_internal = heading_from_points(p0, p1)
+                    else:
+                        target_internal = heading_from_points(p0, p1)
+                else:
+                    target_internal = heading_from_points(p0, p1)
                 disp_deg = convert_heading_input(target_internal, CFG["plane_mode"])
                 init_head.set(f"{disp_deg:.3f}")
                 entered = disp_deg
@@ -1672,6 +1786,7 @@ def main():
     global selected_idx, dragging, last_snapshot, last_path_sig, history_freeze
     global timeline, seg_i, t_local, last_logged_seg, CFG, total_estimate_s
     global path_lookahead_enabled, path_lookahead_px, last_lookahead_point, last_lookahead_radius, last_heading_target, path_mirror_start, path_mirror_end
+    global offset_dragging_idx, offset_drag_prev
     
     open_settings_window()
     
@@ -1804,7 +1919,7 @@ def main():
                     style_norm = str(CFG.get("codegen", {}).get("style", "Action List")).strip().lower()
                     
                     if style_norm not in ("action list", "actionlist", "list"):
-                        code_lines = build_export_lines(CFG, tl) or []
+                        code_lines = build_export_lines(CFG, tl, routine_name="autonomous", initial_heading=initial_state["heading"]) or []
                         compile_log(code_lines)
                     else:
                         last_turn = None
@@ -1874,9 +1989,18 @@ def main():
                     if tgt is not None and tgt >= 0 and tgt != 0:
                         prev = util_snapshot(display_nodes, robot_pos, robot_heading)
                         off = display_nodes[tgt].get("offset", 0)
-                        display_nodes[tgt]["offset"] = {0: 1, 1: 2, 2: 0}[off]
-                        if display_nodes[tgt]["offset"] != 0:
+                        new_off = {0: 1, 1: 2, 2: 0}[off]
+                        display_nodes[tgt]["offset"] = new_off
+                        if new_off != 0:
                             display_nodes[tgt].pop("offset_custom_in", None)
+                            if display_nodes[tgt].get("offset_ghost_angle") is None and tgt > 0:
+                                pd_prev = display_nodes[tgt - 1].get("path_to_next", {})
+                                if pd_prev.get("use_path", False):
+                                    display_nodes[tgt]["offset_ghost_angle"] = heading_from_points(display_nodes[tgt - 1]["pos"], display_nodes[tgt]["pos"])
+                                else:
+                                    display_nodes[tgt].pop("offset_ghost_angle", None)
+                        else:
+                            display_nodes[tgt].pop("offset_ghost_angle", None)
                         util_push_undo_prev(undo_stack, prev)
                         last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
                         last_path_sig = None
@@ -1961,9 +2085,34 @@ def main():
                         if hover_cp is not None:
                             selected_control_point = hover_cp
                             dragging_control_point = True
-                        else:
-                            selected_control_point = None
+                            continue
+                        # Check offset ghost in path mode
+                        ghost_hit = None
+                        for idx, n in enumerate(display_nodes):
+                            if idx == 0: 
+                                continue
+                            if n.get("offset_ghost_angle") is None:
+                                continue
+                            prev_pd = display_nodes[idx - 1].get("path_to_next", {}) if idx - 1 >= 0 else {}
+                            if not prev_pd.get("use_path", False):
+                                continue
+                            off_in = get_node_offset_in(n, CFG, idx)
+                            if off_in <= 0.0:
+                                continue
+                            gpos = effective_node_pos(idx)
+                            dx, dy = gpos[0] - mouse_pos[0], gpos[1] - mouse_pos[1]
+                            hit_r2 = (SELECTION_RADIUS_PX * 3.0) ** 2
+                            if dx*dx + dy*dy <= hit_r2:
+                                ghost_hit = idx
+                                break
+                        if ghost_hit is not None:
+                            offset_dragging_idx = ghost_hit
+                            offset_drag_prev = util_snapshot(display_nodes, robot_pos, robot_heading)
+                            last_snapshot = offset_drag_prev
+                            continue
+                        selected_control_point = None
                     else:
+                        # Normal mode
                         keys = pygame.key.get_pressed()
                         if keys[pygame.K_DELETE] or keys[pygame.K_BACKSPACE]:
                             pos = pygame.mouse.get_pos()
@@ -2026,7 +2175,8 @@ def main():
                                 pd_cur = display_nodes[hit_seg].get("path_to_next", {})
                                 init_min = pd_cur.get("min_speed_ips", CFG.get("path_config", {}).get("min_speed_ips", 30.0))
                                 init_max = pd_cur.get("max_speed_ips", CFG.get("path_config", {}).get("max_speed_ips", 127.0))
-                                inp = simpledialog.askstring("Path speeds", "Enter min,max speed:", initialvalue=f"{init_min},{init_max}")
+                                init_la = pd_cur.get("lookahead_in_override", CFG.get("path_config", {}).get("lookahead_in", auto_lookahead_in(CFG)))
+                                inp = simpledialog.askstring("Path speeds / lookahead", "Enter min,max[,lookahead in]:", initialvalue=f"{init_min},{init_max},{init_la}")
                                 if inp:
                                     parts = [p.strip() for p in inp.replace(";", ",").split(",")]
                                     if len(parts) >= 2:
@@ -2034,6 +2184,14 @@ def main():
                                         pd = display_nodes[hit_seg].setdefault("path_to_next", {})
                                         pd["min_speed_ips"] = vmin
                                         pd["max_speed_ips"] = vmax
+                                        if len(parts) >= 3 and parts[2] != "":
+                                            try:
+                                                la_override = float(parts[2])
+                                                pd["lookahead_in_override"] = la_override
+                                            except Exception:
+                                                pass
+                                        elif pd.get("lookahead_in_override") is not None:
+                                            pd.pop("lookahead_in_override", None)
                                         total_estimate_s = compute_total_estimate_s()
                                         util_push_undo_prev(undo_stack, prev)
                                 # After speed prompt, also show standard node command prompt for the start node
@@ -2107,6 +2265,14 @@ def main():
                     if 0 < selected_control_point < len(path_control_points) - 1:
                         path_control_points[selected_control_point] = tuple(event.pos)
                 
+                elif path_edit_mode and offset_dragging_idx is not None:
+                    idx = offset_dragging_idx
+                    node = display_nodes[idx]
+                    snapped = snap_to_grid(event.pos, GRID_SIZE_PX, snap_enabled)
+                    ang = heading_from_points(node["pos"], snapped)
+                    node["offset_ghost_angle"] = ang
+                    sync_all_path_endpoints()
+                
                 elif dragging and selected_idx is not None and not moving and not path_edit_mode:
                     mods_now = pygame.key.get_mods()
                     shift_now = bool(mods_now & pygame.KMOD_SHIFT)
@@ -2129,6 +2295,14 @@ def main():
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 if path_edit_mode:
                     dragging_control_point = False
+                elif offset_dragging_idx is not None:
+                    offset_dragging_idx = None
+                    if offset_drag_prev is not None:
+                        util_push_undo_prev(undo_stack, offset_drag_prev)
+                    offset_drag_prev = None
+                    last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
+                    last_path_sig = None
+                    total_estimate_s = compute_total_estimate_s()
                 else:
                     constrain_active = False
                     constrain_origin = None
@@ -2153,7 +2327,11 @@ def main():
             robot_pos = display_nodes[0]["pos"]
             robot_heading = initial_state["heading"]
             reshape_live = False
-            total_estimate_s = compute_total_estimate_s()
+            offset_dragging_idx = None
+            offset_drag_prev = None
+            path_draw_cache.clear()
+            if not moving:
+                total_estimate_s = compute_total_estimate_s()
         
         # Animation
         if moving and not paused:
@@ -2236,6 +2414,8 @@ def main():
                                 dist_end = math.hypot(path_points[-1][0] - robot_pos[0], path_points[-1][1] - robot_pos[1])
                                 if dist_end <= max(la_px * 0.8, PPI * 1.5):
                                     heading_to_look = calculate_path_heading(path_points, len(path_points) - 1)
+                                if seg.get("reverse"):
+                                    heading_to_look = (heading_to_look + 180.0) % 360.0
                                 heading_to_look = smooth_angle(last_heading_target if last_heading_target is not None else robot_heading, heading_to_look, 0.25)
                                 dx = look_pt[0] - robot_pos[0]
                                 dy = look_pt[1] - robot_pos[1]
@@ -2276,11 +2456,11 @@ def main():
                                 use_pursuit=False,
                                 path_speeds=path_speeds
                             )
+                            if seg.get("reverse"):
+                                heading_sample = (heading_sample + 180.0) % 360.0
                             robot_heading = clamp_heading_rate(robot_heading, heading_sample, CFG, dt=1.0/60.0)
                             last_lookahead_point = None
                             last_heading_target = None
-                        if seg.get("reverse"):
-                            robot_heading = (robot_heading + 180.0) % 360.0
                     
                     elif seg_type == "wait":
                         robot_pos = seg.get("pos", robot_pos)
@@ -2330,42 +2510,27 @@ def main():
             if path_edit_mode and i == path_edit_segment_idx:
                 # The actively edited path is drawn in the overlay below
                 continue
-            control_points = list(path_data["control_points"])
-            if len(control_points) >= 2:
-                control_points[0] = effective_node_pos(i)
-                control_points[-1] = effective_node_pos(i + 1)
             color = (100, 200, 255)
             width = 3
             if path_edit_mode:
                 color = (120, 120, 120)
                 width = 2
-            if PATH_FEATURES_AVAILABLE:
-                smooth_path = generate_bezier_path(control_points, num_samples=50)
-                # Thermal gradient by speed if available
-                try:
-                    _, _, sampled, curvs, speeds, _speeds_raw = path_time_with_curvature(smooth_path, CFG)  # type: ignore[misc]
-                    if speeds and len(sampled) == len(speeds):
-                        v_min = min(speeds)
-                        v_max = max(speeds)
-                        curv_gain = float(CFG.get("robot_physics", {}).get("curvature_gain", CFG.get("path_config", {}).get("curvature_gain", 0.05)))
-                        for j in range(len(sampled)-1):
-                            v = speeds[j]
-                            cv = curvs[j] if curvs else 0.0
-                            t = 0.0 if v_max <= v_min else (v - v_min) / (v_max - v_min)
-                            curv_in = abs(cv) * PPI
-                            c = min(1.0, curv_in * curv_gain * 25.0)
-                            # light-blue -> deep-blue based on speed/curvature
-                            base_r, base_g, base_b = 180, 220, 255
-                            dark_r, dark_g, dark_b = 10, 60, 140
-                            mix = min(1.0, max(0.0, t * 0.8 + c * 0.2))
-                            r = int(base_r + (dark_r - base_r) * mix)
-                            g = int(base_g + (dark_g - base_g) * mix)
-                            b = int(base_b + (dark_b - base_b) * mix)
-                            pygame.draw.line(screen, (r, g, b), sampled[j], sampled[j+1], width)
+            # Cached shaded segments
+            key = path_shade_key(i, node)
+            segs = path_draw_cache.get(key)
+            if segs is None:
+                segs = build_shaded_segments(i)
+                path_draw_cache[key] = segs
+            if segs:
+                for seg_entry in segs:
+                    if not seg_entry:
+                        continue
+                    if isinstance(seg_entry, tuple) and seg_entry[0] == "plain":
+                        pts = seg_entry[1]
+                        draw_curved_path(screen, pts, color=color, width=width)
                     else:
-                        draw_curved_path(screen, smooth_path, color=color, width=width)
-                except Exception:
-                    draw_curved_path(screen, smooth_path, color=color, width=width)
+                        p0, p1, col = seg_entry
+                        pygame.draw.line(screen, col, p0, p1, width)
         
         # Draw normal node connections (straight segments only)
         for i in range(len(display_nodes) - 1):
@@ -2377,7 +2542,7 @@ def main():
                 pygame.draw.line(screen, NODE_COLOR, p0, p1, 2)
         
         # Draw nodes with proper arguments
-        draw_nodes(screen, display_nodes, selected_idx, font)
+        draw_nodes(screen, display_nodes, selected_idx, font, CFG, path_edit_mode)
         
         # PATH EDIT MODE OVERLAY
         if path_edit_mode and path_control_points:

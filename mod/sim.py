@@ -307,7 +307,12 @@ def _effective_centers(nodes, cfg, initial_heading):
             continue
         prev = nodes[i-1]["pos"]
         off_in = get_node_offset_in(n, cfg, i)
-        if off_in == 0.0:
+        ghost_ang = n.get("offset_ghost_angle")
+        if off_in != 0.0 and ghost_ang is not None:
+            rad = math.radians(ghost_ang)
+            eff.append((p[0] + math.cos(rad) * off_in * PPI,
+                        p[1] - math.sin(rad) * off_in * PPI))
+        elif off_in == 0.0:
             eff.append(p)
         else:
             ux, uy = approach_unit(prev, p)
@@ -383,11 +388,11 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
     
     # Process edges
     path_cfg = cfg.get("path_config", {})
-    base_la_in = path_cfg.get("lookahead_in")
-    if base_la_in is None:
+    base_la_in_global = path_cfg.get("lookahead_in")
+    if base_la_in_global is None:
         bd = cfg.get("bot_dimensions", {})
-        base_la_in = max(6.0, min(36.0, float(bd.get("dt_width", bd.get("width", 12.0))) * 1.2))
-    base_lookahead_px = float(base_la_in) * PPI
+        base_la_in_global = max(8.0, min(24.0, float(bd.get("dt_width", bd.get("width", 12.0))) * 0.9))
+    base_lookahead_px = float(base_la_in_global) * PPI
 
     for i in range(n - 1):
         node_i = display_nodes[i]
@@ -444,6 +449,13 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             path_points = generate_bezier_path(control_points, num_samples=50)
             
             if len(path_points) >= 2:
+                # Per-path lookahead override (base value before scaling)
+                base_la_in = path_data.get("lookahead_in_override", base_la_in_global)
+                if base_la_in is None:
+                    bd = cfg.get("bot_dimensions", {})
+                    base_la_in = max(8.0, min(24.0, float(bd.get("dt_width", bd.get("width", 12.0))) * 0.9))
+                base_lookahead_px = float(base_la_in) * PPI
+
                 # Turn to face the start of the path
                 start_heading = calculate_path_heading(path_points, 0)
                 end_heading = calculate_path_heading(path_points, len(path_points) - 1)
@@ -475,12 +487,35 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     min_speed_override=min_override,
                     max_speed_override=max_override if drive_override is None else drive_override
                 )
-                # Adjust lookahead based on average curvature to reduce overshoot on tight paths
+                # Adjust lookahead based on curvature and expected velocity.
+                # Curvature dominates (tighter = shorter), speed nudges longer/shorter.
                 avg_curv = 0.0
+                max_curv = 0.0
                 if curvatures:
-                    avg_curv = sum(abs(c) for c in curvatures) / max(1, len(curvatures))
-                la_scale = 1.0 / (1.0 + 2.5 * avg_curv)
-                la_scale = max(0.35, min(1.0, la_scale))
+                    vals = [abs(c) for c in curvatures]
+                    avg_curv = sum(vals) / max(1, len(vals))
+                    max_curv = max(vals)
+                curv_metric = max(avg_curv * 1.5, max_curv * 0.75)
+                la_scale_curv = 1.0 / (1.0 + 8.0 * curv_metric)
+                la_scale_curv = max(0.2, min(1.0, la_scale_curv))
+
+                # Speed influence: map avg speed to a modest scale (<=60 => shrink, >=110 => grow)
+                vmax_cfg = vmax_straight(cfg)
+                avg_speed = vmax_cfg
+                try:
+                    if speeds:
+                        avg_speed = sum(speeds) / max(1, len(speeds))
+                except Exception:
+                    avg_speed = vmax_cfg
+                # linear map: 60 -> 0.75x, 110 -> 1.2x
+                lo_s, hi_s = 60.0, 110.0
+                lo_f, hi_f = 0.75, 1.2
+                t = (avg_speed - lo_s) / max(1e-6, hi_s - lo_s)
+                speed_factor = lo_f + (hi_f - lo_f) * max(0.0, min(1.0, t))
+                speed_factor = max(0.7, min(1.25, speed_factor))
+
+                la_scale = la_scale_curv * speed_factor
+                la_scale = max(0.2, min(1.1, la_scale))
                 seg_lookahead_px = base_lookahead_px * la_scale
                 seg_lookahead_px = max(6.0 * PPI, min(60.0 * PPI, seg_lookahead_px))
                 
@@ -733,27 +768,53 @@ def correct_nodes_inbounds(nodes, cfg, init_heading, window_w, window_h):
     pad_px = float(cfg["offsets"].get("padding_in", 0.0)) * PPI + 2.0
     bd = cfg["bot_dimensions"]
     reverse_state = reshape_state = False
+    eff = _effective_centers(nodes, cfg, init_heading)
     
     from .util import world_offset_px
     
     for i, n in enumerate(nodes):
         p = n["pos"]
         
-        if n.get("reverse", False):
-            reverse_state = not reverse_state
-        
-        # Compute heading
+        # Compute heading using effective centers and path tangents when available
         if i == 0:
             base_h = init_heading
             prev_pos = None
         elif i < len(nodes) - 1:
-            base_h = heading_from_points(nodes[i]["pos"], nodes[i+1]["pos"])
-            prev_pos = nodes[i-1]["pos"]
+            # If next segment is a path, use its tangent; otherwise straight to next
+            next_pd = nodes[i].get("path_to_next", {})
+            if next_pd.get("use_path", False) and next_pd.get("control_points"):
+                cps = list(next_pd["control_points"])
+                if len(cps) >= 2:
+                    cps[0] = eff[i]
+                    cps[-1] = eff[i+1]
+                    pts = generate_bezier_path(cps, num_samples=20)
+                    if pts:
+                        base_h = calculate_path_heading(pts, 0)
+                    else:
+                        base_h = heading_from_points(eff[i], eff[i+1])
+                else:
+                    base_h = heading_from_points(eff[i], eff[i+1])
+            else:
+                base_h = heading_from_points(eff[i], eff[i+1])
+            prev_pos = eff[i-1]
         else:
-            base_h = heading_from_points(nodes[i-1]["pos"], nodes[i]["pos"])
-            prev_pos = nodes[i-1]["pos"]
+            base_h = heading_from_points(eff[i-1], eff[i])
+            prev_pos = eff[i-1]
         
-        eff_heading = (base_h + (180.0 if reverse_state else 0.0)) % 360.0
+        # Include reverse toggle that will apply to outgoing segment
+        outgoing_reverse = reverse_state
+        if i < len(nodes) - 1 and n.get("reverse", False):
+            outgoing_reverse = not outgoing_reverse
+        eff_heading = (base_h + (180.0 if outgoing_reverse else 0.0)) % 360.0
+
+        # Apply turn actions at this node to final facing for OOB checks
+        try:
+            for act in n.get("actions_out", n.get("actions", [])):
+                if act.get("type") == "turn":
+                    tgt = float(act.get("deg", eff_heading))
+                    eff_heading = tgt % 360.0
+        except Exception:
+            pass
         
         # Update reshape state
         if n.get("reshape_toggle", False):
@@ -777,14 +838,21 @@ def correct_nodes_inbounds(nodes, cfg, init_heading, window_w, window_h):
         # Calculate effective center
         if i == 0:
             off_stop_in = 0.0
-            C_eff = p
+            C_eff = eff[i] if i < len(eff) else p
         else:
             off_stop_in = get_node_offset_in(n, cfg, i)
-            if off_stop_in != 0.0 and prev_pos is not None:
+            prev_pd = nodes[i - 1].get("path_to_next", {}) if i > 0 else {}
+            ghost_ang = n.get("offset_ghost_angle")
+            use_radial = prev_pd.get("use_path", False) and ghost_ang is not None and off_stop_in != 0.0
+            if use_radial:
+                rad = math.radians(ghost_ang)
+                C_eff = (p[0] + math.cos(rad) * off_stop_in * PPI,
+                         p[1] - math.sin(rad) * off_stop_in * PPI)
+            elif off_stop_in != 0.0 and prev_pos is not None:
                 ux, uy = approach_unit(prev_pos, p)
                 C_eff = (p[0] - ux * off_stop_in * PPI, p[1] - uy * off_stop_in * PPI)
             else:
-                C_eff = p
+                C_eff = eff[i] if i < len(eff) else p
         
         dx_off, dy_off = world_offset_px(off_x, off_y, eff_heading)
         C_eff_tx = (C_eff[0] + dx_off, C_eff[1] + dy_off)
@@ -805,10 +873,23 @@ def correct_nodes_inbounds(nodes, cfg, init_heading, window_w, window_h):
         if (nx, ny) != C_eff_tx:
             new_C_eff = (nx - dx_off, ny - dy_off)
             if i > 0 and off_stop_in != 0.0 and prev_pos is not None:
-                ux, uy = approach_unit(prev_pos, p)
-                new_p = (new_C_eff[0] + ux * off_stop_in * PPI, 
-                        new_C_eff[1] + uy * off_stop_in * PPI)
+                if use_radial and ghost_ang is not None:
+                    rad = math.radians(ghost_ang)
+                    new_p = (new_C_eff[0] - math.cos(rad) * off_stop_in * PPI,
+                             new_C_eff[1] + math.sin(rad) * off_stop_in * PPI)
+                else:
+                    ux, uy = approach_unit(prev_pos, p)
+                    new_p = (new_C_eff[0] + ux * off_stop_in * PPI, 
+                            new_C_eff[1] + uy * off_stop_in * PPI)
             else:
                 new_p = new_C_eff
             nodes[i]["pos"] = (int(min(max(new_p[0], 0), window_w)), 
                               int(min(max(new_p[1], 0), window_h)))
+
+        # Apply reverse toggle after processing this node so it affects outgoing heading
+        if n.get("reverse", False):
+            reverse_state = not reverse_state
+
+        # Update reverse state for subsequent nodes (apply after handling this node)
+        if n.get("reverse", False):
+            reverse_state = not reverse_state

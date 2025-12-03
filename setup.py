@@ -1,19 +1,15 @@
-﻿from cx_Freeze import setup, Executable
-
-# Define build options
-build_exe_options = {
-    "packages": ["os", "sys", "pygame", "tkinter"],
-    # to rename or move them, use tuples: (source, destination)
-    "include_files": [
-        "ATTICUS.png",
-        "prototype_auton.json"
-    ],
-}
+from setuptools import setup, find_packages
 
 setup(
-    name="ATTICUS_TERMINAL",
-    version="1.1.2",
-    description="VEX Field and Autonomous Simulation.",
-    options={"build_exe": build_exe_options},
-    executables=[Executable("ATTICUS_TERMINAL.py")],
+    name="atticus-terminal",
+    version="2.0.0",
+    description="Atticus terminal path planner and simulator",
+    packages=find_packages(include=["mod", "mod.*"]),
+    py_modules=["main"],
+    include_package_data=True,
+    package_data={"": ["*.json"]},
+    install_requires=[
+        "pygame>=2.1.0",
+    ],
+    python_requires=">=3.8",
 )
