@@ -4,32 +4,33 @@
             300,
             300
         ],
-        "heading": 90.0
+        "heading": 123.0187244415689
     },
     "nodes": [
         {
             "pos": [
-                225,
-                525
+                224,
+                524
             ],
+            "reshape_toggle": true,
             "path_to_next": {
                 "use_path": true,
                 "control_points": [
                     [
-                        225,
-                        525
+                        224,
+                        524
                     ],
                     [
-                        166,
-                        448
+                        182,
+                        462
                     ],
                     [
-                        106,
-                        444
+                        104,
+                        484
                     ],
                     [
-                        100,
-                        500
+                        100.0,
+                        545.8333333333334
                     ]
                 ]
             }
@@ -37,20 +38,10 @@
         {
             "pos": [
                 100,
-                500
-            ],
-            "path_to_next": {
-                "use_path": false,
-                "control_points": []
-            },
-            "reshape_toggle": true
-        },
-        {
-            "pos": [
-                100,
                 600
             ],
             "offset": 2,
+            "offset_ghost_angle": 90.0,
             "reverse": true,
             "actions": [
                 {
@@ -62,277 +53,239 @@
         {
             "pos": [
                 100,
-                525
-            ],
-            "reverse": true,
-            "reshape_toggle": true
-        },
-        {
-            "pos": [
-                99.0,
-                403.0
+                400
             ],
             "offset": 1,
-            "actions": [
-                {
-                    "type": "wait",
-                    "s": 3.0
-                }
-            ],
-            "reverse": true
-        },
-        {
-            "pos": [
-                100,
-                475
-            ],
             "reverse": true,
             "path_to_next": {
                 "use_path": true,
                 "control_points": [
                     [
-                        100,
-                        475
+                        100.0,
+                        430.0
                     ],
                     [
-                        200,
-                        285
+                        112,
+                        479
                     ],
                     [
-                        100,
-                        100
+                        222,
+                        460
+                    ],
+                    [
+                        167,
+                        197
+                    ],
+                    [
+                        104,
+                        131
+                    ],
+                    [
+                        99.99999999999999,
+                        54.16666666666667
                     ]
                 ]
-            }
-        },
-        {
-            "pos": [
-                100,
-                100
-            ],
-            "offset": 0,
-            "reshape_toggle": true
+            },
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ]
         },
         {
             "pos": [
                 100,
                 0
             ],
+            "reverse": true,
             "offset": 2,
+            "offset_ghost_angle": 270.0,
             "actions": [
                 {
                     "type": "wait",
                     "s": 4.0
                 }
-            ],
-            "reverse": true
+            ]
         },
         {
             "pos": [
                 100,
-                125
+                200
             ],
-            "reshape_toggle": true,
-            "reverse": true
+            "reverse": true,
+            "offset": 1,
+            "path_to_next": {
+                "control_points": [],
+                "use_path": false
+            },
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ]
         },
         {
             "pos": [
                 100.0,
-                199.0
-            ],
-            "offset": 1,
-            "actions": [
-                {
-                    "type": "wait",
-                    "s": 3.0
-                }
-            ],
-            "reverse": true
+                135.0
+            ]
         },
         {
             "pos": [
-                100,
-                147
-            ],
-            "path_to_next": {
-                "use_path": false,
-                "control_points": []
-            },
-            "reverse": true
-        },
-        {
-            "pos": [
-                500,
-                100
-            ],
-            "reshape_toggle": true
-        },
-        {
-            "pos": [
-                500,
-                0
-            ],
-            "offset": 2,
-            "actions": [
-                {
-                    "type": "wait",
-                    "s": 4.0
-                }
-            ],
-            "reverse": true
-        },
-        {
-            "pos": [
-                500,
-                125
-            ],
-            "offset": 0,
-            "reverse": true,
-            "reshape_toggle": true
-        },
-        {
-            "pos": [
-                500.0,
-                198.0
-            ],
-            "offset": 1,
-            "actions": [
-                {
-                    "type": "wait",
-                    "s": 3.0
-                }
-            ],
-            "reverse": true
-        },
-        {
-            "pos": [
-                500,
-                150
+                200,
+                200
             ],
             "reverse": true,
-            "path_to_next": {
-                "use_path": true,
-                "control_points": [
-                    [
-                        500,
-                        150
-                    ],
-                    [
-                        551,
-                        177
-                    ],
-                    [
-                        547,
-                        429
-                    ],
-                    [
-                        500,
-                        500
-                    ]
-                ]
-            }
-        },
-        {
-            "pos": [
-                500,
-                500
-            ],
-            "reshape_toggle": true
-        },
-        {
-            "pos": [
-                500,
-                600
-            ],
-            "offset": 2,
-            "actions": [
-                {
-                    "type": "wait",
-                    "s": 4.0
-                }
-            ],
-            "reverse": true
-        },
-        {
-            "pos": [
-                500,
-                475
-            ],
-            "reverse": true,
-            "reshape_toggle": true
-        },
-        {
-            "pos": [
-                500.0,
-                402.0
-            ],
-            "offset": 1,
-            "actions": [
-                {
-                    "type": "wait",
-                    "s": 3.0
-                }
-            ],
-            "reverse": true
-        },
-        {
-            "pos": [
-                500,
-                450
-            ],
-            "reverse": true,
-            "reshape_toggle": true
-        },
-        {
-            "pos": [
-                400,
-                400
-            ],
             "actions": [
                 {
                     "type": "wait",
                     "s": 2.0
-                },
-                {
-                    "type": "reshape"
                 }
             ]
         },
         {
             "pos": [
-                335.5,
-                335.5
+                266.0,
+                266.0
             ],
             "offset": 1,
+            "path_to_next": {
+                "use_path": true,
+                "control_points": [
+                    [
+                        244.78679656440357,
+                        244.78679656440357
+                    ],
+                    [
+                        214,
+                        200
+                    ],
+                    [
+                        301,
+                        155
+                    ],
+                    [
+                        401,
+                        190
+                    ],
+                    [
+                        495,
+                        134
+                    ],
+                    [
+                        500.0,
+                        56.16666666666667
+                    ]
+                ]
+            },
+            "reverse": true,
             "actions": [
                 {
                     "type": "wait",
                     "s": 3.0
                 }
-            ],
-            "reverse": true
+            ]
         },
         {
             "pos": [
-                375,
-                375
+                500,
+                2
             ],
-            "offset": 0,
+            "offset": 2,
+            "reverse": true,
+            "offset_ghost_angle": 270.0,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ]
+        },
+        {
+            "pos": [
+                500,
+                200
+            ],
+            "offset": 1,
             "reverse": true,
             "path_to_next": {
                 "use_path": true,
                 "control_points": [
                     [
-                        375,
-                        375
+                        500.0,
+                        170.0
                     ],
                     [
-                        302,
-                        401
+                        496,
+                        122
+                    ],
+                    [
+                        451,
+                        91
+                    ],
+                    [
+                        376,
+                        157
+                    ],
+                    [
+                        417,
+                        400
+                    ],
+                    [
+                        494,
+                        467
+                    ],
+                    [
+                        500.0,
+                        541.8333333333334
+                    ]
+                ]
+            },
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                }
+            ]
+        },
+        {
+            "pos": [
+                500,
+                596
+            ],
+            "offset": 2,
+            "offset_ghost_angle": 90.0,
+            "reverse": true,
+            "reshape_toggle": false,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 4.0
+                },
+                {
+                    "type": "reshape"
+                }
+            ],
+            "path_to_next": {
+                "use_path": true,
+                "control_points": [
+                    [
+                        500.0,
+                        541.8333333333334
+                    ],
+                    [
+                        478,
+                        478
+                    ],
+                    [
+                        401,
+                        452
                     ],
                     [
                         300,
-                        554
+                        450
                     ]
                 ]
             }
@@ -340,9 +293,15 @@
         {
             "pos": [
                 300,
-                554
+                450
             ],
-            "offset": 0
+            "reverse": true
+        },
+        {
+            "pos": [
+                300,
+                561
+            ]
         }
     ]
 }
