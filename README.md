@@ -27,7 +27,7 @@ python main.py
 ```
 
 ## Update
-In Terminal directoryL
+In Terminal directory
 ```bash
 git fetch origin
 git pull --rebase origin main
