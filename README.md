@@ -26,4 +26,11 @@ Start the simulation with:
 python main.py
 ```
 
+## Update
+In Terminal directoryL
+```bash
+git fetch origin
+git pull --rebase origin main
+```
+
 For bug reporting or assistance, contact Austin/Ozzy of 15800A through most public VEX servers. (Feel free to mention this program in your notebook or interview, that would be much appreciated.)
