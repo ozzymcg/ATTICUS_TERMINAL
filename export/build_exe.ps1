@@ -5,21 +5,32 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Get-PythonCmd {
-    $py = Get-Command py -ErrorAction SilentlyContinue
-    if ($py) { return @("py", "-3") }
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) { return @("python") }
+    $candidates = @(
+        @("py", "-3"),
+        @("py"),
+        @("python"),
+        @("python3")
+    )
+    foreach ($cand in $candidates) {
+        $cmd = Get-Command $cand[0] -ErrorAction SilentlyContinue
+        if ($cmd) {
+            return ,@($cmd.Path) + $cand[1..($cand.Length - 1)]
+        }
+    }
     throw "Python 3.8+ not found. Install from https://www.python.org/downloads/ then re-run."
 }
 
 $root = Split-Path -Parent $PSScriptRoot  # project root
 $venvPath = Join-Path $root ".venv"
 $pythonCmd = Get-PythonCmd
+$pyBin = $pythonCmd[0]
+$pyArgs = @()
+if ($pythonCmd.Length -gt 1) { $pyArgs = $pythonCmd[1..($pythonCmd.Length - 1)] }
 
 # Create venv if missing or if -Force is passed
 if ($Force -or -not (Test-Path $venvPath)) {
     Write-Host "Creating venv at $venvPath" -ForegroundColor Cyan
-    & $pythonCmd "-m" "venv" $venvPath
+    & $pyBin @pyArgs "-m" "venv" $venvPath
 }
 
 $venvPy = Join-Path $venvPath "Scripts/python.exe"
