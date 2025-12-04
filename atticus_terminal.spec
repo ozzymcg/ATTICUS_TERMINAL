@@ -3,12 +3,14 @@
 PyInstaller spec for Atticus Terminal.
 Bundles config JSONs and icon so a one-click build works.
 """
-import os
+import os, sys
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-project_root = os.path.abspath(os.path.dirname(__file__))
+# Some PyInstaller entry modes don't populate __file__; fall back to argv[0].
+spec_path = os.path.abspath(sys.argv[0])
+project_root = os.path.abspath(os.path.dirname(spec_path))
 
 # data files to ship alongside the exe
 _datas = [
@@ -18,7 +20,7 @@ _datas = [
     (os.path.join(project_root, "mod", "config.json"), "mod"),
 ]
 
-# collect all modules inside mod/* so PyInstaller doesn’t miss anything
+# collect all modules inside mod/* so PyInstaller doesn't miss anything
 _hidden = collect_submodules("mod")
 
 a = Analysis(
