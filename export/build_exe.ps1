@@ -41,6 +41,12 @@ Write-Host "Upgrading pip and installing requirements..." -ForegroundColor Cyan
 # Install app deps + PyInstaller and Pillow (PNG -> ICO conversion)
 & $venvPy "-m" "pip" "install" "-r" (Join-Path $root "requirements.txt") "pyinstaller" "pillow"
 
+# Clean old build/dist artifacts so we only get one fresh output
+$distPath = Join-Path $root "dist"
+$buildPath = Join-Path $root "build"
+if (Test-Path $distPath) { Remove-Item $distPath -Recurse -Force -ErrorAction SilentlyContinue }
+if (Test-Path $buildPath) { Remove-Item $buildPath -Recurse -Force -ErrorAction SilentlyContinue }
+
 Write-Host "Building executable with PyInstaller..." -ForegroundColor Cyan
 Push-Location $root
 & $venvPy "-m" "PyInstaller" "atticus_terminal.spec" "--noconfirm"
@@ -49,3 +55,11 @@ Pop-Location
 $exePath = Join-Path $root "dist/AtticusTerminal/AtticusTerminal.exe"
 Write-Host "Build complete!" -ForegroundColor Green
 Write-Host "You can run the EXE at:`n  $exePath" -ForegroundColor Green
+
+# Auto-launch the freshly built EXE if it exists
+if (Test-Path $exePath) {
+    Write-Host "Launching AtticusTerminal..." -ForegroundColor Cyan
+    Start-Process $exePath
+} else {
+    Write-Warning "Expected EXE not found at $exePath"
+}
