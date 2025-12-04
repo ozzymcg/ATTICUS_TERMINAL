@@ -38,7 +38,8 @@ if (-not (Test-Path $venvPy)) { throw "Virtual env python not found: $venvPy" }
 
 Write-Host "Upgrading pip and installing requirements..." -ForegroundColor Cyan
 & $venvPy "-m" "pip" "install" "--upgrade" "pip"
-& $venvPy "-m" "pip" "install" "-r" (Join-Path $root "requirements.txt") "pyinstaller"
+# Install app deps + PyInstaller and Pillow (PNG -> ICO conversion)
+& $venvPy "-m" "pip" "install" "-r" (Join-Path $root "requirements.txt") "pyinstaller" "pillow"
 
 Write-Host "Building executable with PyInstaller..." -ForegroundColor Cyan
 Push-Location $root
