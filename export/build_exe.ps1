@@ -52,14 +52,18 @@ Push-Location $root
 & $venvPy "-m" "PyInstaller" "atticus_terminal.spec" "--noconfirm"
 Pop-Location
 
-$exePath = Join-Path $root "dist/AtticusTerminal/AtticusTerminal.exe"
-Write-Host "Build complete!" -ForegroundColor Green
-Write-Host "You can run the EXE at:`n  $exePath" -ForegroundColor Green
+$builtExe = Join-Path $root "dist/AtticusTerminal.exe"
+$finalExe = Join-Path $root "AtticusTerminal.exe"
 
-# Auto-launch the freshly built EXE if it exists
-if (Test-Path $exePath) {
+if (Test-Path $builtExe) {
+    # Move the single exe to the project root
+    if (Test-Path $finalExe) { Remove-Item $finalExe -Force -ErrorAction SilentlyContinue }
+    Move-Item $builtExe $finalExe -Force
+    # Remove the now-empty dist folder
+    if (Test-Path $distPath) { Remove-Item $distPath -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-Host "Build complete! EXE is at:`n  $finalExe" -ForegroundColor Green
     Write-Host "Launching AtticusTerminal..." -ForegroundColor Cyan
-    Start-Process $exePath
+    Start-Process $finalExe
 } else {
-    Write-Warning "Expected EXE not found at $exePath"
+    Write-Warning "Expected EXE not found at $builtExe"
 }

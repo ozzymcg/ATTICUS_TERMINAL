@@ -56,13 +56,3 @@ exe = EXE(
     console=False,
     icon=os.path.join(project_root, "ATTICUS.png"),
 )
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='AtticusTerminal',
-)
