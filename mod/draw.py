@@ -229,7 +229,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
     """Draw hover info for node."""
     lines = []
     if idx == 0:
-        disp = convert_heading_input(initial_heading, cfg['plane_mode'])
+        disp = convert_heading_input(initial_heading, None)
         lines.append(f"Initial heading {disp:.3f}°")
     else:
         off = int(node.get("offset", 0))
@@ -242,7 +242,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
     
     for act in node.get("actions", []):
         if act["type"] == "turn":
-            disp = convert_heading_input(act.get("deg", 0.0), cfg["plane_mode"])
+            disp = convert_heading_input(act.get("deg", 0.0), None)
             lines.append(f"Turn to {disp:g}°")
         elif act["type"] == "wait":
             lines.append(f"Wait {act.get('s', 0):g}s")
@@ -403,6 +403,23 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
             return None
         return calculate_path_heading(pts, len(pts) - 1)
     
+    def _shrink_poly(poly, inset_px=1.0):
+        """Shrink polygon toward centroid to ignore stroke outlines."""
+        if not poly or inset_px <= 0:
+            return poly
+        cx = sum(p[0] for p in poly) / len(poly)
+        cy = sum(p[1] for p in poly) / len(poly)
+        shrunk = []
+        for (x, y) in poly:
+            dx, dy = x - cx, y - cy
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist <= 1e-6:
+                shrunk.append((x, y))
+                continue
+            scale = max(0.0, (dist - inset_px) / dist)
+            shrunk.append((cx + dx * scale, cy + dy * scale))
+        return shrunk
+
     for i, node in enumerate(nodes):
         # Compute outgoing heading (path-aware) from this node, if any
         outgoing_h = None
@@ -442,7 +459,7 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
             for act in node.get("actions_out", node.get("actions", [])):
                 if act.get("type") == "turn":
                     tgt = float(act.get("deg", eff_heading))
-                    eff_heading = interpret_input_angle(tgt, cfg.get("plane_mode", 1))
+                    eff_heading = interpret_input_angle(tgt)
         except Exception:
             pass
 
@@ -470,7 +487,8 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
             off_y = bd.get("full_offset_y_in", 0.0)
         
         corners = oriented_rect_corners_px(eff[i], eff_heading, full_w, full_l, off_x, off_y)
-        is_oob = rect_oob(corners, pad_px, WINDOW_WIDTH, WINDOW_HEIGHT)
+        corners_inner = _shrink_poly(corners, inset_px=1.0)
+        is_oob = rect_oob(corners_inner, pad_px, WINDOW_WIDTH, WINDOW_HEIGHT)
         
         # Check field object collisions
         try:
@@ -478,7 +496,8 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
                 for _name, _poly in get_field_object_polys(cfg):
                     if _name in ('park_zone', 'matchloader'):
                         continue
-                    if polygons_intersect(corners, _poly):
+                    poly_inner = _shrink_poly(_poly, inset_px=1.0)
+                    if polygons_intersect(corners_inner, poly_inner):
                         is_oob = True
                         break
         except Exception:
@@ -505,7 +524,24 @@ def draw_follow_geometry(surface, cfg, pos_px, heading_deg, reshape_state_live):
         off_y = bd.get("full_offset_y_in", 0.0)
     
     g_corners = oriented_rect_corners_px(pos_px, heading_deg, gw, gl, off_x, off_y)
-    g_oob = rect_oob(g_corners, pad_px, WINDOW_WIDTH, WINDOW_HEIGHT)
+    # Shrink for OOB/object checks to ignore stroke outlines
+    def _shrink_poly(poly, inset_px=1.0):
+        if not poly or inset_px <= 0:
+            return poly
+        cx = sum(p[0] for p in poly) / len(poly)
+        cy = sum(p[1] for p in poly) / len(poly)
+        shrunk = []
+        for (x, y) in poly:
+            dx, dy = x - cx, y - cy
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist <= 1e-6:
+                shrunk.append((x, y))
+                continue
+            scale = max(0.0, (dist - inset_px) / dist)
+            shrunk.append((cx + dx * scale, cy + dy * scale))
+        return shrunk
+    g_corners_inner = _shrink_poly(g_corners, inset_px=1.0)
+    g_oob = rect_oob(g_corners_inner, pad_px, WINDOW_WIDTH, WINDOW_HEIGHT)
     
     # Check collisions
     try:
@@ -513,7 +549,8 @@ def draw_follow_geometry(surface, cfg, pos_px, heading_deg, reshape_state_live):
             for _name, _poly in get_field_object_polys(cfg):
                 if _name in ('park_zone', 'matchloader'):
                     continue
-                if polygons_intersect(g_corners, _poly):
+                poly_inner = _shrink_poly(_poly, inset_px=1.0)
+                if polygons_intersect(g_corners_inner, poly_inner):
                     g_oob = True
                     break
     except Exception:

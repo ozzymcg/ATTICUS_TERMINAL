@@ -147,10 +147,10 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     if pose_heading_internal is None:
         # Fallback to config initial heading
         try:
-            pose_heading_internal = interpret_input_angle(float(cfg.get("initial_heading_deg", 0.0) or 0.0), cfg.get("plane_mode", 1))
+            pose_heading_internal = interpret_input_angle(float(cfg.get("initial_heading_deg", 0.0) or 0.0))
         except Exception:
             pose_heading_internal = float(cfg.get("initial_heading_deg", 0.0) or 0.0)
-    pose_heading_disp = convert_heading_input(pose_heading_internal, cfg.get("plane_mode", 1))
+    pose_heading_disp = convert_heading_input(pose_heading_internal, None)
     if style == "LemLib" and pose_pos is not None and "setpose" in tpls:
         x0_in, y0_in = field_coords_in(pose_pos)
         lines.append(f"chassis.setPose({x0_in:.6f}, {y0_in:.6f}, {pose_heading_disp:.6f});")
@@ -268,7 +268,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             x_in, y_in = field_coords_in(p1)
             dist_in, rotations, deg, ticks = dist_conversions(p0, p1, reverse=seg.get("reverse", False))
             facing_heading = seg.get("facing", seg.get("target_heading", 0.0))
-            face_disp = convert_heading_input(facing_heading, cfg.get("plane_mode", 1))
+            face_disp = convert_heading_input(facing_heading, None)
             tokens = dict(tokens_base)
             tokens.update({
                 "X_IN": round(x_in, 6), "Y_IN": round(y_in, 6),
@@ -286,8 +286,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         
         elif st == "face":
             role = seg.get("role")
-            h_disp = convert_heading_input(seg["target_heading"], cfg.get("plane_mode", 1))
-            delta_heading = convert_heading_input(seg["target_heading"] - seg.get("start_heading", 0.0), cfg.get("plane_mode", 1))
+            h_disp = convert_heading_input(seg["target_heading"], None)
+            delta_internal = ((seg["target_heading"] - seg.get("start_heading", 0.0) + 180.0) % 360.0) - 180.0
+            delta_heading = -delta_internal
             tokens = dict(tokens_base)
             tokens.update({
                 "HEADING_DEG": round(h_disp, 6),
@@ -401,9 +402,9 @@ def export_action_list(cfg, timeline, log_lines):
                 delta_ccw = (h1 - h0 + 360.0) % 360.0
                 if delta_ccw > 180.0:
                     delta_ccw -= 360.0
-                chosen = float(delta_ccw) if cfg.get("plane_mode", 0) == 0 else float(-delta_ccw)
-                dir_tag = "CCW" if cfg.get("plane_mode", 0) == 0 else "CW"
-                to_face_deg = convert_heading_input(h1, cfg.get('plane_mode', 0))
+                chosen = float(-delta_ccw)
+                dir_tag = "CCW" if chosen >= 0 else "CW"
+                to_face_deg = convert_heading_input(h1, None)
                 
                 if int(cfg.get("angle_units", 0)) == 1:
                     chosen_val = chosen * (math.pi/180.0)

@@ -1,10 +1,9 @@
 # mod/geom.py
 from __future__ import annotations
 
-def convert_heading_input(heading_deg, conventional_mode):
-    """Convert between unit circle and VEX heading conventions.
-    
-    conventional_mode=0: Unit circle (Right=0°, Up=90°)
-    conventional_mode=1: VEX standard (Up=0°, Right=90°)
+def convert_heading_input(heading_deg, _conventional_mode=None):
     """
-    return (90 - heading_deg) % 360 if conventional_mode else heading_deg
+    Convert internal (standard math frame, 0=right, CCW positive) to display
+    convention (0=left, 90=up, 180=right, 270=down).
+    """
+    return (180.0 - float(heading_deg)) % 360.0
