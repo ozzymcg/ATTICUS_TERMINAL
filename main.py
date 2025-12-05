@@ -8,7 +8,7 @@ if os.name == "nt" and not os.environ.get("SDL_VIDEODRIVER"):
 
 import pygame
 import tkinter as tk
-from tkinter import simpledialog, ttk, messagebox
+from tkinter import simpledialog, ttk, messagebox, filedialog
 
 from mod.config import (
     WINDOW_WIDTH, WINDOW_HEIGHT, GRID_SIZE_PX, BG_COLOR, PPI,
@@ -294,10 +294,16 @@ def reload_cfg():
     codegen_raw = raw.get("codegen", {})
     style_raw = codegen_raw.get("style", {"value": "Action List"})
     style_val = style_raw.get("value", "Action List") if isinstance(style_raw, dict) else (style_raw or "Action List")
+    path_dir_raw = codegen_raw.get("path_dir", {"value": "export/paths"})
+    if isinstance(path_dir_raw, dict):
+        path_dir_val = path_dir_raw.get("value", "export/paths")
+    else:
+        path_dir_val = path_dir_raw or "export/paths"
     codegen = {
         "style": style_val,
         "templates": codegen_raw.get("templates", {}),
         "opts": codegen_raw.get("opts", {}),
+        "path_dir": path_dir_val,
     }
     
     return {
@@ -305,7 +311,6 @@ def reload_cfg():
         "bot_dimensions": dims,
         "offsets": offsets_flat(raw),
         "ui": ui,
-        "plane_mode": _coerce_int_range(raw.get("plane_mode", 1), 1, (0, 1)),
         "field_centric": 1,
         "distance_units": _coerce_int_range(raw.get("distance_units", 0), 0, (0, 1, 2, 3)),
         "gear_ratio": _num(raw.get("gear_ratio", {"value": 1.0}), 1.0),
@@ -321,7 +326,7 @@ CFG = reload_cfg()
 initial_state = {"position": (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2), "heading": 0.0}
 try:
     saved_deg = float(CFG.get("initial_heading_deg", 0.0))
-    initial_state["heading"] = interpret_input_angle(saved_deg, CFG.get("plane_mode", 1))
+    initial_state["heading"] = interpret_input_angle(saved_deg)
 except Exception:
     initial_state["heading"] = 0.0
 
@@ -649,9 +654,9 @@ def log_action(kind, **kw):
         delta_ccw = (h1 - h0 + 360.0) % 360.0
         if delta_ccw > 180.0:
             delta_ccw -= 360.0
-        chosen = float(delta_ccw) if CFG.get("plane_mode", 0) == 0 else float(-delta_ccw)
-        dir_tag = "CCW" if CFG.get("plane_mode", 0) == 0 else "CW"
-        to_face_deg = convert_heading_input(h1, CFG.get('plane_mode', 0))
+        chosen = float(-delta_ccw)
+        dir_tag = "CCW" if chosen >= 0 else "CW"
+        to_face_deg = convert_heading_input(h1, None)
         if int(CFG.get("angle_units", 0)) == 1:
             chosen_val = chosen * (math.pi/180.0)
             to_face_val = to_face_deg * (math.pi/180.0)
@@ -870,7 +875,7 @@ def compile_cmd_string(node, idx):
     parts = []
     for act in node.get("actions", []):
         if act.get("type") == "turn":
-            disp = convert_heading_input(act.get("deg", 0.0), CFG["plane_mode"])
+            disp = convert_heading_input(act.get("deg", 0.0), None)
             parts.append(f"turn {disp:g}")
         elif act.get("type") == "wait":
             parts.append(f"wait {act.get('s', 0):g}")
@@ -897,7 +902,7 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         acts.append({"type": "wait", "s": x})
                 elif low.startswith(("turn", "t", "rotate")):
                     raw = float(low.split()[1].replace("deg", "").replace("°", ""))
-                    x_internal = interpret_input_angle(raw, CFG["plane_mode"])
+                    x_internal = interpret_input_angle(raw)
                     acts.append({"type": "turn", "deg": x_internal})
                 elif low.startswith("offset"):
                     if idx != 0 and int(node.get("offset", 0)) == 0:
@@ -984,7 +989,7 @@ def open_settings_window():
         CFG = reload_cfg()
         try:
             saved_deg = float(CFG.get("initial_heading_deg", 0.0))
-            initial_state["heading"] = interpret_input_angle(saved_deg, CFG.get("plane_mode", 1))
+            initial_state["heading"] = interpret_input_angle(saved_deg)
             robot_heading = initial_state["heading"]
         except Exception:
             pass
@@ -1014,19 +1019,17 @@ def open_settings_window():
         "controls": ttk.Frame(notebook),
         "general": ttk.Frame(notebook),
         "physics": ttk.Frame(notebook),
-        "dims": ttk.Frame(notebook),
-        "offsets": ttk.Frame(notebook),
+        "geometry": ttk.Frame(notebook),
         "codegen": ttk.Frame(notebook)
     }
     
     notebook.add(tabs["controls"], text="Controls")
     notebook.add(tabs["general"], text="General")
     notebook.add(tabs["physics"], text="Physics")
-    notebook.add(tabs["dims"], text="Dimensions")
-    notebook.add(tabs["offsets"], text="Offsets")
+    notebook.add(tabs["geometry"], text="Geometry")
     notebook.add(tabs["codegen"], text="Export")
     
-    for name in ("general", "physics", "dims", "offsets", "codegen"):
+    for name in ("general", "physics", "geometry", "codegen"):
         for c in range(2):
             tabs[name].columnconfigure(c, weight=1)
     
@@ -1072,14 +1075,6 @@ def open_settings_window():
         )
     
     # Dropdown mappings
-    plane_labels = ["Unit circle (Right=0°, Up=90°)", "Standard (Up=0°, Right=90°)"]
-    plane_map = {plane_labels[0]: 0, plane_labels[1]: 1}
-    plane_inv = {0: plane_labels[0], 1: plane_labels[1]}
-    
-    fc_labels = ["Field-centric (locked)"]
-    fc_map = {fc_labels[0]: 1}
-    fc_inv = {1: fc_labels[0]}
-    
     dist_labels = ["Inches", "Encoder degrees", "Encoder rotations", "Ticks"]
     dist_map = {dist_labels[0]: 0, dist_labels[1]: 1, dist_labels[2]: 2, dist_labels[3]: 3}
     dist_inv = {0: dist_labels[0], 1: dist_labels[1], 2: dist_labels[2], 3: dist_labels[3]}
@@ -1089,21 +1084,16 @@ def open_settings_window():
     ang_inv = {0: ang_labels[0], 1: ang_labels[1]}
     
     # Initialize UI variables from CFG
-    plane_value = int(CFG.get("plane_mode", 1))
-    plane_value = 1 if plane_value not in (0, 1) else plane_value
-    fc_value = 1
     dist_value = int(CFG.get("distance_units", 0))
     dist_value = 0 if dist_value not in (0, 1, 2, 3) else dist_value
     ang_value = int(CFG.get("angle_units", 0))
     ang_value = 0 if ang_value not in (0, 1) else ang_value
     
-    plane_var = tk.StringVar(value=plane_inv[plane_value])
-    fc_var = tk.StringVar(value=fc_inv[fc_value])
     dist_var = tk.StringVar(value=dist_inv[dist_value])
     ang_var = tk.StringVar(value=ang_inv[ang_value])
     
-    init_plane_val = convert_heading_input(initial_state["heading"], CFG["plane_mode"])
-    init_head = tk.StringVar(value=f"{init_plane_val:.3f}")
+    init_heading_disp = convert_heading_input(initial_state["heading"], None)
+    init_head = tk.StringVar(value=f"{init_heading_disp:.3f}")
     
     show_hitboxes_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_hitboxes", 1)))
     show_field_objects_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_field_objects", 1)))
@@ -1140,6 +1130,34 @@ def open_settings_window():
     off1 = tk.StringVar(value=str(off.get("offset_1_in", 0)))
     off2 = tk.StringVar(value=str(off.get("offset_2_in", 0)))
     pad = tk.StringVar(value=str(off.get("padding_in", 0)))
+    # Margin helpers (side margin = edge to track, back margin = rear edge to axle)
+    def _init_margins():
+        try:
+            _dw = float(dt_w.get()); _dl = float(dt_l.get())
+            _wf = float(w_full.get()); _lf = float(l_full.get())
+            _wr = float(rs_w.get()); _lr = float(rs_l.get())
+            _oy = float(full_off_y.get()); _ox = float(full_off_x.get())
+            _oy_r = float(rs_off_y.get()); _ox_r = float(rs_off_x.get())
+        except Exception:
+            _dw = _dl = _wf = _lf = _wr = _lr = _oy = _ox = _oy_r = _ox_r = 0.0
+        ml = max(0.0, _wf / 2.0 + _oy - _dw / 2.0)
+        mr = max(0.0, _wf / 2.0 - _oy - _dw / 2.0)
+        mb = max(0.0, _lf / 2.0 - _ox - _dl / 2.0)
+        mf = max(0.0, _lf / 2.0 + _ox - _dl / 2.0)
+        ml_r = max(0.0, _wr / 2.0 + _oy_r - _dw / 2.0)
+        mr_r = max(0.0, _wr / 2.0 - _oy_r - _dw / 2.0)
+        mb_r = max(0.0, _lr / 2.0 - _ox_r - _dl / 2.0)
+        mf_r = max(0.0, _lr / 2.0 + _ox_r - _dl / 2.0)
+        return (ml, mr, mb, mf, ml_r, mr_r, mb_r, mf_r)
+    (ml0, mr0, mb0, mf0, mlr0, mrr0, mbr0, mfr0) = _init_margins()
+    margin_left_var = tk.StringVar(value=f"{ml0:.3f}")
+    margin_right_var = tk.StringVar(value=f"{mr0:.3f}")
+    margin_back_var = tk.StringVar(value=f"{mb0:.3f}")
+    margin_front_var = tk.StringVar(value=f"{mf0:.3f}")
+    margin_left_r_var = tk.StringVar(value=f"{mlr0:.3f}")
+    margin_right_r_var = tk.StringVar(value=f"{mrr0:.3f}")
+    margin_back_r_var = tk.StringVar(value=f"{mbr0:.3f}")
+    margin_front_r_var = tk.StringVar(value=f"{mfr0:.3f}")
     
     def _row(parent, r, label, widget, tip):
         """Helper to create labeled row with tooltip."""
@@ -1150,13 +1168,701 @@ def open_settings_window():
         add_tooltip(widget, tip)
         track_live_widget(widget)
     
+    geometry_win = {"win": None}
+    def open_geometry_visualizer():
+        """Open a drag-to-edit geometry visualizer for drivetrain/full/reshape boxes."""
+        if geometry_win["win"] is not None and geometry_win["win"].winfo_exists():
+            geometry_win["win"].lift()
+            geometry_win["win"].focus_force()
+            return
+        
+        def _num(var, default=0.0):
+            try:
+                return float(var.get())
+            except Exception:
+                return float(default)
+        
+        win = tk.Toplevel(top)
+        geometry_win["win"] = win
+        win.title("Geometry Visualizer")
+        win.resizable(False, False)
+        
+        canvas_size = 320
+        frame = ttk.Frame(win, padding=4)
+        frame.pack(fill="both", expand=True)
+        canvas = tk.Canvas(frame, width=canvas_size, height=canvas_size, background="#f8f8f8",
+                           highlightthickness=1, highlightbackground="#cccccc")
+        canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        sidebar = ttk.Frame(frame)
+        sidebar.grid(row=0, column=1, sticky="nw")
+        bottom = ttk.Frame(frame)
+        bottom.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8,0))
+        for c in range(3):
+            bottom.columnconfigure(c, weight=0)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        
+        mode_var = tk.StringVar(value="normal")
+        ttk.Radiobutton(sidebar, text="Normal geometry", variable=mode_var, value="normal",
+                        command=lambda: (drag_state.update({"target": None}), _set_margin_mode(), draw())).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Radiobutton(sidebar, text="Reshape geometry", variable=mode_var, value="reshape",
+                        command=lambda: (drag_state.update({"target": None}), _set_margin_mode(), draw())).grid(row=1, column=0, sticky="w", pady=(0, 8))
+        
+        info_var = tk.StringVar(value="")
+        ttk.Label(sidebar, textvariable=info_var, foreground="#555555", wraplength=180, justify="left").grid(row=3, column=0, sticky="w", pady=(0, 6))
+        # Margin entry rows (asymmetric)
+        lbl_left = ttk.Label(sidebar, text="Left margin (edge→track):"); lbl_left.grid(row=4, column=0, sticky="w")
+        m_left_entry = ttk.Entry(sidebar, textvariable=margin_left_var, width=10); m_left_entry.grid(row=5, column=0, sticky="w", pady=(0, 4))
+        lbl_right = ttk.Label(sidebar, text="Right margin (edge→track):"); lbl_right.grid(row=6, column=0, sticky="w")
+        m_right_entry = ttk.Entry(sidebar, textvariable=margin_right_var, width=10); m_right_entry.grid(row=7, column=0, sticky="w", pady=(0, 6))
+        lbl_back = ttk.Label(sidebar, text="Back margin (rear→drive edge):"); lbl_back.grid(row=8, column=0, sticky="w")
+        m_back_entry = ttk.Entry(sidebar, textvariable=margin_back_var, width=10); m_back_entry.grid(row=9, column=0, sticky="w", pady=(0, 4))
+        lbl_front = ttk.Label(sidebar, text="Front margin (front→drive edge):"); lbl_front.grid(row=10, column=0, sticky="w")
+        m_front_entry = ttk.Entry(sidebar, textvariable=margin_front_var, width=10); m_front_entry.grid(row=11, column=0, sticky="w", pady=(0, 8))
+        lbl_lr_r = ttk.Label(sidebar, text="Reshape left/right margins:"); lbl_lr_r.grid(row=12, column=0, sticky="w")
+        m_left_r_entry = ttk.Entry(sidebar, textvariable=margin_left_r_var, width=10); m_left_r_entry.grid(row=13, column=0, sticky="w", pady=(0, 2))
+        m_right_r_entry = ttk.Entry(sidebar, textvariable=margin_right_r_var, width=10); m_right_r_entry.grid(row=14, column=0, sticky="w", pady=(0, 6))
+        lbl_fb_r = ttk.Label(sidebar, text="Reshape back/front margins:"); lbl_fb_r.grid(row=15, column=0, sticky="w")
+        m_back_r_entry = ttk.Entry(sidebar, textvariable=margin_back_r_var, width=10); m_back_r_entry.grid(row=16, column=0, sticky="w", pady=(0, 2))
+        m_front_r_entry = ttk.Entry(sidebar, textvariable=margin_front_r_var, width=10); m_front_r_entry.grid(row=17, column=0, sticky="w", pady=(0, 8))
+        def _apply_margins():
+            """Apply margin inputs to dimensions (asymmetric, center derived)."""
+            def _parse(var, default=0.0):
+                try:
+                    return float(var.get())
+                except Exception:
+                    return float(default)
+            ml = _parse(margin_left_var); mr = _parse(margin_right_var)
+            mb = _parse(margin_back_var); mf = _parse(margin_front_var)
+            mlr = _parse(margin_left_r_var); mrr = _parse(margin_right_r_var)
+            mbr = _parse(margin_back_r_var); mfr = _parse(margin_front_r_var)
+            last_margin = getattr(_apply_margins, "_last", {"mode": mode_var.get(), "name": None})
+            def adjust_pair(avail, first, second, name_first, name_second, mode_tag):
+                """Ensure pair sums to avail; preserve the last-changed margin if in this pair."""
+                changed = None
+                if last_margin.get("mode") == mode_tag and last_margin.get("name") in (name_first, name_second):
+                    changed = last_margin["name"]
+                # Default to first if unknown
+                if changed == name_second:
+                    new_second = min(second, avail)
+                    new_first = max(0.0, avail - new_second)
+                else:
+                    new_first = min(first, avail)
+                    new_second = max(0.0, avail - new_first)
+                return new_first, new_second
+            try:
+                dw = float(dt_w.get()); dl = float(dt_l.get())
+                ow = float(w_full.get()); ol = float(l_full.get())
+                rw = float(rs_w.get()); rl = float(rs_l.get())
+            except Exception:
+                dw = dl = ow = ol = rw = rl = 0.0
+            # Adjust normal margins to occupy available space; favor last changed counterpart
+            avail_w = max(0.0, ow - dw)
+            ml, mr = adjust_pair(avail_w, ml, mr, "left", "right", "normal")
+            avail_l = max(0.0, ol - dl)
+            mb, mf = adjust_pair(avail_l, mb, mf, "back", "front", "normal")
+            # Adjust reshape margins
+            avail_w_r = max(0.0, rw - dw)
+            mlr, mrr = adjust_pair(avail_w_r, mlr, mrr, "left_r", "right_r", "reshape")
+            avail_l_r = max(0.0, rl - dl)
+            mbr, mfr = adjust_pair(avail_l_r, mbr, mfr, "back_r", "front_r", "reshape")
+            # Normal geometry from asymmetric margins
+            w_full.set(f"{max(MIN_SIZE, dw + ml + mr):.3f}")
+            l_full.set(f"{max(MIN_SIZE, dl + mb + mf):.3f}")
+            full_off_y.set(f"{((ml - mr) / 2.0):.3f}")
+            full_off_x.set(f"{((mf - mb) / 2.0):.3f}")
+            # Reshape geometry from asymmetric margins
+            rs_w.set(f"{max(MIN_SIZE, dw + mlr + mrr):.3f}")
+            rs_l.set(f"{max(MIN_SIZE, dl + mbr + mfr):.3f}")
+            rs_off_y.set(f"{((mlr - mrr) / 2.0):.3f}")
+            rs_off_x.set(f"{((mfr - mbr) / 2.0):.3f}")
+            margin_left_var.set(f"{ml:.3f}"); margin_right_var.set(f"{mr:.3f}")
+            margin_back_var.set(f"{mb:.3f}"); margin_front_var.set(f"{mf:.3f}")
+            margin_left_r_var.set(f"{mlr:.3f}"); margin_right_r_var.set(f"{mrr:.3f}")
+            margin_back_r_var.set(f"{mbr:.3f}"); margin_front_r_var.set(f"{mfr:.3f}")
+            draw()
+        # Track last-edited margin to decide counterpart compensation
+        def _mark_margin(name, mode_tag):
+            _apply_margins._last = {"mode": mode_tag, "name": name}
+        _apply_margins._last = {"mode": None, "name": None}
+        ttk.Button(sidebar, text="Apply margins", command=_apply_margins).grid(row=18, column=0, sticky="w", pady=(0, 10))
+        
+        normal_margin_widgets = [lbl_left, m_left_entry, lbl_right, m_right_entry, lbl_back, m_back_entry, lbl_front, m_front_entry]
+        reshape_margin_widgets = [lbl_lr_r, m_left_r_entry, m_right_r_entry, lbl_fb_r, m_back_r_entry, m_front_r_entry]
+        normal_grid = {w: w.grid_info() for w in normal_margin_widgets}
+        reshape_grid = {w: w.grid_info() for w in reshape_margin_widgets}
+        
+        def _current_margins(mode):
+            ow, ol, ox, oy = _outer_vals(mode)
+            dw, dl = _dt_vals()
+            ml = max(0.0, ow / 2.0 + oy - dw / 2.0)
+            mr = max(0.0, ow / 2.0 - oy - dw / 2.0)
+            mb = max(0.0, ol / 2.0 - ox - dl / 2.0)
+            mf = max(0.0, ol / 2.0 + ox - dl / 2.0)
+            return ml, mr, mb, mf
+        
+        def _sync_margin_vars(mode):
+            ml, mr, mb, mf = _current_margins(mode)
+            if mode == "reshape":
+                margin_left_r_var.set(f"{ml:.3f}")
+                margin_right_r_var.set(f"{mr:.3f}")
+                margin_back_r_var.set(f"{mb:.3f}")
+                margin_front_r_var.set(f"{mf:.3f}")
+            else:
+                margin_left_var.set(f"{ml:.3f}")
+                margin_right_var.set(f"{mr:.3f}")
+                margin_back_var.set(f"{mb:.3f}")
+                margin_front_var.set(f"{mf:.3f}")
+        
+        def _set_margin_mode():
+            mode = mode_var.get()
+            for w in normal_margin_widgets:
+                try:
+                    if mode == "normal":
+                        w.grid(**normal_grid[w])
+                    else:
+                        w.grid_remove()
+                except Exception:
+                    pass
+            for w in reshape_margin_widgets:
+                try:
+                    if mode == "reshape":
+                        w.grid(**reshape_grid[w])
+                    else:
+                        w.grid_remove()
+                except Exception:
+                    pass
+            _sync_margin_vars(mode)
+        
+        # Place dimension entries below editor to shorten sidebar
+        dim_sections = [
+            ("Drivetrain", [(dt_w, "Width (in)"), (dt_l, "Length (in)")]),
+            ("Full", [(w_full, "Width (in)"), (l_full, "Length (in)")]),
+            ("Reshape", [(rs_w, "Width (in)"), (rs_l, "Length (in)")]),
+        ]
+        row_b = 0
+        for col, (title, fields) in enumerate(dim_sections):
+            section = ttk.LabelFrame(bottom, text=title)
+            section.grid(row=0, column=col, padx=4, pady=4, sticky="nsew")
+            for r, (var, label_txt) in enumerate(fields):
+                ttk.Label(section, text=label_txt).grid(row=r*2, column=0, sticky="w", padx=4, pady=(2,0))
+                ttk.Entry(section, textvariable=var, width=10).grid(row=r*2+1, column=0, sticky="w", padx=4, pady=(0,4))
+            section.columnconfigure(0, weight=1)
+        
+        def _bind_redraw(widget):
+            widget.bind("<FocusOut>", lambda _e: draw())
+            widget.bind("<Return>", lambda _e: draw())
+        
+        redraw_targets = [
+            m_left_entry, m_right_entry, m_back_entry, m_front_entry,
+            m_left_r_entry, m_right_r_entry, m_back_r_entry, m_front_r_entry,
+        ]
+        margin_marks = {
+            m_left_entry: ("left", "normal"), m_right_entry: ("right", "normal"),
+            m_back_entry: ("back", "normal"), m_front_entry: ("front", "normal"),
+            m_left_r_entry: ("left_r", "reshape"), m_right_r_entry: ("right_r", "reshape"),
+            m_back_r_entry: ("back_r", "reshape"), m_front_r_entry: ("front_r", "reshape"),
+        }
+        for section in bottom.winfo_children():
+            for child in section.winfo_children():
+                try:
+                    if isinstance(child, ttk.Entry):
+                        redraw_targets.append(child)
+                except Exception:
+                    pass
+        
+        for w in redraw_targets:
+            try:
+                _bind_redraw(w)
+                if w in margin_marks:
+                    name, mode_tag = margin_marks[w]
+                    w.bind("<FocusIn>", lambda _e, n=name, m=mode_tag: _mark_margin(n, m))
+                    w.bind("<KeyRelease>", lambda _e, n=name, m=mode_tag: (_mark_margin(n, m), _apply_margins()))
+            except Exception:
+                pass
+        
+        handles = []
+        vis_state = {"scale": 1.0, "outer_c": (canvas_size/2, canvas_size/2), "base_c": (canvas_size/2, canvas_size/2)}
+        drag_state = {"target": None}
+        MIN_SIZE = 1.0
+        STEP_IN = 1.0  # inch grid step
+        
+        def _outer_vals(active_mode=None):
+            m = active_mode or mode_var.get()
+            if m == "reshape":
+                return (_num(rs_w, 0), _num(rs_l, 0), _num(rs_off_x, 0), _num(rs_off_y, 0))
+            return (_num(w_full, 0), _num(l_full, 0), _num(full_off_x, 0), _num(full_off_y, 0))
+        
+        def _set_outer(w=None, l=None, offx=None, offy=None, active_mode=None):
+            m = active_mode or mode_var.get()
+            tgt_w, tgt_l, tgt_ox, tgt_oy = _outer_vals(m)
+            tgt_w = w if w is not None else tgt_w
+            tgt_l = l if l is not None else tgt_l
+            tgt_ox = 0.0 if offx is None else offx
+            tgt_oy = 0.0 if offy is None else offy
+            tgt_w = max(MIN_SIZE, tgt_w)
+            tgt_l = max(MIN_SIZE, tgt_l)
+            if m == "reshape":
+                rs_w.set(f"{tgt_w:.3f}")
+                rs_l.set(f"{tgt_l:.3f}")
+                rs_off_x.set(f"{tgt_ox:.3f}")
+                rs_off_y.set(f"{tgt_oy:.3f}")
+                try:
+                    ms = max(0.0, (tgt_w - _num(dt_w, tgt_w)) / 2.0)
+                    mb = max(0.0, tgt_l / 2.0)
+                    margin_side_r_var.set(f"{ms:.3f}")
+                    margin_back_r_var.set(f"{mb:.3f}")
+                except Exception:
+                    pass
+            else:
+                w_full.set(f"{tgt_w:.3f}")
+                l_full.set(f"{tgt_l:.3f}")
+                full_off_x.set(f"{tgt_ox:.3f}")
+                full_off_y.set(f"{tgt_oy:.3f}")
+                try:
+                    ms = max(0.0, (tgt_w - _num(dt_w, tgt_w)) / 2.0)
+                    mb = max(0.0, tgt_l / 2.0)
+                    margin_side_var.set(f"{ms:.3f}")
+                    margin_back_var.set(f"{mb:.3f}")
+                except Exception:
+                    pass
+        
+        def _dt_vals():
+            return (_num(dt_w, 0), _num(dt_l, 0))
+        
+        def _set_dt(w=None, l=None):
+            cur_w, cur_l = _dt_vals()
+            cur_w = w if w is not None else cur_w
+            cur_l = l if l is not None else cur_l
+            dt_w.set(f"{max(MIN_SIZE, cur_w):.3f}")
+            dt_l.set(f"{max(MIN_SIZE, cur_l):.3f}")
+            try:
+                ms = max(0.0, (float(w_full.get()) - float(dt_w.get())) / 2.0)
+                margin_side_var.set(f"{ms:.3f}")
+                ms_r = max(0.0, (float(rs_w.get()) - float(dt_w.get())) / 2.0)
+                margin_side_r_var.set(f"{ms_r:.3f}")
+            except Exception:
+                pass
+        
+        def _extents():
+            ow, ol, ox, oy = _outer_vals("normal")
+            rw, rl, r_ox, r_oy = _outer_vals("reshape")
+            dw, dl = _dt_vals()
+            def span(w, l, offx, offy):
+                return (abs(offy) + w * 0.5, abs(offx) + l * 0.5)
+            sx = max(span(ow, ol, ox, oy)[0], span(rw, rl, r_ox, r_oy)[0], dw * 0.5)
+            sy = max(span(ow, ol, ox, oy)[1], span(rw, rl, r_ox, r_oy)[1], dl * 0.5)
+            return sx, sy
+        
+        def draw():
+            canvas.delete("all")
+            handles.clear()
+            base_cx = base_cy = canvas_size / 2
+            vis_state["base_c"] = (base_cx, base_cy)
+            sx, sy = _extents()
+            # Constrain view to a fixed 36x36 in window (matches field scale)
+            view_in = 36.0
+            scale = (canvas_size * 0.90) / view_in if view_in > 0 else 10.0
+            vis_state["scale"] = scale
+            
+            mode = mode_var.get()
+            ow, ol, ox, oy = _outer_vals(mode)
+            dw, dl = _dt_vals()
+            
+            outer_cx = base_cx - oy * scale
+            outer_cy = base_cy - ox * scale
+            vis_state["outer_c"] = (outer_cx, outer_cy)
+            
+            # Grid background (1 in spacing), 36x36 in region centered on canvas
+            spacing = max(2, int(round(scale)))
+            start = int(base_cx - (view_in/2.0)*scale)
+            end = int(base_cx + (view_in/2.0)*scale)
+            for gx in range(start, end + spacing, spacing):
+                fill = "#e8e8e8" if ((gx-start) // spacing) % 5 else "#d0d0d0"
+                canvas.create_line(gx, start, gx, end, fill=fill)
+            for gy in range(start, end + spacing, spacing):
+                fill = "#e8e8e8" if ((gy-start) // spacing) % 5 else "#d0d0d0"
+                canvas.create_line(start, gy, end, gy, fill=fill)
+            canvas.create_rectangle(start, start, end, end, outline="#cccccc")
+            canvas.create_oval(base_cx-4, base_cy-4, base_cx+4, base_cy+4, fill="#555555", outline="#222222")
+            
+            # Outer box
+            x0 = outer_cx - (ow * 0.5 * scale)
+            x1 = outer_cx + (ow * 0.5 * scale)
+            y0 = outer_cy - (ol * 0.5 * scale)
+            y1 = outer_cy + (ol * 0.5 * scale)
+            canvas.create_rectangle(x0, y0, x1, y1, outline="#3c6cc9", width=3, fill="#dfe9f7")
+            canvas.create_text((x0 + x1) / 2, y0 - 12, text=f"W: {ow:.2f} in", fill="#1f4b8f")
+            canvas.create_text(x1 + 50, (y0 + y1) / 2, text=f"L: {ol:.2f} in", angle=90, fill="#1f4b8f")
+            
+            # Drivetrain box (always at base center)
+            dx0 = base_cx - (dw * 0.5 * scale)
+            dx1 = base_cx + (dw * 0.5 * scale)
+            dy0 = base_cy - (dl * 0.5 * scale)
+            dy1 = base_cy + (dl * 0.5 * scale)
+            canvas.create_rectangle(dx0, dy0, dx1, dy1, outline="#666666", width=2, dash=(4,2), fill="")
+            canvas.create_text(dx0 - 40, (dy0 + dy1) / 2, text=f"Track {dw:.2f}", angle=90, fill="#444444")
+            
+            # Handles for outer
+            handle_color = "#2b5fad"
+            for (hx, hy, kind) in [
+                (x0, outer_cy, "outer_left"),
+                (x1, outer_cy, "outer_right"),
+                (outer_cx, y0, "outer_top"),
+                (outer_cx, y1, "outer_bottom"),
+            ]:
+                handles.append((hx, hy, kind))
+                canvas.create_oval(hx-6, hy-6, hx+6, hy+6, fill=handle_color, outline="#0f305f")
+            
+            # Handles for drivetrain
+            d_color = "#444444"
+            for (hx, hy, kind) in [
+                (dx0, base_cy, "drive_left"),
+                (dx1, base_cy, "drive_right"),
+                (base_cx, dy0, "drive_top"),
+                (base_cx, dy1, "drive_bottom"),
+            ]:
+                handles.append((hx, hy, kind))
+                canvas.create_rectangle(hx-5, hy-5, hx+5, hy+5, outline=d_color, fill="#e6e6e6")
+            
+            # Info label
+            margin_left = max(0.0, ow / 2.0 + oy - dw / 2.0)
+            margin_right = max(0.0, ow / 2.0 - oy - dw / 2.0)
+            margin_back = max(0.0, ol / 2.0 - ox - dl / 2.0)
+            margin_front = max(0.0, ol / 2.0 + ox - dl / 2.0)
+            _sync_margin_vars(mode)
+            info_var.set(f"Margins L/R: {margin_left:.3f} / {margin_right:.3f} in | Front/Back: {margin_front:.3f} / {margin_back:.3f} in")
+        
+        def _nearest_handle(x, y):
+            if not handles:
+                return None
+            best = None
+            best_d2 = 1e9
+            for hx, hy, kind in handles:
+                d2 = (hx - x) ** 2 + (hy - y) ** 2
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = (hx, hy, kind)
+            if best_d2 <= 18**2:
+                return best
+            return None
+        
+        def _apply_drag(kind, event):
+            scale = vis_state["scale"]
+            base_cx, base_cy = vis_state["base_c"]
+            ocx, ocy = vis_state["outer_c"]
+            if scale <= 1e-6:
+                return
+            mode = mode_var.get()
+            ow, ol, ox, oy = _outer_vals(mode)
+            dw, dl = _dt_vals()
+            x, y = event.x, event.y
+            
+            if kind == "outer_left":
+                new_w = max(MIN_SIZE, 2.0 * max(0.1, (ocx - x) / scale))
+                new_w = round(new_w / STEP_IN) * STEP_IN
+                _set_outer(w=new_w, active_mode=mode)
+            elif kind == "outer_right":
+                new_w = max(MIN_SIZE, 2.0 * max(0.1, (x - ocx) / scale))
+                new_w = round(new_w / STEP_IN) * STEP_IN
+                _set_outer(w=new_w, active_mode=mode)
+            elif kind == "outer_top":
+                new_l = max(MIN_SIZE, 2.0 * max(0.1, (ocy - y) / scale))
+                new_l = round(new_l / STEP_IN) * STEP_IN
+                _set_outer(l=new_l, active_mode=mode)
+            elif kind == "outer_bottom":
+                new_l = max(MIN_SIZE, 2.0 * max(0.1, (y - ocy) / scale))
+                new_l = round(new_l / STEP_IN) * STEP_IN
+                _set_outer(l=new_l, active_mode=mode)
+            elif kind == "drive_left":
+                new_w = max(MIN_SIZE, 2.0 * max(0.1, (base_cx - x) / scale))
+                new_w = round(new_w / STEP_IN) * STEP_IN
+                _set_dt(w=new_w)
+            elif kind == "drive_right":
+                new_w = max(MIN_SIZE, 2.0 * max(0.1, (x - base_cx) / scale))
+                new_w = round(new_w / STEP_IN) * STEP_IN
+                _set_dt(w=new_w)
+            elif kind == "drive_top":
+                new_l = max(MIN_SIZE, 2.0 * max(0.1, (base_cy - y) / scale))
+                new_l = round(new_l / STEP_IN) * STEP_IN
+                _set_dt(l=new_l)
+            elif kind == "drive_bottom":
+                new_l = max(MIN_SIZE, 2.0 * max(0.1, (y - base_cy) / scale))
+                new_l = round(new_l / STEP_IN) * STEP_IN
+                _set_dt(l=new_l)
+            draw()
+        
+        def on_press(event):
+            hit = _nearest_handle(event.x, event.y)
+            drag_state["target"] = hit[2] if hit else None
+        
+        def on_motion(event):
+            if drag_state.get("target"):
+                _apply_drag(drag_state["target"], event)
+        
+        def on_release(_event):
+            drag_state["target"] = None
+        
+        canvas.bind("<Button-1>", on_press)
+        canvas.bind("<B1-Motion>", on_motion)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        
+        win.protocol("WM_DELETE_WINDOW", lambda: win.destroy())
+        _set_margin_mode()
+        draw()
+        # Ensure latest values persisted when closing
+        def _close_and_apply():
+            try:
+                _apply_margins()
+            except Exception:
+                pass
+            try:
+                on_update()
+            except Exception:
+                pass
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _close_and_apply)
+    
+    offset_win = {"win": None}
+    def open_offset_visualizer():
+        """Visual editor for offsets along drivetrain centerline."""
+        if offset_win["win"] is not None and offset_win["win"].winfo_exists():
+            offset_win["win"].lift()
+            offset_win["win"].focus_force()
+            return
+        
+        win = tk.Toplevel(top)
+        offset_win["win"] = win
+        win.title("Offset Visualizer")
+        win.resizable(False, False)
+        
+        canvas_size = 320
+        frame = ttk.Frame(win, padding=6)
+        frame.pack(fill="both", expand=True)
+        canvas = tk.Canvas(frame, width=canvas_size, height=canvas_size, background="#f8f8f8",
+                           highlightthickness=1, highlightbackground="#cccccc")
+        canvas.grid(row=0, column=0, rowspan=8, sticky="nsew", padx=(0, 10))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        
+        mode_var = tk.StringVar(value="normal")
+        normal_btn = ttk.Radiobutton(frame, text="Normal view", variable=mode_var, value="normal")
+        normal_btn.grid(row=0, column=1, sticky="w")
+        reshape_btn = ttk.Radiobutton(frame, text="Reshape view", variable=mode_var, value="reshape")
+        reshape_btn.grid(row=1, column=1, sticky="w", pady=(0,6))
+        
+        offset_sel = tk.StringVar(value="1")
+        ttk.Label(frame, text="Target offset:").grid(row=2, column=1, sticky="w")
+        sel_frame = ttk.Frame(frame)
+        sel_frame.grid(row=3, column=1, sticky="w", pady=(0,6))
+        off1_btn = ttk.Radiobutton(sel_frame, text="Offset 1", variable=offset_sel, value="1")
+        off1_btn.pack(side="left")
+        off2_btn = ttk.Radiobutton(sel_frame, text="Offset 2", variable=offset_sel, value="2")
+        off2_btn.pack(side="left", padx=(6,0))
+        custom_offset_var = tk.StringVar(value="0.0")
+        custom_btn = ttk.Radiobutton(sel_frame, text="Custom", variable=offset_sel, value="custom")
+        custom_btn.pack(side="left", padx=(6,0))
+        ttk.Entry(frame, textvariable=custom_offset_var, width=10).grid(row=4, column=1, sticky="w")
+        
+        val_label = ttk.Label(frame, text="Offset: 0.000 in")
+        val_label.grid(row=5, column=1, sticky="w", pady=(4,0))
+        ttk.Label(frame, text="Drag the node along the centerline.").grid(row=6, column=1, sticky="w")
+        reverse_var = tk.IntVar(value=0)
+        ttk.Checkbutton(frame, text="Reverse (mirror over centerline)", variable=reverse_var, command=lambda: draw()).grid(row=7, column=1, sticky="w", pady=(4,0))
+        
+        view_in = 36.0
+        scale = (canvas_size * 0.90) / view_in if view_in > 0 else 8.0
+        node_pos_px = [canvas_size/2, canvas_size/2]
+        
+        def _dims(mode):
+            try:
+                dw = float(dt_w.get()); dl = float(dt_l.get())
+            except Exception:
+                dw = dl = 0.0
+            if mode == "reshape":
+                try:
+                    ow = float(rs_w.get()); ol = float(rs_l.get())
+                    ox = float(rs_off_x.get()); oy = float(rs_off_y.get())
+                except Exception:
+                    ow = ol = ox = oy = 0.0
+            else:
+                try:
+                    ow = float(w_full.get()); ol = float(l_full.get())
+                    ox = float(full_off_x.get()); oy = float(full_off_y.get())
+                except Exception:
+                    ow = ol = ox = oy = 0.0
+            return dw, dl, ow, ol, ox, oy
+        
+        def _current_offset():
+            sel = offset_sel.get()
+            try:
+                if sel == "1":
+                    return float(off1.get())
+                if sel == "2":
+                    return float(off2.get())
+                return float(custom_offset_var.get())
+            except Exception:
+                return 0.0
+        
+        def _set_offset(val):
+            sel = offset_sel.get()
+            if sel == "1":
+                off1.set(f"{val:.3f}")
+            elif sel == "2":
+                off2.set(f"{val:.3f}")
+            else:
+                custom_offset_var.set(f"{val:.3f}")
+            val_label.config(text=f"Offset: {val:.3f} in")
+        
+        def draw():
+            canvas.delete("all")
+            mode = mode_var.get()
+            dw, dl, ow, ol, ox, oy = _dims(mode)
+            rev = bool(reverse_var.get())
+            # ensure visible defaults if inputs are empty/zero (match geometry editor)
+            try:
+                bd = CFG.get("bot_dimensions", {})
+            except Exception:
+                bd = {}
+            if dw <= 0.0:
+                dw = float(bd.get("dt_width", bd.get("width", 12.0)) or 12.0)
+            if dl <= 0.0:
+                dl = float(bd.get("dt_length", bd.get("length", 12.0)) or 12.0)
+            if ow <= 0.0:
+                ow = max(dw + 1.0, float(bd.get("width", dw + 2.0)) or (dw + 2.0))
+            if ol <= 0.0:
+                ol = max(dl + 1.0, float(bd.get("length", dl + 2.0)) or (dl + 2.0))
+            # Clamp offsets to keep robot visible in 36x36 view
+            max_off_y = max(0.0, (view_in / 2.0) - (ow / 2.0))
+            max_off_x = max(0.0, (view_in / 2.0) - (ol / 2.0))
+            oy = max(-max_off_y, min(max_off_y, oy))
+            ox = max(-max_off_x, min(max_off_x, ox))
+            base_cx = base_cy = canvas_size / 2
+            # grid
+            spacing = max(2, int(round(scale)))
+            start = max(0, int(base_cx - (view_in/2.0)*scale))
+            end = min(canvas_size, int(base_cx + (view_in/2.0)*scale))
+            for gx in range(start, end + spacing, spacing):
+                fill = "#e8e8e8" if ((gx-start) // spacing) % 5 else "#d0d0d0"
+                canvas.create_line(gx, start, gx, end, fill=fill)
+            for gy in range(start, end + spacing, spacing):
+                fill = "#e8e8e8" if ((gy-start) // spacing) % 5 else "#d0d0d0"
+                canvas.create_line(start, gy, end, gy, fill=fill)
+            canvas.create_rectangle(start, start, end, end, outline="#cccccc")
+            
+            outer_cx = base_cx - oy * scale
+            outer_cy = base_cy - ox * scale
+            if rev:
+                outer_cy = base_cy + ox * scale
+            # outer
+            x0 = outer_cx - (ow * 0.5 * scale)
+            x1 = outer_cx + (ow * 0.5 * scale)
+            y0 = outer_cy - (ol * 0.5 * scale)
+            y1 = outer_cy + (ol * 0.5 * scale)
+            canvas.create_rectangle(x0, y0, x1, y1, outline="#3c6cc9", width=2, fill="#e6eefb")
+            # drivetrain
+            dx0 = base_cx - (dw * 0.5 * scale)
+            dx1 = base_cx + (dw * 0.5 * scale)
+            dy0 = base_cy - (dl * 0.5 * scale)
+            dy1 = base_cy + (dl * 0.5 * scale)
+            if rev:
+                dy0, dy1 = base_cy - (dl * 0.5 * scale), base_cy + (dl * 0.5 * scale)
+            canvas.create_rectangle(dx0, dy0, dx1, dy1, outline="#444444", dash=(4,2), fill="#f7f7f7")
+            # node pos (offset always along drivetrain centerline; node not mirrored)
+            val = _current_offset()
+            node_pos_px[0] = base_cx
+            node_pos_px[1] = base_cy - val * scale
+            # clamp to view bounds
+            node_pos_px[1] = min(end, max(start, node_pos_px[1]))
+            canvas.create_line(base_cx, start, base_cx, end, fill="#bbbbbb", dash=(3,3))
+            canvas.create_oval(node_pos_px[0]-7, node_pos_px[1]-7, node_pos_px[0]+7, node_pos_px[1]+7, fill="#2b5fad", outline="#0f305f")
+            val_label.config(text=f"Offset: {val:.3f} in")
+        
+        normal_btn.config(command=draw)
+        reshape_btn.config(command=draw)
+        off1_btn.config(command=draw)
+        off2_btn.config(command=draw)
+        custom_btn.config(command=draw)
+        
+        def _on_drag(event):
+            base_cy = canvas_size / 2
+            val = (base_cy - event.y) / scale
+            # clamp to visible window
+            max_abs = view_in / 2.0
+            val = max(-max_abs, min(max_abs, val))
+            _set_offset(val)
+            draw()
+        
+        canvas.bind("<B1-Motion>", _on_drag)
+        canvas.bind("<Button-1>", _on_drag)
+        custom_offset_var.trace_add("write", lambda *_: draw())
+        
+        def _close_offset():
+            try:
+                on_update()
+            except Exception:
+                pass
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _close_offset)
+        draw()
+    
+    def _heading_for_node0_to1():
+        """Return heading from node 0 toward node 1, following the path tangent if present."""
+        if len(display_nodes) < 2:
+            return None
+        p0 = effective_node_pos(0)
+        p1 = effective_node_pos(1)
+        reverse = bool(display_nodes[0].get("reverse", False))
+    
+        path_pts = None
+    
+        # Prefer live-edited control points when editing the 0->1 segment
+        if path_edit_mode and path_edit_segment_idx == 0 and path_control_points:
+            cps = list(path_control_points)
+            if len(cps) >= 2:
+                cps[0] = p0
+                cps[-1] = p1
+                try:
+                    path_pts = generate_bezier_path(cps, num_samples=50)
+                except Exception:
+                    path_pts = cps
+        else:
+            pd = display_nodes[0].get("path_to_next", {})
+            if pd.get("use_path", False):
+                pts = pd.get("path_points") or []
+                if pts and len(pts) > 1:
+                    path_pts = list(pts)
+                    path_pts[0] = p0
+                    path_pts[-1] = p1
+                else:
+                    cps = list(pd.get("control_points") or [])
+                    if len(cps) >= 2:
+                        cps[0] = p0
+                        cps[-1] = p1
+                        try:
+                            path_pts = generate_bezier_path(cps, num_samples=50)
+                        except Exception:
+                            path_pts = cps
+    
+        if path_pts and len(path_pts) > 1:
+            try:
+                hdg = calculate_path_heading(path_pts, 0)
+            except Exception:
+                hdg = heading_from_points(path_pts[0], path_pts[1])
+        else:
+            hdg = heading_from_points(p0, p1)
+    
+        if reverse:
+            hdg = (hdg + 180.0) % 360.0
+        return hdg
+    
     def _flip_routine_horizontal():
         """Mirror routine horizontally."""
         global display_nodes, robot_pos, robot_heading, initial_state
         global undo_stack, last_snapshot, last_path_sig, total_estimate_s
         global moving, paused, show_chevron, timeline, seg_i, t_local, last_logged_seg, reshape_live
         
-        if not display_nodes: 
+        if not display_nodes:
             return
         
         prev = util_snapshot(display_nodes, robot_pos, robot_heading)
@@ -1194,10 +1900,16 @@ def open_settings_window():
         util_push_undo_prev(undo_stack, prev)
         last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
         last_path_sig = None
-        moving = False; paused = False; show_chevron = False
-        timeline.clear(); seg_i = 0; t_local = 0.0; last_logged_seg = -1; reshape_live = False
+        moving = False
+        paused = False
+        show_chevron = False
+        timeline.clear()
+        seg_i = 0
+        t_local = 0.0
+        last_logged_seg = -1
+        reshape_live = False
         total_estimate_s = compute_total_estimate_s()
-    
+        
     # Heading entry with Node 1 helper
     heading_frame = ttk.Frame(tabs["general"])
     heading_entry = ttk.Entry(heading_frame, textvariable=init_head, width=10)
@@ -1206,28 +1918,10 @@ def open_settings_window():
     def _heading_to_node1():
         auto_heading_node1_var.set(1)
         try:
-            # Prefer path-derived initial heading if path 0->1 exists
-            if len(display_nodes) >= 2:
-                p0 = effective_node_pos(0)
-                p1 = effective_node_pos(1)
-                pd = display_nodes[0].get("path_to_next", {})
-                if pd.get("use_path", False) and pd.get("control_points"):
-                    cps = list(pd["control_points"])
-                    if len(cps) >= 2:
-                        cps[0] = p0
-                        cps[-1] = p1
-                        # Use path tangent at start for initial heading
-                        hdg = heading_from_points(cps[0], cps[1])
-                        smooth = generate_bezier_path(cps, num_samples=50)
-                        if smooth and len(smooth) > 1:
-                            try:
-                                hdg = calculate_path_heading(smooth, 0)
-                            except Exception:
-                                hdg = heading_from_points(smooth[0], smooth[1])
-                        disp = convert_heading_input(hdg, CFG["plane_mode"])
-                        init_head.set(f"{disp:.3f}")
-                        on_update()
-                        return
+            hdg = _heading_for_node0_to1()
+            if hdg is not None:
+                disp = convert_heading_input(hdg, None)
+                init_head.set(f"{disp:.3f}")
             on_update()
         finally: 
             auto_heading_node1_var.set(0)
@@ -1236,14 +1930,12 @@ def open_settings_window():
     heading_node1_btn.pack(side="left", padx=(6, 0))
     
     # General tab rows
-    _row(tabs["general"], 0, "Plane mode:", ttk.Combobox(tabs["general"], textvariable=plane_var, values=plane_labels, state="readonly"), "Angle convention")
-    # Reference frame row removed (field-centric enforced)
-    _row(tabs["general"], 2, "Distance Units:", ttk.Combobox(tabs["general"], textvariable=dist_var, values=dist_labels, state="readonly"), "Output units")
-    _row(tabs["general"], 3, "Angle Units:", ttk.Combobox(tabs["general"], textvariable=ang_var, values=ang_labels, state="readonly"), "Angle units")
-    _row(tabs["general"], 4, "Initial heading (deg):", heading_frame, "Robot start heading")
-    _row(tabs["general"], 5, "Show node hitboxes:", ttk.Checkbutton(tabs["general"], variable=show_hitboxes_var), "Toggle geometry boxes")
-    _row(tabs["general"], 6, "Show field objects:", ttk.Checkbutton(tabs["general"], variable=show_field_objects_var), "Draw field objects")
-    _row(tabs["general"], 7, "Flip routine:", ttk.Button(tabs["general"], text="Flip", command=_flip_routine_horizontal), "Mirror horizontally")
+    _row(tabs["general"], 0, "Distance Units:", ttk.Combobox(tabs["general"], textvariable=dist_var, values=dist_labels, state="readonly"), "Output units")
+    _row(tabs["general"], 1, "Angle Units:", ttk.Combobox(tabs["general"], textvariable=ang_var, values=ang_labels, state="readonly"), "Angle units")
+    _row(tabs["general"], 2, "Initial heading (deg):", heading_frame, "Robot start heading")
+    _row(tabs["general"], 3, "Show node hitboxes:", ttk.Checkbutton(tabs["general"], variable=show_hitboxes_var), "Toggle geometry boxes")
+    _row(tabs["general"], 4, "Show field objects:", ttk.Checkbutton(tabs["general"], variable=show_field_objects_var), "Draw field objects")
+    _row(tabs["general"], 5, "Flip routine:", ttk.Button(tabs["general"], text="Flip", command=_flip_routine_horizontal), "Mirror horizontally")
     
     # Physics tab rows
     _row(tabs["physics"], 0, "Drive RPM:", ttk.Entry(tabs["physics"], textvariable=rpm_var), "Affects vmax and accel")
@@ -1270,21 +1962,11 @@ def open_settings_window():
     _row(tabs["physics"], 9, "Curvature gain:", curv_frame, "Higher = stronger slow-down in tight turns (live)")
     
     # Dimensions tab rows
-    _row(tabs["dims"], 0, "Drivetrain width (in):", ttk.Entry(tabs["dims"], textvariable=dt_w), "Track width")
-    _row(tabs["dims"], 1, "Drivetrain length (in):", ttk.Entry(tabs["dims"], textvariable=dt_l), "Wheelbase")
-    _row(tabs["dims"], 2, "Full width (in):", ttk.Entry(tabs["dims"], textvariable=w_full), "Robot width")
-    _row(tabs["dims"], 3, "Full length (in):", ttk.Entry(tabs["dims"], textvariable=l_full), "Robot length")
-    _row(tabs["dims"], 4, "Full offset X (in):", ttk.Entry(tabs["dims"], textvariable=full_off_x), "Forward offset")
-    _row(tabs["dims"], 5, "Full offset Y (in):", ttk.Entry(tabs["dims"], textvariable=full_off_y), "Left offset")
-    _row(tabs["dims"], 6, "Reshape width (in):", ttk.Entry(tabs["dims"], textvariable=rs_w), "Alt width")
-    _row(tabs["dims"], 7, "Reshape length (in):", ttk.Entry(tabs["dims"], textvariable=rs_l), "Alt length")
-    _row(tabs["dims"], 8, "Reshape offset X (in):", ttk.Entry(tabs["dims"], textvariable=rs_off_x), "Alt X offset")
-    _row(tabs["dims"], 9, "Reshape offset Y (in):", ttk.Entry(tabs["dims"], textvariable=rs_off_y), "Alt Y offset")
-    
-    # Offsets tab rows
-    _row(tabs["offsets"], 0, "Offset 1 (in):", ttk.Entry(tabs["offsets"], textvariable=off1), "First preset")
-    _row(tabs["offsets"], 1, "Offset 2 (in):", ttk.Entry(tabs["offsets"], textvariable=off2), "Second preset")
-    _row(tabs["offsets"], 2, "Wall padding (in):", ttk.Entry(tabs["offsets"], textvariable=pad), "Boundary margin")
+    _row(tabs["geometry"], 0, "Bot Geometry Visualizer:", ttk.Button(tabs["geometry"], text="Open visual editor", command=open_geometry_visualizer), "Drag-to-edit drivetrain and robot geometry, including reshape.")
+    _row(tabs["geometry"], 1, "Offset 1 (in):", ttk.Entry(tabs["geometry"], textvariable=off1), "First preset")
+    _row(tabs["geometry"], 2, "Offset 2 (in):", ttk.Entry(tabs["geometry"], textvariable=off2), "Second preset")
+    _row(tabs["geometry"], 3, "Wall padding (in):", ttk.Entry(tabs["geometry"], textvariable=pad), "Boundary margin")
+    _row(tabs["geometry"], 4, "Offset Visualizer:", ttk.Button(tabs["geometry"], text="Open offset editor", command=open_offset_visualizer), "Drag node along centerline to set offsets.")
     
     # Codegen tab (simplified - full implementation available if needed)
     # Replace the codegen tab section (around line 1100-1150) with this:
@@ -1339,7 +2021,8 @@ def open_settings_window():
             "ticks_per_rotation": 360,
             "pad_factor": 1.0,
             "min_timeout_s": 0.0
-        }
+        },
+        "path_dir": "export/paths"
     })
 
     # Initialize defaults for each style if not present
@@ -1362,6 +2045,19 @@ def open_settings_window():
     ticks_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("ticks_per_rotation", 360)))
     pad_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("pad_factor", 1.0)))
     min_s_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("min_timeout_s", 0.0)))
+    path_dir_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("path_dir", "export/paths")))
+
+    def _browse_path_dir():
+        """Let user choose output directory for path files."""
+        start_dir = path_dir_var.get() or os.getcwd()
+        chosen = filedialog.askdirectory(
+            parent=top,
+            initialdir=start_dir if os.path.isdir(start_dir) else os.getcwd(),
+            title="Select path export directory"
+        )
+        if chosen:
+            path_dir_var.set(chosen)
+            on_update()
 
     # Layout: Basic options first
     style_widget = ttk.Combobox(tabs["codegen"], textvariable=codegen_style_var, values=style_labels, state="readonly")
@@ -1372,9 +2068,39 @@ def open_settings_window():
     _row(tabs["codegen"], 2, "Min timeout (s):", 
         ttk.Entry(tabs["codegen"], textvariable=min_s_var), 
         "Minimum timeout in seconds.")
-    _row(tabs["codegen"], 3, "Ticks per rotation:", 
-        ttk.Entry(tabs["codegen"], textvariable=ticks_var), 
-        "Encoder ticks per wheel rotation for distance conversion.")
+    
+    ticks_label = ttk.Label(tabs["codegen"], text="Ticks per rotation:")
+    ticks_entry = ttk.Entry(tabs["codegen"], textvariable=ticks_var)
+    ticks_label.grid(row=3, column=0, sticky="w", padx=6, pady=4)
+    ticks_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=4)
+    add_tooltip(ticks_label, "Encoder ticks per wheel rotation for distance conversion.")
+    add_tooltip(ticks_entry, "Encoder ticks per wheel rotation for distance conversion.")
+    track_live_widget(ticks_entry)
+
+    path_dir_frame = ttk.Frame(tabs["codegen"])
+    path_dir_entry = ttk.Entry(path_dir_frame, textvariable=path_dir_var)
+    path_dir_entry.pack(side="left", fill="x", expand=True)
+    path_dir_btn = ttk.Button(path_dir_frame, text="Browse...", command=_browse_path_dir)
+    path_dir_btn.pack(side="left", padx=4)
+    _row(tabs["codegen"], 4, "Path export dir:", path_dir_frame, "Directory to save generated path files.")
+    add_tooltip(path_dir_btn, "Directory to save generated path files.")
+    track_live_widget(path_dir_entry)
+
+    def _refresh_ticks_visibility(*_):
+        show = dist_var.get() == dist_labels[3]
+        for w in (ticks_label, ticks_entry):
+            try:
+                if show:
+                    w.grid()
+                else:
+                    w.grid_remove()
+            except Exception:
+                pass
+    _refresh_ticks_visibility()
+    try:
+        dist_var.trace_add("write", lambda *_: _refresh_ticks_visibility())
+    except Exception:
+        pass
     
     # Scrollable template panel
     tabs["codegen"].rowconfigure(5, weight=1)
@@ -1666,7 +2392,6 @@ def open_settings_window():
             global path_lookahead_enabled, path_lookahead_px, last_lookahead_radius
             
             # Update CFG dictionary
-            CFG["plane_mode"] = plane_map[plane_var.get()]
             CFG["field_centric"] = 1
             CFG["distance_units"] = dist_map[dist_var.get()]
             CFG["angle_units"] = ang_map[ang_var.get()]
@@ -1674,33 +2399,16 @@ def open_settings_window():
             # Handle auto heading to node 1
             use_auto = bool(auto_heading_node1_var.get())
             if use_auto and len(display_nodes) >= 2:
-                p0 = effective_node_pos(0)
-                p1 = effective_node_pos(1)
-                pd = display_nodes[0].get("path_to_next", {})
-                if pd.get("use_path", False) and pd.get("control_points"):
-                    cps = list(pd["control_points"])
-                    if len(cps) >= 2:
-                        cps[0] = p0
-                        cps[-1] = p1
-                        smooth = generate_bezier_path(cps, num_samples=50)
-                        if smooth and len(smooth) > 1:
-                            try:
-                                target_internal = calculate_path_heading(smooth, 0)
-                            except Exception:
-                                target_internal = heading_from_points(smooth[0], smooth[1])
-                        else:
-                            target_internal = heading_from_points(p0, p1)
-                    else:
-                        target_internal = heading_from_points(p0, p1)
-                else:
-                    target_internal = heading_from_points(p0, p1)
-                disp_deg = convert_heading_input(target_internal, CFG["plane_mode"])
+                target_internal = _heading_for_node0_to1()
+                if target_internal is None:
+                    target_internal = heading_from_points(effective_node_pos(0), effective_node_pos(1))
+                disp_deg = convert_heading_input(target_internal, None)
                 init_head.set(f"{disp_deg:.3f}")
                 entered = disp_deg
             else:
                 entered = float(init_head.get())
             
-            initial_state["heading"] = interpret_input_angle(entered, CFG["plane_mode"])
+            initial_state["heading"] = interpret_input_angle(entered)
             robot_heading = initial_state["heading"]
             CFG["initial_heading_deg"] = float(init_head.get())
             
@@ -1756,6 +2464,7 @@ def open_settings_window():
                 "pad_factor": float(pad_var.get() or 1.0),
                 "min_timeout_s": float(min_s_var.get() or 0.0)
             })
+            CFG["codegen"]["path_dir"] = path_dir_var.get().strip() or "export/paths"
             _save_tpl_vars_for(codegen_style_var.get())  # Save current templates
             
             # Save to disk
@@ -2244,7 +2953,7 @@ def main():
                                 "  reshape    (toggle geometry)\n"
                                 "  latspeed 50   (drive ips override)\n"
                                 "  turnspeed 180 (deg/s override)\n"
-                                "Angles in CURRENT plane mode.",
+                                "Angles use 0=left, 90=up, 180=right.",
                                 initialvalue=init
                             )
                             if cmd is not None:

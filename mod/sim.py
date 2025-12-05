@@ -456,7 +456,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     base_la_in = max(8.0, min(24.0, float(bd.get("dt_width", bd.get("width", 12.0))) * 0.9))
                 base_lookahead_px = float(base_la_in) * PPI
 
-                # Turn to face the start of the path
+                # Turn to face the start of the path only if heading is far off (>15°)
                 start_heading = calculate_path_heading(path_points, 0)
                 end_heading = calculate_path_heading(path_points, len(path_points) - 1)
                 if reverse:
@@ -464,19 +464,23 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     end_heading = (end_heading + 180.0) % 360.0
                 
                 diff_to_start = _angle_diff_deg(curr_heading, start_heading)
-                Tface = turn_time(diff_to_start, cfg, rate_override=turn_override)
-                if Tface > 0.0:
-                    segs.append({
-                        "type": "turn",
-                        "T": Tface,
-                        "pos": p0,
-                        "start_heading": curr_heading,
-                        "target_heading": start_heading,
-                        "role": "face_path",
-                        "edge_i": i,
-                        "turn_speed_dps": turn_override
-                    })
-                curr_heading = start_heading
+                if abs(diff_to_start) > 15.0:
+                    Tface = turn_time(diff_to_start, cfg, rate_override=turn_override)
+                    if Tface > 0.0:
+                        segs.append({
+                            "type": "turn",
+                            "T": Tface,
+                            "pos": p0,
+                            "start_heading": curr_heading,
+                            "target_heading": start_heading,
+                            "role": "face_path",
+                            "edge_i": i,
+                            "turn_speed_dps": turn_override
+                        })
+                    curr_heading = start_heading
+                else:
+                    # Assume we simply roll into the path with existing heading
+                    curr_heading = start_heading
                 
                 # Calculate path length/time with curvature + resampling
                 speed_mult = float(path_data.get("speed_mult", 1.0))

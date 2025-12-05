@@ -46,8 +46,12 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
     Returns:
         Full path to the created file
     """
-    # Create export directory
-    export_dir = "export/paths"
+    # Create export directory (user-selectable; default relative to project root)
+    export_dir = cfg.get("codegen", {}).get("path_dir", "export/paths")
+    export_dir = os.path.expanduser(str(export_dir or "export/paths"))
+    if not os.path.isabs(export_dir):
+        base_root = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir))
+        export_dir = os.path.join(base_root, export_dir)
     os.makedirs(export_dir, exist_ok=True)
     
     filepath = os.path.join(export_dir, filename)

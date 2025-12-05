@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
         "min_speed_ips": {"value": 30.0},
         "max_speed_ips": {"value": 127.0},
     },
-    "plane_mode":    {"value": 1},
+    # plane_mode removed; fixed heading convention
     "field_centric": {"value": 1},
     "distance_units": {"value": 0},
     "angle_units": {"value": 0},
@@ -96,7 +96,8 @@ DEFAULT_CONFIG = {
             "ticks_per_rotation": 360,
             "pad_factor": 1.0,
             "min_timeout_s": 0.0
-        }
+        },
+        "path_dir": {"value": "export/paths"}
     }
 }
 
@@ -159,7 +160,6 @@ def save_config(cfg_dict: dict) -> bool:
             },
             "offsets": {k: wrap(float(v)) for k, v in cfg_dict["offsets"].items()},
             "path_config": {k: wrap(float(v)) for k, v in cfg_dict.get("path_config", {}).items()},
-            "plane_mode":     wrap(int(cfg_dict["plane_mode"])),
             "field_centric":  wrap(int(cfg_dict["field_centric"])),
             "distance_units": wrap(int(cfg_dict["distance_units"])),
             "angle_units":    wrap(int(cfg_dict.get("angle_units", 0))),
@@ -169,7 +169,8 @@ def save_config(cfg_dict: dict) -> bool:
             "codegen": {
                 "style": {"value": cfg_dict.get("codegen", {}).get("style", "Action List")},
                 "templates": cfg_dict.get("codegen", {}).get("templates", {}),
-                "opts": cfg_dict.get("codegen", {}).get("opts", {})
+                "opts": cfg_dict.get("codegen", {}).get("opts", {}),
+                "path_dir": {"value": cfg_dict.get("codegen", {}).get("path_dir", "export/paths")}
             }
         }
         

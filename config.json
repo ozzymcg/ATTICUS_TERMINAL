@@ -4,7 +4,7 @@
       "value": 450.0
     },
     "diameter": {
-      "value": 2.75
+      "value": 3.25
     },
     "volts_straight": {
       "value": 10.0
@@ -13,7 +13,7 @@
       "value": 10.0
     },
     "weight": {
-      "value": 12.0
+      "value": 10.5
     },
     "t_buffer": {
       "value": 0.15
@@ -30,29 +30,29 @@
   },
   "bot_dimensions": {
     "width": {
-      "value": 14.0
+      "value": 14.5
     },
     "length": {
-      "value": 15.0
+      "value": 17.0
     },
     "dt_width": {
       "value": 12.0
     },
     "dt_length": {
-      "value": 10.5
+      "value": 10.0
     },
     "full_offset_x_in": {
-      "value": 0.75
+      "value": 1.0
     },
     "full_offset_y_in": {
       "value": 0.0
     },
     "reshape": {
       "width": {
-        "value": 14.0
+        "value": 14.5
       },
       "length": {
-        "value": 18.5
+        "value": 20.0
       },
       "offset_x_in": {
         "value": 2.5
@@ -64,13 +64,13 @@
   },
   "offsets": {
     "offset_1_in": {
-      "value": 7.2
+      "value": 7.25
     },
     "offset_2_in": {
       "value": 13.0
     },
     "padding_in": {
-      "value": 0.5
+      "value": 1.25
     }
   },
   "path_config": {
@@ -84,11 +84,8 @@
       "value": 127.0
     },
     "simulate_pursuit": {
-      "value": 1.0
+      "value": 0.0
     }
-  },
-  "plane_mode": {
-    "value": 1
   },
   "field_centric": {
     "value": 1
@@ -100,7 +97,7 @@
     "value": 0
   },
   "initial_heading_deg": {
-    "value": 326.981
+    "value": 79.574
   },
   "gear_ratio": {
     "value": 0.75
@@ -193,6 +190,9 @@
       "pad_factor": 1.1,
       "min_timeout_s": 0.0,
       "path_lookahead": 15.0
+    },
+    "path_dir": {
+      "value": "export/paths"
     }
   }
 }

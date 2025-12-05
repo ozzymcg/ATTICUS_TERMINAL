@@ -13,16 +13,22 @@ else:
     from .config import PPI, WINDOW_WIDTH, WINDOW_HEIGHT
     from .geom import convert_heading_input
 
-def interpret_input_angle(user_deg: float, plane_mode: int) -> float:
-    """Convert user input angle to internal math frame."""
+def interpret_input_angle(user_deg: float) -> float:
+    """
+    Convert user-facing heading (0=left, 90=up, 180=right, 270=down) into the
+    internal math frame (0=right, 90=up) used for trig.
+    """
     d = float(user_deg) % 360.0
-    return d if plane_mode == 0 else (90.0 - d) % 360.0
+    return (180.0 - d) % 360.0
 
 def heading_from_points(p0, p1):
-    """Calculate heading in degrees from p0 to p1."""
+    """
+    Calculate internal heading (0=right, 90=up standard math frame) from p0 to p1.
+    Convert to display with convert_heading_input when showing to the user.
+    """
     dx = p1[0] - p0[0]
     dy = -(p1[1] - p0[1])
-    return (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
+    return math.degrees(math.atan2(dy, dx)) % 360.0
 
 def world_offset_px(off_x_in: float, off_y_in: float, heading_deg: float):
     """Convert local offset to world pixel coordinates."""
@@ -108,8 +114,8 @@ def build_compile_header(cfg, initial_heading_deg):
     
     return [
         "=== ATTICUS TERMINAL COMPILE ===",
-        f"Initial heading: {convert_heading_input(initial_heading_deg, cfg['plane_mode']):.3f} deg",
-        f"Plane Mode: {cfg['plane_mode']} (0=unit circle, 1=VEX standard)",
+        f"Initial heading: {convert_heading_input(initial_heading_deg, None):.3f} deg",
+        "Heading: 0=left, 90=up, 180=right, 270=down",
         f"Odometry Origin: {cfg['field_centric']} (0=bot-centric, 1=field-centric)",
         f"Distance Units: {unit_map.get(cfg['distance_units'], 'inches')}",
         f"Angle Units: {ang_map.get(cfg.get('angle_units', 0), 'degrees')}",
