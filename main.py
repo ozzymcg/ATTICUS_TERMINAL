@@ -1150,13 +1150,63 @@ def open_settings_window():
         add_tooltip(widget, tip)
         track_live_widget(widget)
     
+    def _heading_for_node0_to1():
+        """Return heading from node 0 toward node 1, following the path tangent if present."""
+        if len(display_nodes) < 2:
+            return None
+        p0 = effective_node_pos(0)
+        p1 = effective_node_pos(1)
+        reverse = bool(display_nodes[0].get("reverse", False))
+    
+        path_pts = None
+    
+        # Prefer live-edited control points when editing the 0->1 segment
+        if path_edit_mode and path_edit_segment_idx == 0 and path_control_points:
+            cps = list(path_control_points)
+            if len(cps) >= 2:
+                cps[0] = p0
+                cps[-1] = p1
+                try:
+                    path_pts = generate_bezier_path(cps, num_samples=50)
+                except Exception:
+                    path_pts = cps
+        else:
+            pd = display_nodes[0].get("path_to_next", {})
+            if pd.get("use_path", False):
+                pts = pd.get("path_points") or []
+                if pts and len(pts) > 1:
+                    path_pts = list(pts)
+                    path_pts[0] = p0
+                    path_pts[-1] = p1
+                else:
+                    cps = list(pd.get("control_points") or [])
+                    if len(cps) >= 2:
+                        cps[0] = p0
+                        cps[-1] = p1
+                        try:
+                            path_pts = generate_bezier_path(cps, num_samples=50)
+                        except Exception:
+                            path_pts = cps
+    
+        if path_pts and len(path_pts) > 1:
+            try:
+                hdg = calculate_path_heading(path_pts, 0)
+            except Exception:
+                hdg = heading_from_points(path_pts[0], path_pts[1])
+        else:
+            hdg = heading_from_points(p0, p1)
+    
+        if reverse:
+            hdg = (hdg + 180.0) % 360.0
+        return hdg
+    
     def _flip_routine_horizontal():
         """Mirror routine horizontally."""
         global display_nodes, robot_pos, robot_heading, initial_state
         global undo_stack, last_snapshot, last_path_sig, total_estimate_s
         global moving, paused, show_chevron, timeline, seg_i, t_local, last_logged_seg, reshape_live
         
-        if not display_nodes: 
+        if not display_nodes:
             return
         
         prev = util_snapshot(display_nodes, robot_pos, robot_heading)
@@ -1194,10 +1244,16 @@ def open_settings_window():
         util_push_undo_prev(undo_stack, prev)
         last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
         last_path_sig = None
-        moving = False; paused = False; show_chevron = False
-        timeline.clear(); seg_i = 0; t_local = 0.0; last_logged_seg = -1; reshape_live = False
+        moving = False
+        paused = False
+        show_chevron = False
+        timeline.clear()
+        seg_i = 0
+        t_local = 0.0
+        last_logged_seg = -1
+        reshape_live = False
         total_estimate_s = compute_total_estimate_s()
-    
+        
     # Heading entry with Node 1 helper
     heading_frame = ttk.Frame(tabs["general"])
     heading_entry = ttk.Entry(heading_frame, textvariable=init_head, width=10)
@@ -1206,28 +1262,10 @@ def open_settings_window():
     def _heading_to_node1():
         auto_heading_node1_var.set(1)
         try:
-            # Prefer path-derived initial heading if path 0->1 exists
-            if len(display_nodes) >= 2:
-                p0 = effective_node_pos(0)
-                p1 = effective_node_pos(1)
-                pd = display_nodes[0].get("path_to_next", {})
-                if pd.get("use_path", False) and pd.get("control_points"):
-                    cps = list(pd["control_points"])
-                    if len(cps) >= 2:
-                        cps[0] = p0
-                        cps[-1] = p1
-                        # Use path tangent at start for initial heading
-                        hdg = heading_from_points(cps[0], cps[1])
-                        smooth = generate_bezier_path(cps, num_samples=50)
-                        if smooth and len(smooth) > 1:
-                            try:
-                                hdg = calculate_path_heading(smooth, 0)
-                            except Exception:
-                                hdg = heading_from_points(smooth[0], smooth[1])
-                        disp = convert_heading_input(hdg, CFG["plane_mode"])
-                        init_head.set(f"{disp:.3f}")
-                        on_update()
-                        return
+            hdg = _heading_for_node0_to1()
+            if hdg is not None:
+                disp = convert_heading_input(hdg, CFG["plane_mode"])
+                init_head.set(f"{disp:.3f}")
             on_update()
         finally: 
             auto_heading_node1_var.set(0)
@@ -1674,26 +1712,9 @@ def open_settings_window():
             # Handle auto heading to node 1
             use_auto = bool(auto_heading_node1_var.get())
             if use_auto and len(display_nodes) >= 2:
-                p0 = effective_node_pos(0)
-                p1 = effective_node_pos(1)
-                pd = display_nodes[0].get("path_to_next", {})
-                if pd.get("use_path", False) and pd.get("control_points"):
-                    cps = list(pd["control_points"])
-                    if len(cps) >= 2:
-                        cps[0] = p0
-                        cps[-1] = p1
-                        smooth = generate_bezier_path(cps, num_samples=50)
-                        if smooth and len(smooth) > 1:
-                            try:
-                                target_internal = calculate_path_heading(smooth, 0)
-                            except Exception:
-                                target_internal = heading_from_points(smooth[0], smooth[1])
-                        else:
-                            target_internal = heading_from_points(p0, p1)
-                    else:
-                        target_internal = heading_from_points(p0, p1)
-                else:
-                    target_internal = heading_from_points(p0, p1)
+                target_internal = _heading_for_node0_to1()
+                if target_internal is None:
+                    target_internal = heading_from_points(effective_node_pos(0), effective_node_pos(1))
                 disp_deg = convert_heading_input(target_internal, CFG["plane_mode"])
                 init_head.set(f"{disp_deg:.3f}")
                 entered = disp_deg

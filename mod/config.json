@@ -4,7 +4,7 @@
       "value": 450.0
     },
     "diameter": {
-      "value": 2.75
+      "value": 3.25
     },
     "volts_straight": {
       "value": 10.0
@@ -13,7 +13,7 @@
       "value": 10.0
     },
     "weight": {
-      "value": 12.0
+      "value": 10.5
     },
     "t_buffer": {
       "value": 0.15
@@ -33,7 +33,7 @@
       "value": 14.0
     },
     "length": {
-      "value": 15.0
+      "value": 17.0
     },
     "dt_width": {
       "value": 12.0
@@ -52,7 +52,7 @@
         "value": 14.0
       },
       "length": {
-        "value": 18.5
+        "value": 20.0
       },
       "offset_x_in": {
         "value": 2.5
@@ -64,10 +64,10 @@
   },
   "offsets": {
     "offset_1_in": {
-      "value": 7.2
+      "value": 10.0
     },
     "offset_2_in": {
-      "value": 13.0
+      "value": 13.5
     },
     "padding_in": {
       "value": 0.5
@@ -84,7 +84,7 @@
       "value": 127.0
     },
     "simulate_pursuit": {
-      "value": 1.0
+      "value": 0.0
     }
   },
   "plane_mode": {

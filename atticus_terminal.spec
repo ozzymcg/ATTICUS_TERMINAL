@@ -46,7 +46,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='AtticusTerminal',
+    name='ATTICUS_TERMINAL',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

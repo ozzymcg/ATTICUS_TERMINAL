@@ -404,11 +404,9 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
         return calculate_path_heading(pts, len(pts) - 1)
     
     for i, node in enumerate(nodes):
-        # Compute heading using effective centers; for middle nodes, use outgoing tangent (path-aware)
-        incoming_h = _incoming_path_heading(i)
-        if incoming_h is not None:
-            base_h = incoming_h
-        elif i < len(nodes) - 1:
+        # Compute outgoing heading (path-aware) from this node, if any
+        outgoing_h = None
+        if i < len(nodes) - 1:
             next_pd = nodes[i].get("path_to_next", {})
             if next_pd.get("use_path", False) and next_pd.get("control_points"):
                 cps = list(next_pd["control_points"])
@@ -417,13 +415,19 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
                     cps[-1] = eff[i+1]
                     pts = generate_bezier_path(cps, num_samples=20)
                     if pts:
-                        base_h = calculate_path_heading(pts, 0)
-                    else:
-                        base_h = heading_from_points(eff[i], eff[i+1])
-                else:
-                    base_h = heading_from_points(eff[i], eff[i+1])
+                        outgoing_h = calculate_path_heading(pts, 0)
+            if outgoing_h is None:
+                outgoing_h = heading_from_points(eff[i], eff[i+1])
+        
+        # Compute heading using effective centers; prefer outgoing (post-turn) orientation unless final node
+        incoming_h = _incoming_path_heading(i)
+        if incoming_h is not None:
+            if i < len(nodes) - 1 and outgoing_h is not None:
+                base_h = outgoing_h
             else:
-                base_h = heading_from_points(eff[i], eff[i+1])
+                base_h = incoming_h
+        elif outgoing_h is not None:
+            base_h = outgoing_h
         else:
             base_h = heading_from_points(eff[i-1], eff[i]) if i > 0 else 0.0
         
