@@ -7,16 +7,16 @@
       "value": 3.25
     },
     "volts_straight": {
-      "value": 10.0
+      "value": 12.0
     },
     "volts_turn": {
-      "value": 10.0
+      "value": 12.0
     },
     "weight": {
-      "value": 10.5
+      "value": 11.0
     },
     "t_buffer": {
-      "value": 0.15
+      "value": 0.1
     },
     "max_cmd": {
       "value": 127.0
@@ -26,20 +26,29 @@
     },
     "curvature_gain": {
       "value": 0.12162162162162163
+    },
+    "horizontal_drift": {
+      "value": 0.0
+    },
+    "advanced_motion": {
+      "value": 1.0
+    },
+    "all_omni": {
+      "value": 1.0
     }
   },
   "bot_dimensions": {
     "width": {
-      "value": 14.5
+      "value": 13.5
     },
     "length": {
-      "value": 17.0
+      "value": 15.5
     },
     "dt_width": {
-      "value": 12.0
+      "value": 12.5
     },
     "dt_length": {
-      "value": 10.0
+      "value": 11.0
     },
     "full_offset_x_in": {
       "value": 1.0
@@ -49,13 +58,13 @@
     },
     "reshape": {
       "width": {
-        "value": 14.5
+        "value": 13.5
       },
       "length": {
-        "value": 20.0
+        "value": 20.5
       },
       "offset_x_in": {
-        "value": 2.5
+        "value": 3.5
       },
       "offset_y_in": {
         "value": 0.0
@@ -64,18 +73,18 @@
   },
   "offsets": {
     "offset_1_in": {
-      "value": 7.25
+      "value": 4.25
     },
     "offset_2_in": {
-      "value": 13.0
+      "value": 15.25
     },
     "padding_in": {
-      "value": 1.25
+      "value": 1.5
     }
   },
   "path_config": {
     "lookahead_in": {
-      "value": 10.8
+      "value": 11.25
     },
     "min_speed_ips": {
       "value": 30.0
@@ -97,7 +106,7 @@
     "value": 0
   },
   "initial_heading_deg": {
-    "value": 79.574
+    "value": 76.464
   },
   "gear_ratio": {
     "value": 0.75
@@ -110,9 +119,12 @@
       "value": 1
     }
   },
+  "reshape_label": {
+    "value": "Reshape"
+  },
   "codegen": {
     "style": {
-      "value": "LemLib"
+      "value": "JAR"
     },
     "templates": {
       "LemLib": {
@@ -120,12 +132,14 @@
         "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}});",
         "turn": "turn({HEADING_DEG});",
         "face": "turnToFace({HEADING_DEG});",
-        "pose": "pose({X_IN}, {Y_IN}, [placeholder] );",
+        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}});",
         "mech": "// MECH: {NAME}",
         "tbuffer": "pros::delay({MS});",
         "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
         "__optional__": [
-          "setpose"
+          "setpose",
+          "reshape",
+          "swing"
         ],
         "__modes__": {
           "motion": "move",
@@ -133,14 +147,15 @@
         },
         "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
         "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
-        "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});"
+        "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+        "reshape": "matchload_state({STATE});",
+        "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{SIDE}, {TIMEOUT_MS});"
       },
       "PROS": {
         "wait": "pros::delay({MS});",
         "move": "chassis.moveToPoint{{X_IN}, {Y_IN}, {TIMEOUT_MS}};",
         "turn": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
         "face": "face({HEADING_DEG});",
-        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {.forwards = {FORWARDS}});",
         "mech": "// MECH: {NAME}",
         "tbuffer": "pros::delay({MS});",
         "__optional__": [],
@@ -150,31 +165,30 @@
           "turn": "turn_local"
         },
         "turn_global": "turn_to({HEADING_DEG});",
-        "turn_local": "turn_angle({TURN_DELTA_DEG});"
+        "turn_local": "turn_angle({TURN_DELTA_DEG});",
+        "pose": "// move_to_pose x={X_IN}, y={Y_IN}, h={HEADING_DEG}"
       },
       "Custom": {
-        "wait": "pros::delay({MS});",
-        "move": "move({DIST_IN});",
+        "wait": "wait({S}, seconds);",
+        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {.drive_timeout = {TIMEOUT_MS}});",
         "turn": "",
         "face": "face({HEADING_DEG});",
-        "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
         "mech": "// MECH: {NAME}",
-        "tbuffer": "pros::delay({MS});",
+        "tbuffer": "wait ({S}, seconds);",
         "__optional__": [
-          "reverse_on",
           "reshape",
-          "reverse_off"
+          "setpose"
         ],
         "path_follow": "follow_path(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD});",
-        "reverse_on": "// reverse handled per-command",
-        "reshape": "// RESHAPE state={STATE}",
-        "reverse_off": "// reverse handled per-command",
+        "reshape": "MLadapter({STATE});",
         "__modes__": {
           "motion": "move",
-          "turn": "turn_local"
+          "turn": "turn_global"
         },
-        "turn_global": "face({HEADING_DEG});",
-        "turn_local": "turn_relative({TURN_DELTA_DEG});"
+        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {.turn_timeout = {TIMEOUT_MS}});",
+        "turn_local": "turn_relative({TURN_DELTA_DEG});",
+        "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
       },
       "Action List": {
         "__optional__": [],
@@ -182,12 +196,33 @@
           "motion": "move",
           "turn": "turn"
         }
+      },
+      "JAR": {
+        "wait": "task::sleep({MS});",
+        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {DRIVE_MAX_V}, {HEADING_MAX_V}, {DRIVE_SETTLE_ERR}, {DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
+        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TURN_SETTLE_ERR}, {TURN_SETTLE_TIME}, {TIMEOUT_MS});",
+        "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+        "pose": "driveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "path_follow": "followPath(\"{PATH_FILE}\", {TIMEOUT_MS});",
+        "tbuffer": "task::sleep({MS});",
+        "setpose": "setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "__optional__": [
+          "setpose",
+          "swing",
+          "reshape"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "swing": "{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
+        "reshape": "matchload_state({STATE});"
       }
     },
     "opts": {
       "time_unit": "ms",
       "ticks_per_rotation": 360.0,
-      "pad_factor": 1.1,
+      "pad_factor": 1.2,
       "min_timeout_s": 0.0,
       "path_lookahead": 15.0
     },

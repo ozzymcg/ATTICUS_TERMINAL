@@ -29,6 +29,7 @@ GREY        = (130, 130, 130)
 CONFIG_FILENAME = "config.json"
 
 DEFAULT_CONFIG = {
+    "reshape_label": {"value": "Reshape"},
     "field_objects": {
         "enabled": {"value": 1},
         "collide": {"value": 1},
@@ -45,9 +46,12 @@ DEFAULT_CONFIG = {
         "volts_turn":     {"value": 12.0},
         "mu":             {"value": 0.9},
         "t_buffer":       {"value": 0.0},
+        "all_omni":       {"value": 0},
+        "advanced_motion": {"value": 0},
         "max_cmd":        {"value": 127.0},
         "point_density_per_in": {"value": 4.0},
         "curvature_gain": {"value": 0.05},
+        "horizontal_drift": {"value": 0.0},
     },
     "offsets": {
         "offset_1_in": {"value": 5.0},
@@ -166,6 +170,7 @@ def save_config(cfg_dict: dict) -> bool:
             "initial_heading_deg": wrap(float(cfg_dict.get("initial_heading_deg", 0.0))),
             "gear_ratio":     wrap(float(cfg_dict.get("gear_ratio", 1.0))),
             "ui": {k: wrap(int(v)) for k, v in cfg_dict.get("ui", {}).items()},
+            "reshape_label": wrap(str(cfg_dict.get("reshape_label", "Reshape"))),
             "codegen": {
                 "style": {"value": cfg_dict.get("codegen", {}).get("style", "Action List")},
                 "templates": cfg_dict.get("codegen", {}).get("templates", {}),

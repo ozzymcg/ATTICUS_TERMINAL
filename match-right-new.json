@@ -1,0 +1,140 @@
+{
+    "initial": {
+        "position": [
+            374.0,
+            508
+        ],
+        "heading": 76.464
+    },
+    "nodes": [
+        {
+            "pos": [
+                374.0,
+                508
+            ],
+            "path_to_next": {},
+            "reshape_toggle": false,
+            "profile_info": {
+                "drive_profile": "normal"
+            }
+        },
+        {
+            "pos": [
+                400.0,
+                400
+            ],
+            "reverse": true,
+            "actions": [
+                {
+                    "type": "reshape"
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "path_to_next": {},
+            "profile_info": {
+                "turn_profile": "normal",
+                "drive_profile": "normal"
+            }
+        },
+        {
+            "pos": [
+                500.0,
+                500
+            ],
+            "reverse": true,
+            "path_to_next": {},
+            "profile_info": {
+                "turn_profile": "fast",
+                "drive_profile": "precise"
+            }
+        },
+        {
+            "pos": [
+                500.0,
+                600
+            ],
+            "offset": 2,
+            "reverse": true,
+            "path_to_next": {},
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 1.0
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "profile_info": {
+                "drive_profile": "normal"
+            }
+        },
+        {
+            "pos": [
+                500,
+                400
+            ],
+            "offset": 1,
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        500.0,
+                        417.7083333333333
+                    ],
+                    "end_pos": [
+                        447.9191443319904,
+                        417.34911344228874
+                    ],
+                    "pivot": [
+                        473.9583333333333,
+                        417.7083333333333
+                    ],
+                    "start_heading": 270.0,
+                    "target_heading": 89.20963444101409,
+                    "diff_geom": {
+                        "center": [
+                            473.9583333333333,
+                            417.7083333333333
+                        ],
+                        "r0": [
+                            26.041666666666686,
+                            0.0
+                        ],
+                        "delta_deg": 180.7903655589859,
+                        "cw": true
+                    },
+                    "reverse": false,
+                    "swing_dir": "cw"
+                },
+                "start_override": [
+                    447.9191443319904,
+                    417.34911344228874
+                ]
+            },
+            "reverse": true,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "turn_mode": "swing",
+            "swing_dir": "cw",
+            "move_to_pose": false,
+            "reshape_toggle": true,
+            "profile_info": {
+                "swing_profile": "fast",
+                "drive_profile": "normal"
+            }
+        },
+        {
+            "pos": [
+                449.0,
+                339
+            ],
+            "reverse": false
+        }
+    ]
+}

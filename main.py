@@ -32,7 +32,7 @@ from mod.util import (
     snapshot as util_snapshot, push_undo_prev as util_push_undo_prev,
     constrain_to_8dirs, get_node_offset_in, approach_unit
 )
-from mod.codegen import build_export_lines
+from mod.codegen import build_export_lines, pick_profile
 
 
 # Try to import path utilities - these are NEW modules
@@ -192,6 +192,27 @@ def draw_curved_path(screen, points, color=(100, 200, 255), width=3):
     if len(points) >= 2:
         pygame.draw.lines(screen, color, False, points, width)
 
+def swing_arc_points(swing_vis: dict, steps: int = 40):
+    """Generate points along a swing arc for drawing."""
+    if not swing_vis:
+        return []
+    dg = swing_vis.get("diff_geom", {})
+    center = dg.get("center")
+    r0 = dg.get("r0")
+    delta_deg = dg.get("delta_deg", 0.0)
+    if center is None or r0 is None:
+        return []
+    d_rad = math.radians(delta_deg)
+    pts = []
+    for i in range(steps + 1):
+        frac = i / float(steps)
+        ang = d_rad * frac
+        cosd, sind = math.cos(ang), math.sin(ang)
+        rx = r0[0] * cosd - r0[1] * sind
+        ry = r0[0] * sind + r0[1] * cosd
+        pts.append((center[0] + rx, center[1] + ry))
+    return pts
+
 def draw_path_control_points(screen, control_points, selected_idx):
     """Draw control point handles."""
     for i, cp in enumerate(control_points):
@@ -286,7 +307,7 @@ def reload_cfg():
     path_raw = raw.get("path_config", {})
     path_cfg = {
         "lookahead_in": _num(path_raw.get("lookahead_in", {"value": 15.0}), 15.0),
-        "min_speed_ips": _num(path_raw.get("min_speed_ips", {"value": 30.0}), 30.0),
+        "min_speed_ips": _num(path_raw.get("min_speed_ips", {"value": 0.0}), 0.0),
         "max_speed_ips": _num(path_raw.get("max_speed_ips", {"value": 127.0}), 127.0),
         "simulate_pursuit": _coerce_int_range(path_raw.get("simulate_pursuit", {"value": 1}), 1, (0, 1)),
     }
@@ -404,7 +425,7 @@ def path_shade_key(idx, node):
     """Build cache key for shaded path rendering."""
     pd = node.get("path_to_next", {})
     curv_gain = float(CFG.get("robot_physics", {}).get("curvature_gain", CFG.get("path_config", {}).get("curvature_gain", 0.05)))
-    vmin = pd.get("min_speed_ips", CFG.get("path_config", {}).get("min_speed_ips", 30.0))
+    vmin = pd.get("min_speed_ips", CFG.get("path_config", {}).get("min_speed_ips", 0.0))
     vmax = pd.get("max_speed_ips", CFG.get("path_config", {}).get("max_speed_ips", 127.0))
     la_override = pd.get("lookahead_in_override")
     return (idx, path_sig_for_node(node), round(curv_gain, 6), round(float(vmin), 3), round(float(vmax), 3), None if la_override is None else round(float(la_override), 3))
@@ -518,6 +539,69 @@ def sync_all_path_endpoints():
     # Path geometry changed; invalidate cached gradients
     path_draw_cache.clear()
 
+def annotate_motion_profiles(timeline_list):
+    """Attach motion profile tags to nodes for hover when advanced motion is enabled."""
+    for node in display_nodes:
+        node.pop("profile_info", None)
+    adv_enabled = bool(CFG.get("robot_physics", {}).get("advanced_motion", 0))
+    if not adv_enabled:
+        return
+    try:
+        default_profile = str(CFG.get("codegen", {}).get("opts", {}).get("jar_profile_default", "normal"))
+    except Exception:
+        default_profile = "normal"
+    for seg in timeline_list:
+        st = seg.get("type")
+        node_idx = seg.get("i0")
+        if node_idx is None:
+            node_idx = seg.get("edge_i", seg.get("node_i"))
+        if node_idx is None or node_idx < 0 or node_idx >= len(display_nodes):
+            continue
+        info = display_nodes[node_idx].setdefault("profile_info", {})
+        if st in ("move", "pose"):
+            L_in = seg.get("length_in")
+            if L_in is None and "p0" in seg and "p1" in seg:
+                L_in = math.hypot(seg["p1"][0]-seg["p0"][0], seg["p1"][1]-seg["p0"][1]) / PPI
+            chosen_prof = seg.get("profile_override") or pick_profile("drive", abs(L_in or 0.0), default_profile)
+            info["drive_profile"] = chosen_prof
+        elif st == "path":
+            L_in = seg.get("path_length_in")
+            if L_in is None:
+                pts = seg.get("path_points") or []
+                if pts and len(pts) > 1:
+                    L_in = 0.0
+                    for j in range(len(pts) - 1):
+                        L_in += math.hypot(pts[j+1][0] - pts[j][0], pts[j+1][1] - pts[j][1]) / PPI
+                elif "p0" in seg and "p1" in seg:
+                    L_in = math.hypot(seg["p1"][0]-seg["p0"][0], seg["p1"][1]-seg["p0"][1]) / PPI
+            info["drive_profile"] = pick_profile("drive", abs(L_in or 0.0), default_profile)
+        elif st == "turn":
+            delta = ((seg.get("target_heading", 0.0) - seg.get("start_heading", 0.0) + 180.0) % 360.0) - 180.0
+            chosen_prof = seg.get("profile_override") or pick_profile("turn", abs(delta), default_profile)
+            info["turn_profile"] = chosen_prof
+        elif st == "swing":
+            delta = seg.get("delta_heading")
+            if delta is None:
+                delta = ((seg.get("target_heading", 0.0) - seg.get("start_heading", 0.0) + 180.0) % 360.0) - 180.0
+            chosen_prof = seg.get("profile_override") or pick_profile("swing", abs(delta), default_profile)
+            info["swing_profile"] = chosen_prof
+
+def build_timeline_with_buffers():
+    """Generate timeline with buffers, ensuring paths are synced first."""
+    sync_all_path_endpoints()
+    tl = apply_tbuffer(CFG, compile_timeline(display_nodes, CFG, initial_state["heading"], fps))
+    annotate_motion_profiles(tl)
+    return tl
+
+def compute_total_from_timeline(tl):
+    """Sum timeline duration, excluding a trailing buffer wait."""
+    total = sum(seg.get("T", 0.0) for seg in tl)
+    if tl and tl[-1].get("type") == "wait" and tl[-1].get("role") == "buffer":
+        total -= tl[-1].get("T", 0.0)
+        if total < 0.0:
+            total = 0.0
+    return total
+
 def remove_path_leading_to(idx):
     """Remove any stored path that ends at idx (path_to_next on idx-1)."""
     if idx <= 0:
@@ -559,15 +643,19 @@ def effective_node_pos(idx):
     off_in = get_node_offset_in(node, CFG, idx)
     ghost_ang = node.get("offset_ghost_angle")
     prev_pd = display_nodes[idx - 1].get("path_to_next", {}) if idx - 1 >= 0 else {}
-    use_radial = prev_pd.get("use_path", False)
+    prev_swing = prev_pd.get("swing_vis")
+    use_radial = prev_pd.get("use_path", False) or bool(prev_swing)
     if use_radial and off_in != 0.0:
         if ghost_ang is None:
             try:
                 prev_eff = display_nodes[idx - 1]["pos"] if idx - 1 >= 0 else prev
             except Exception:
                 prev_eff = prev
-            # Default along path tangent (previous to this node)
-            ghost_ang = heading_from_points(prev_eff, node["pos"])
+            if prev_swing and prev_swing.get("target_heading") is not None:
+                gh = prev_swing.get("target_heading")
+                ghost_ang = gh
+            else:
+                ghost_ang = heading_from_points(prev_eff, node["pos"])
             node["offset_ghost_angle"] = ghost_ang
         if ghost_ang is not None:
             rad = math.radians(ghost_ang)
@@ -586,18 +674,8 @@ def effective_node_pos(idx):
 # ---------------- compile helpers ----------------
 def compute_total_estimate_s():
     """Compute total routine time estimate."""
-    tl = apply_tbuffer(CFG, compile_timeline(display_nodes, CFG, initial_state["heading"], fps))
-    total = sum(seg.get("T", 0.0) for seg in tl)
-    try:
-        tbuf = float(CFG.get("robot_physics", {}).get("t_buffer", 0.0))
-    except Exception:
-        tbuf = 0.0
-    if tl and tbuf > 0.0:
-        lastT = float(tl[-1].get("T", 0.0))
-        total -= min(tbuf, lastT)
-        if total < 0.0: 
-            total = 0.0
-    return total
+    tl = build_timeline_with_buffers()
+    return compute_total_from_timeline(tl)
 
 
 def clamp_heading_rate(current_h, target_h, cfg, dt):
@@ -663,6 +741,15 @@ def log_action(kind, **kw):
             log_lines.append(f"  Turn: {chosen_val:.6f} rad ({dir_tag} +) | To face: {to_face_val:.6f} rad")
         else:
             log_lines.append(f"  Turn: {chosen:.3f}° ({dir_tag} +) | To face: {to_face_deg:.3f}°")
+    elif kind == "swing":
+        h0, h1 = kw["h0"], kw["h1"]
+        delta_ccw = (h1 - h0 + 360.0) % 360.0
+        if delta_ccw > 180.0:
+            delta_ccw -= 360.0
+        chosen = float(-delta_ccw)
+        dir_tag = str(kw.get("dir", "AUTO")).upper()
+        to_face_deg = convert_heading_input(h1, None)
+        log_lines.append(f"  Swing: {chosen:.3f}° dir={dir_tag} to {to_face_deg:.3f}°")
     elif kind == "wait":
         log_lines.append(f"  Wait: {kw['s']:.3f} s")
     elif kind == "reshape":
@@ -873,6 +960,8 @@ def apply_mirror_mode(control_points, mode_start: str, mode_end: str, tang_in=No
 def compile_cmd_string(node, idx):
     """Generate command string from node actions."""
     parts = []
+    if node.get("reverse"):
+        parts.append("reverse")
     for act in node.get("actions", []):
         if act.get("type") == "turn":
             disp = convert_heading_input(act.get("deg", 0.0), None)
@@ -881,6 +970,9 @@ def compile_cmd_string(node, idx):
             parts.append(f"wait {act.get('s', 0):g}")
         elif act.get("type") in ("reshape", "geom"):
             parts.append("reshape")
+    if node.get("swing_target_heading_deg") is not None:
+        disp = convert_heading_input(node["swing_target_heading_deg"], None)
+        parts.append(f"swingto {disp:g}")
     if idx != 0 and int(node.get("offset", 0)) == 0 and node.get("offset_custom_in") is not None:
         parts.append(f"offset {node['offset_custom_in']:g}")
     if node.get("custom_lateral_ips"):
@@ -892,6 +984,11 @@ def compile_cmd_string(node, idx):
 def parse_and_apply_cmds(node, cmd_str, idx):
     """Parse and apply commands to node."""
     acts = []
+    node.pop("swing_target_heading_deg", None)
+    node.pop("reverse_after_swing", None)
+    orig_reverse = bool(node.get("reverse", False))
+    node["reverse"] = orig_reverse
+    seen_swingto = False
     if cmd_str:
         for part in [p.strip() for p in cmd_str.replace(";", ",").split(",") if p.strip()]:
             low = part.lower()
@@ -904,12 +1001,29 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                     raw = float(low.split()[1].replace("deg", "").replace("°", ""))
                     x_internal = interpret_input_angle(raw)
                     acts.append({"type": "turn", "deg": x_internal})
+                elif low.startswith("swingto"):
+                    raw = float(low.split()[1].replace("deg", "").replace("°", ""))
+                    node["turn_mode"] = "swing"
+                    node["swing_dir"] = "auto"
+                    node["swing_target_heading_deg"] = interpret_input_angle(raw)
+                    seen_swingto = True
                 elif low.startswith("offset"):
                     if idx != 0 and int(node.get("offset", 0)) == 0:
                         x = float(low.split()[1].replace("in", ""))
                         node["offset_custom_in"] = x
                 elif low in ("reshape", "rs", "geom"):
                     acts.append({"type": "reshape"})
+                elif low.startswith("reverse"):
+                    tokens = low.split()
+                    if seen_swingto:
+                        node["reverse_after_swing"] = True
+                    else:
+                        if len(tokens) >= 2 and tokens[1] in ("on", "1", "true", "yes"):
+                            node["reverse"] = True
+                        elif len(tokens) >= 2 and tokens[1] in ("off", "0", "false", "no"):
+                            node["reverse"] = False
+                        else:
+                            node["reverse"] = not bool(node.get("reverse", False))
                 elif low.startswith(("latspeed", "lat", "drive_speed")):
                     parts_split = low.split()
                     if len(parts_split) >= 2:
@@ -919,6 +1033,7 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         else:
                             try:
                                 val = float(token.replace("ips", ""))
+                                val = max(0.0, min(127.0, val))
                                 node["custom_lateral_ips"] = val if val > 0 else None
                             except Exception:
                                 pass
@@ -937,6 +1052,133 @@ def parse_and_apply_cmds(node, cmd_str, idx):
             except Exception:
                 pass
     node["actions"] = acts
+
+# ---------------- heading realization prompt ----------------
+def _heading_realization_string(node: dict) -> str:
+    """Build a user-facing heading realization string from node settings."""
+    tm = node.get("turn_mode", "turn")
+    sd = node.get("swing_dir", "auto")
+    parts = []
+    if tm == "swing":
+        parts.append(f"swing {sd}")
+    else:
+        parts.append(f"turn {sd}")
+    if node.get("move_to_pose"):
+        h = node.get("pose_heading_deg")
+        lead = node.get("pose_lead_in")
+        if h is not None:
+            disp = convert_heading_input(h, None)
+            if lead not in (None, "", 0, 0.0):
+                parts.append(f"movetopose {disp:.3f} {float(lead):g}")
+            else:
+                parts.append(f"movetopose {disp:.3f}")
+    # Motion profile override (skip if segment is a path)
+    pd = node.get("path_to_next", {})
+    if not pd.get("use_path", False):
+        prof = node.get("profile_override")
+        if prof:
+            parts.append(f"profile {prof}")
+    return "; ".join(parts)
+
+def _apply_heading_realization(node: dict, text: str):
+    """Parse heading realization text and apply to node."""
+    tm = node.get("turn_mode", "turn")
+    sd = node.get("swing_dir", "auto")
+    move_pose = bool(node.get("move_to_pose", False))
+    pose_h = node.get("pose_heading_deg")
+    pose_lead = node.get("pose_lead_in")
+    prof_override = node.get("profile_override")
+
+    if text:
+        for part in [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]:
+            tokens = part.split()
+            if not tokens:
+                continue
+            key = tokens[0].lower()
+            if key in ("turn", "t"):
+                tm = "turn"
+                if len(tokens) >= 2 and tokens[1].lower() in ("cw", "ccw", "auto"):
+                    sd = tokens[1].lower()
+            elif key == "swing":
+                tm = "swing"
+                if len(tokens) >= 2 and tokens[1].lower() in ("cw", "ccw", "auto"):
+                    sd = tokens[1].lower()
+            elif key in ("movetopose", "pose", "poseheading"):
+                if len(tokens) >= 2 and tokens[1].lower() not in ("off", "none", "clear"):
+                    try:
+                        disp = float(tokens[1])
+                        pose_h = interpret_input_angle(disp)
+                        move_pose = True
+                    except Exception:
+                        pass
+                else:
+                    move_pose = False
+                if len(tokens) >= 3:
+                    try:
+                        pose_lead = float(tokens[2])
+                    except Exception:
+                        pass
+            elif key in ("profile", "mode", "speedprofile"):
+                if len(tokens) >= 2:
+                    cand = tokens[1].lower()
+                    if cand in ("precise", "normal", "fast", "slam"):
+                        prof_override = cand
+                    elif cand in ("off", "clear", "none"):
+                        prof_override = None
+    node["turn_mode"] = tm
+    node["swing_dir"] = sd
+    node["move_to_pose"] = bool(move_pose)
+    if prof_override:
+        node["profile_override"] = prof_override
+    else:
+        node.pop("profile_override", None)
+    if move_pose:
+        if pose_h is not None:
+            node["pose_heading_deg"] = pose_h % 360.0
+        if pose_lead not in (None, ""):
+            node["pose_lead_in"] = float(pose_lead)
+        else:
+            node.pop("pose_lead_in", None)
+    else:
+        node.pop("pose_heading_deg", None)
+        node.pop("pose_lead_in", None)
+
+def prompt_heading_realization(node: dict, idx: int) -> bool:
+    """Show heading realization prompt; return True if node mutated."""
+    ensure_tk_root()
+    init = _heading_realization_string(node)
+    resp = None
+    try:
+        if tk_root:
+            try:
+                tk_root.attributes("-alpha", 0.0)
+            except Exception:
+                pass
+            tk_root.deiconify()
+            tk_root.lift()
+        resp = simpledialog.askstring(
+            "Heading realization",
+            "turn/swing + optional movetopose heading [+lead] (comma/semicolon separated).\n"
+            "Optional: profile precise|normal|fast|slam (non-path segments only).\n"
+            "Examples: 'turn auto;'; 'swing cw; movetopose 180 6'; 'profile precise'.\n"
+            "Omit movetopose to disable enforcing final heading.\n"
+            "Angles use 0=left, 90=up.",
+            initialvalue=init,
+            parent=tk_root
+        )
+    finally:
+        if tk_root:
+            try:
+                tk_root.withdraw()
+                tk_root.attributes("-alpha", 1.0)
+            except Exception:
+                pass
+    if resp is None:
+        return False
+    before = {k: node.get(k) for k in ("turn_mode", "swing_dir", "move_to_pose", "pose_heading_deg", "pose_lead_in")}
+    _apply_heading_realization(node, resp)
+    after = {k: node.get(k) for k in ("turn_mode", "swing_dir", "move_to_pose", "pose_heading_deg", "pose_lead_in")}
+    return before != after
 
 # ---------------- output window ----------------
 def output_refresh():
@@ -1097,16 +1339,19 @@ def open_settings_window():
     
     show_hitboxes_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_hitboxes", 1)))
     show_field_objects_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_field_objects", 1)))
+    reshape_label_var = tk.StringVar(value=str(CFG.get("reshape_label", "Reshape")))
     auto_heading_node1_var = tk.IntVar(value=0)
     
     # Physics variables
     rp = CFG["robot_physics"]
     rpm_var = tk.StringVar(value=str(rp.get("rpm", 0)))
     diam_var = tk.StringVar(value=str(rp.get("diameter", 4)))
-    vs_var = tk.StringVar(value=str(rp.get("volts_straight", 12)))
-    vt_var = tk.StringVar(value=str(rp.get("volts_turn", 12)))
+    vs_var = tk.StringVar(value="12")
+    vt_var = tk.StringVar(value="12")
+    omni_var = tk.IntVar(value=int(rp.get("all_omni", 0)))
     w_var = tk.StringVar(value=str(rp.get("weight", 20)))
     tb_var = tk.StringVar(value=str(rp.get("t_buffer", 0)))
+    adv_motion_var = tk.IntVar(value=int(rp.get("advanced_motion", 0)))
     # maxcmd removed from UI (fixed in config)
     gr_var = tk.StringVar(value=str(CFG.get("gear_ratio", 1.0)))
     dens_var = tk.StringVar(value=str(rp.get("point_density_per_in", 4.0)))
@@ -1935,17 +2180,18 @@ def open_settings_window():
     _row(tabs["general"], 2, "Initial heading (deg):", heading_frame, "Robot start heading")
     _row(tabs["general"], 3, "Show node hitboxes:", ttk.Checkbutton(tabs["general"], variable=show_hitboxes_var), "Toggle geometry boxes")
     _row(tabs["general"], 4, "Show field objects:", ttk.Checkbutton(tabs["general"], variable=show_field_objects_var), "Draw field objects")
-    _row(tabs["general"], 5, "Flip routine:", ttk.Button(tabs["general"], text="Flip", command=_flip_routine_horizontal), "Mirror horizontally")
+    _row(tabs["general"], 5, "Reshape label:", ttk.Entry(tabs["general"], textvariable=reshape_label_var), "Custom label used anywhere reshape appears")
+    _row(tabs["general"], 6, "Flip routine:", ttk.Button(tabs["general"], text="Flip", command=_flip_routine_horizontal), "Mirror horizontally")
     
     # Physics tab rows
     _row(tabs["physics"], 0, "Drive RPM:", ttk.Entry(tabs["physics"], textvariable=rpm_var), "Affects vmax and accel")
     _row(tabs["physics"], 1, "Wheel diameter (in):", ttk.Entry(tabs["physics"], textvariable=diam_var), "Wheel size")
-    _row(tabs["physics"], 2, "Straight volts (0–12):", ttk.Entry(tabs["physics"], textvariable=vs_var), "Forward voltage")
-    _row(tabs["physics"], 3, "Turn volts (0–12):", ttk.Entry(tabs["physics"], textvariable=vt_var), "Turn voltage")
-    _row(tabs["physics"], 4, "Robot weight (lb):", ttk.Entry(tabs["physics"], textvariable=w_var), "Robot mass")
-    _row(tabs["physics"], 5, "Buffer Time (s):", ttk.Entry(tabs["physics"], textvariable=tb_var), "Pause per node")
-    _row(tabs["physics"], 6, "Gear ratio:", ttk.Entry(tabs["physics"], textvariable=gr_var), "Motor:wheel ratio")
-    _row(tabs["physics"], 7, "Point density (/in):", ttk.Entry(tabs["physics"], textvariable=dens_var), "Uniform resample density for curved paths")
+    _row(tabs["physics"], 2, "Robot weight (lb):", ttk.Entry(tabs["physics"], textvariable=w_var), "Robot mass")
+    _row(tabs["physics"], 3, "Buffer Time (s):", ttk.Entry(tabs["physics"], textvariable=tb_var), "Pause per node")
+    _row(tabs["physics"], 4, "Gear ratio:", ttk.Entry(tabs["physics"], textvariable=gr_var), "Motor:wheel ratio")
+    _row(tabs["physics"], 5, "Point density (/in):", ttk.Entry(tabs["physics"], textvariable=dens_var), "Uniform resample density for curved paths")
+    _row(tabs["physics"], 6, "All omni wheels:", ttk.Checkbutton(tabs["physics"], variable=omni_var), "Softer accel/turn caps to reflect all-omni behavior")
+    _row(tabs["physics"], 7, "Advanced motion vars:", ttk.Checkbutton(tabs["physics"], variable=adv_motion_var), "Enable JAR-style voltage/settle placeholders and profile hover info")
     curv_disp = tk.StringVar(value=f"{curv_var.get():.3f}")
     def _curv_live(_=None):
         try:
@@ -1959,7 +2205,7 @@ def open_settings_window():
     curv_scale.pack(side="left", padx=(0,6))
     curv_label = ttk.Label(curv_frame, textvariable=curv_disp, width=7)
     curv_label.pack(side="left")
-    _row(tabs["physics"], 9, "Curvature gain:", curv_frame, "Higher = stronger slow-down in tight turns (live)")
+    _row(tabs["physics"], 8, "Curvature gain:", curv_frame, "Higher = stronger slow-down in tight turns (live)")
     
     # Dimensions tab rows
     _row(tabs["geometry"], 0, "Bot Geometry Visualizer:", ttk.Button(tabs["geometry"], text="Open visual editor", command=open_geometry_visualizer), "Drag-to-edit drivetrain and robot geometry, including reshape.")
@@ -1979,6 +2225,7 @@ def open_settings_window():
             "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
             "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
             "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}}});",
+            "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{DIR}, {TIMEOUT_MS});",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse handled per-command",
             "reverse_off": "// reverse handled per-command",
@@ -1986,12 +2233,27 @@ def open_settings_window():
             "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {{.forwards = {FORWARDS}}});",
             "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
+        "JAR": {
+            "wait": "pros::delay({MS});",
+            "move": "driveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {HEADING_DEG});",
+            "turn_global": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+            "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+            "pose": "driveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+            "swing": "swingToHeading({HEADING_DEG}, {DIR}, {TIMEOUT_MS});",
+            "path_follow": 'followPath("{PATH_FILE}", {TIMEOUT_MS});',
+            "reshape": "// RESHAPE state={STATE}",
+            "reverse_on": "// reverse handled inline",
+            "reverse_off": "// reverse handled inline",
+            "tbuffer": "pros::delay({MS});",
+            "setpose": "setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
+        },
         "PROS": {
             "wait": "pros::delay({MS});",
             "move": "drive_distance({DIST_IN});",
             "turn_global": "turn_to({HEADING_DEG});",
             "turn_local": "turn_angle({TURN_DELTA_DEG});",
             "pose": "// move_to_pose x={X_IN}, y={Y_IN}, h={HEADING_DEG}",
+            "swing": "swing_to({HEADING_DEG}, {DIR});",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
@@ -2001,10 +2263,11 @@ def open_settings_window():
         },
         "Custom": {
             "wait": "pros::delay({MS});",
-            "move": "move({DIST_IN});",
+            "move": "move({X_IN}, {Y_IN}, {HEADING_DEG});",
             "turn_global": "face({HEADING_DEG});",
             "turn_local": "turn_relative({TURN_DELTA_DEG});",
             "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
+            "swing": "swing_to_heading({HEADING_DEG}, {DIR});",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
@@ -2030,12 +2293,12 @@ def open_settings_window():
         CFG["codegen"].setdefault("templates", {}).setdefault(_style, dict(_tpl))
         CFG["codegen"]["templates"].setdefault(_style, {}).setdefault("__optional__", ["setpose"])
 
-    style_labels = ["Action List", "LemLib", "PROS", "Custom"]
+    style_labels = ["Action List", "LemLib", "JAR", "PROS", "Custom"]
     codegen_style_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("style", "Action List")))
 
     # Template variables for customizable tokens
-    base_tpl_keys = ["wait", "move", "turn_global", "turn_local", "pose", "path_follow", "tbuffer", "setpose"]
-    optional_pool = ["reverse_on", "reverse_off", "reshape", "setpose"]
+    base_tpl_keys = ["wait", "move", "turn_global", "turn_local", "pose", "path_follow", "tbuffer", "setpose", "swing"]
+    optional_pool = ["reverse_on", "reverse_off", "reshape", "setpose", "swing"]
     tpl_keys = base_tpl_keys + optional_pool
     tpl_vars = {k: tk.StringVar() for k in tpl_keys}
     motion_mode_var = tk.StringVar(value="move")
@@ -2250,13 +2513,9 @@ def open_settings_window():
         active_optional = _active_optional_for(style)
         available_optional = [c for c in optional_pool if c not in active_optional]
 
-        # Mode selectors
+        # Mode selectors (turn only; move/pose both available)
         mode_row = ttk.Frame(tpl_panel)
         mode_row.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        ttk.Label(mode_row, text="Motion cmd:").pack(side="left")
-        cb_motion = ttk.Combobox(mode_row, width=10, values=["move", "pose"], state="readonly", textvariable=motion_mode_var)
-        cb_motion.pack(side="left", padx=3)
-        cb_motion.bind("<<ComboboxSelected>>", _on_mode_change)
         ttk.Label(mode_row, text="Turn cmd:").pack(side="left", padx=(10, 3))
         cb_turn = ttk.Combobox(mode_row, width=12, values=["turn_global", "turn_local"], state="readonly", textvariable=turn_mode_var)
         cb_turn.pack(side="left")
@@ -2271,23 +2530,34 @@ def open_settings_window():
         
         # Help text for each token
         help_map = {
-            "wait": "{MS} or {S} delay tokens. TIMEOUT_MS/S include pad- and min floor.",
-            "move": "{DIST_IN}/{X_IN},{Y_IN} {FORWARDS}; {MOVE_SPEED} optional ips override",
-            "turn_global": "Field heading {HEADING_DEG}; {TURN_SPEED} optional dps",
-            "turn_local": "Relative turn {TURN_DELTA_DEG}; {TURN_SPEED} optional dps",
-            "pose": "{X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}; {FORWARDS}",
+            "wait": "{MS} or {S} delay tokens. TIMEOUT_MS/S include pad- and min floor. {H_DRIFT}.",
+            "move": "{DIST_IN}/{X_IN},{Y_IN} {FORWARDS}; {HEADING_DEG} (global) optional; {MOVE_SPEED} optional cmd (0-127) override; {H_DRIFT}.",
+            "turn_global": "Field heading {HEADING_DEG}; {TURN_SPEED} optional dps; {H_DRIFT}.",
+            "turn_local": "Relative turn {TURN_DELTA_DEG}; {TURN_SPEED} optional dps; {H_DRIFT}.",
+            "pose": "{X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}; {FORWARDS}; {H_DRIFT}.",
             "setpose": "Set initial pose {X_IN},{Y_IN},{HEADING_DEG}",
             "reshape": "{STATE} 1=normal, 2=reshaped",
             "reverse_on": "Toggle reverse drive ON",
             "reverse_off": "Toggle reverse drive OFF",
             "tbuffer": "{MS} or {S} for buffer wait",
-            "path_follow": "Tokens: {PATH_NAME}, {PATH_FILE}, {PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS}, {PATH_MIN_SPEED}, {PATH_MAX_SPEED}."
+            "path_follow": "Tokens: {PATH_NAME}, {PATH_FILE}, {PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS}, {PATH_MIN_SPEED}, {PATH_MAX_SPEED} (cmd 0-127); {H_DRIFT}.",
+            "swing": "{HEADING_DEG} target, {DIR}=AUTO/CW/CCW, {SIDE}=LEFT/RIGHT/AUTO, {TIMEOUT_MS}; {H_DRIFT}."
         }
+        if adv_motion_var.get():
+            # Add JAR advanced placeholders to help text
+            adv_drive_note = " Auto caps/settle: short=precise, long=fast; voltage caps scale with move size; settle err/time scale with move size and cap."
+            adv_turn_note = " Auto caps/settle: small angles=precise, large=fast; voltage/settle scale with angle and cap."
+            adv_swing_note = " Auto caps/settle: small swings=precise, large=fast; voltage/settle scale with swing angle and cap."
+            help_map["move"] += " JAR: {DRIVE_MAX_V}, {HEADING_MAX_V}, {DRIVE_SETTLE_ERR}, {DRIVE_SETTLE_TIME}." + adv_drive_note
+            help_map["pose"] += " JAR: {DRIVE_MAX_V}, {HEADING_MAX_V}, {DRIVE_SETTLE_ERR}, {DRIVE_SETTLE_TIME}." + adv_drive_note
+            help_map["path_follow"] += " JAR: {DRIVE_MAX_V}, {HEADING_MAX_V}, {DRIVE_SETTLE_ERR}, {DRIVE_SETTLE_TIME}." + adv_drive_note
+            help_map["turn_global"] += " JAR: {TURN_MAX_V}, {TURN_SETTLE_ERR}, {TURN_SETTLE_TIME}." + adv_turn_note
+            help_map["turn_local"] += " JAR: {TURN_MAX_V}, {TURN_SETTLE_ERR}, {TURN_SETTLE_TIME}." + adv_turn_note
+            help_map["swing"] += " JAR: {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}." + adv_swing_note
         
         # Active command list honoring selected modes (pose and turn can coexist)
-        motion_key = modes.get("motion") or "pose"
         turn_key = modes.get("turn") or ("turn_global" if style == "LemLib" else "turn_local")
-        base_cmds = ["wait", motion_key, turn_key, "path_follow", "tbuffer"]
+        base_cmds = ["wait", "move", "pose", turn_key, "path_follow", "tbuffer"]
         active_cmds = base_cmds + active_optional
         
         # Scrollable command list only
@@ -2312,15 +2582,107 @@ def open_settings_window():
         list_panel.bind("<Configure>", _on_list_config)
         list_canvas.bind("<Configure>", _on_list_config)
 
+        def _auto_size_text(txt: tk.Text):
+            """Resize a Text widget height to fit content up to a small cap."""
+            try:
+                content = txt.get("1.0", "end-1c")
+            except Exception:
+                return
+            lines = content.splitlines() or [""]
+            max_len = max((len(line) for line in lines), default=0)
+            est_lines = max(len(lines), max(1, max_len // 50 + 1))
+            est_lines = max(2, min(6, est_lines))
+            try:
+                txt.configure(height=est_lines)
+            except Exception:
+                pass
+
+        pop_state = {"frame": None}
+
+        def _close_pop():
+            frm = pop_state.get("frame")
+            if frm is not None and frm.winfo_exists():
+                try:
+                    frm.destroy()
+                except Exception:
+                    pass
+            pop_state["frame"] = None
+
+        def _open_pop(src_txt: tk.Text, var_key: str):
+            """Create a temporary enlarged editor anchored near the source widget."""
+            _close_pop()
+            try:
+                list_panel.update_idletasks()
+                src_txt.update_idletasks()
+            except Exception:
+                pass
+            try:
+                x = src_txt.winfo_rootx() - list_panel.winfo_rootx()
+                y = src_txt.winfo_rooty() - list_panel.winfo_rooty()
+            except Exception:
+                x = src_txt.winfo_x()
+                y = src_txt.winfo_y()
+            width = max(260, int(src_txt.winfo_width() * 1.6))
+            width = min(width, max(320, list_panel.winfo_width() - x - 8))
+
+            frame = tk.Frame(list_panel, background="#1e1e1e", bd=2, relief="solid")
+            frame.place(x=x, y=y - 2, width=width)
+            big = tk.Text(frame, wrap="word", height=6)
+            big.pack(fill="both", expand=True)
+            try:
+                big.insert("1.0", src_txt.get("1.0", "end-1c"))
+            except Exception:
+                pass
+            big.focus_set()
+
+            def _sync_back(_evt=None):
+                try:
+                    content = big.get("1.0", "end-1c")
+                except Exception:
+                    content = ""
+                try:
+                    tpl_vars[var_key].set(content)
+                except Exception:
+                    pass
+                try:
+                    src_txt.delete("1.0", "end")
+                    src_txt.insert("1.0", content)
+                    _auto_size_text(src_txt)
+                except Exception:
+                    pass
+
+            def _close_and_sync(_evt=None):
+                _sync_back()
+                _close_pop()
+                try:
+                    src_txt.focus_set()
+                except Exception:
+                    pass
+
+            big.bind("<KeyRelease>", lambda e: (_sync_back()))
+            big.bind("<Escape>", _close_and_sync)
+            big.bind("<FocusOut>", _close_and_sync)
+            pop_state["frame"] = frame
+
         row_idx = 0
         for key in active_cmds:
             if key not in tpl_vars:
                 continue
             ttk.Label(list_panel, text=key).grid(row=row_idx, column=0, sticky="w", padx=(0, 6), pady=2)
-            ent = ttk.Entry(list_panel, textvariable=tpl_vars[key])
-            ent.grid(row=row_idx, column=1, sticky="ew", pady=2)
-            add_tooltip(ent, help_map.get(key, ""))
-            track_live_widget(ent)
+            txt = tk.Text(list_panel, wrap="word", height=2)
+            txt.insert("1.0", tpl_vars[key].get())
+            _auto_size_text(txt)
+            txt.grid(row=row_idx, column=1, sticky="ew", pady=2)
+            add_tooltip(txt, help_map.get(key, ""))
+            def _sync_var(event=None, t=txt, k=key):
+                try:
+                    tpl_vars[k].set(t.get("1.0", "end-1c"))
+                except Exception:
+                    pass
+            txt.bind("<KeyRelease>", lambda e, t=txt, k=key: (_auto_size_text(t), _sync_var(None, t, k)))
+            txt.bind("<FocusOut>", lambda e, t=txt, k=key: (_sync_var(None, t, k), on_update(), _close_pop()))
+            txt.bind("<FocusIn>", lambda e, t=txt, k=key: _open_pop(t, k))
+            track_live_widget(txt)
             if key in optional_pool:
                 ttk.Button(list_panel, text="Remove", command=lambda k=key: _remove_optional(k)).grid(row=row_idx, column=2, padx=4, pady=2)
             row_idx += 1
@@ -2340,6 +2702,11 @@ def open_settings_window():
         ttk.Button(btns, text="Reset to Defaults", command=_reset_defaults).pack(side="left", padx=(0, 6))
         ttk.Button(btns, text="Save Templates", command=_persist_now).pack(side="left")
         tpl_panel.after(0, _bind_tpl_live_handlers)
+
+    try:
+        adv_motion_var.trace_add("write", lambda *_: _rebuild_tpl_panel())
+    except Exception:
+        pass
         
     def _reset_defaults():
         style = codegen_style_var.get()
@@ -2415,10 +2782,12 @@ def open_settings_window():
             # Update physics
             CFG["robot_physics"]["rpm"] = float(rpm_var.get())
             CFG["robot_physics"]["diameter"] = float(diam_var.get())
-            CFG["robot_physics"]["volts_straight"] = float(vs_var.get())
-            CFG["robot_physics"]["volts_turn"] = float(vt_var.get())
+            CFG["robot_physics"]["volts_straight"] = 12.0
+            CFG["robot_physics"]["volts_turn"] = 12.0
             CFG["robot_physics"]["weight"] = float(w_var.get())
             CFG["robot_physics"]["t_buffer"] = float(tb_var.get())
+            CFG["robot_physics"]["advanced_motion"] = int(adv_motion_var.get())
+            CFG["robot_physics"]["all_omni"] = int(omni_var.get())
             CFG["robot_physics"]["point_density_per_in"] = float(dens_var.get() or rp.get("point_density_per_in", 4.0))
             CFG["robot_physics"]["curvature_gain"] = float(curv_var.get() or rp.get("curvature_gain", 0.05))
             CFG["gear_ratio"] = float(gr_var.get())
@@ -2426,6 +2795,7 @@ def open_settings_window():
             # Update UI
             CFG.setdefault("ui", {})["show_hitboxes"] = int(show_hitboxes_var.get())
             CFG.setdefault("ui", {})["show_field_objects"] = int(show_field_objects_var.get())
+            CFG["reshape_label"] = reshape_label_var.get().strip() or "Reshape"
             
             # Update dimensions
             bd = CFG["bot_dimensions"]
@@ -2448,8 +2818,8 @@ def open_settings_window():
             # Path config (preserve defaults if absent)
             pc = CFG.setdefault("path_config", {})
             pc["lookahead_in"] = auto_lookahead_in(CFG)
-            pc["min_speed_ips"] = float(pc.get("min_speed_ips", 30.0))
-            pc["max_speed_ips"] = float(pc.get("max_speed_ips", 127.0))
+            pc["min_speed_ips"] = max(0.0, min(127.0, float(pc.get("min_speed_ips", 0.0))))
+            pc["max_speed_ips"] = max(0.0, min(127.0, float(pc.get("max_speed_ips", 127.0))))
             pc["simulate_pursuit"] = int(path_lookahead_enabled)
             
             # Refresh lookahead globals
@@ -2624,7 +2994,8 @@ def main():
                     sync_all_path_endpoints()
                     log_lines.clear()
                     log_lines.extend(build_compile_header(CFG, initial_state["heading"]))
-                    tl = apply_tbuffer(CFG, compile_timeline(display_nodes, CFG, initial_state["heading"], fps=60))
+                    tl = build_timeline_with_buffers()
+                    total_estimate_s = compute_total_from_timeline(tl)
                     style_norm = str(CFG.get("codegen", {}).get("style", "Action List")).strip().lower()
                     
                     if style_norm not in ("action list", "actionlist", "list"):
@@ -2652,6 +3023,8 @@ def main():
                                 if _key != last_turn:
                                     log_action("turn", h0=seg["start_heading"], h1=seg["target_heading"])
                                     last_turn = _key
+                            elif st == "swing":
+                                log_action("swing", h0=seg.get("start_heading", 0.0), h1=seg.get("target_heading", 0.0), dir=seg.get("swing_dir", "AUTO"))
                             elif st == "wait":
                                 if not (idx == len(tl)-1 and abs(T - tbuf) <= 1e-6 and seg.get("role") == "buffer"):
                                     log_action("wait", s=T)
@@ -2681,9 +3054,10 @@ def main():
                             if display_nodes[0].get("reshape_toggle", False): 
                                 reshape_live = not reshape_live
                             for a in display_nodes[0].get("actions", []):
-                                if a.get("type") in ("reshape", "geom"): 
+                                if a.get("type") in ("reshape", "geom"):
                                     reshape_live = not reshape_live
-                            timeline = apply_tbuffer(CFG, compile_timeline(display_nodes, CFG, initial_state["heading"], fps))
+                            timeline = build_timeline_with_buffers()
+                            total_estimate_s = compute_total_from_timeline(timeline)
                             seg_i = 0; t_local = 0.0; last_logged_seg = -1
                 
                 elif event.key == pygame.K_SPACE and (mods & pygame.KMOD_CTRL):
@@ -2882,14 +3256,14 @@ def main():
                             prev = util_snapshot(display_nodes, robot_pos, robot_heading)
                             try:
                                 pd_cur = display_nodes[hit_seg].get("path_to_next", {})
-                                init_min = pd_cur.get("min_speed_ips", CFG.get("path_config", {}).get("min_speed_ips", 30.0))
+                                init_min = pd_cur.get("min_speed_ips", CFG.get("path_config", {}).get("min_speed_ips", 0.0))
                                 init_max = pd_cur.get("max_speed_ips", CFG.get("path_config", {}).get("max_speed_ips", 127.0))
                                 init_la = pd_cur.get("lookahead_in_override", CFG.get("path_config", {}).get("lookahead_in", auto_lookahead_in(CFG)))
                                 inp = simpledialog.askstring("Path speeds / lookahead", "Enter min,max[,lookahead in]:", initialvalue=f"{init_min},{init_max},{init_la}")
                                 if inp:
                                     parts = [p.strip() for p in inp.replace(";", ",").split(",")]
                                     if len(parts) >= 2:
-                                        vmin = float(parts[0]); vmax = float(parts[1])
+                                        vmin = max(0.0, min(127.0, float(parts[0]))); vmax = max(0.0, min(127.0, float(parts[1])))
                                         pd = display_nodes[hit_seg].setdefault("path_to_next", {})
                                         pd["min_speed_ips"] = vmin
                                         pd["max_speed_ips"] = vmax
@@ -2914,12 +3288,19 @@ def main():
                                     "  wait 1.5; turn -30\n"
                                     "  offset 7   (custom offset)\n"
                                     "  reshape    (toggle geometry)\n"
+                                    "  reverse    (toggle / reverse on/off)\n"
+                                    "  swingto 180   (force swing heading)\n"
                                     "  latspeed 50   (drive command override)\n"
                                     "  turnspeed 180 (deg/s override)\n",
                                     initialvalue=init_cmd
                                 )
+                                changed = False
                                 if cmd is not None:
                                     parse_and_apply_cmds(start_node, cmd, hit_seg)
+                                    changed = True
+                                if prompt_heading_realization(start_node, hit_seg):
+                                    changed = True
+                                if changed:
                                     start_node["pos"] = node_pos_locked
                                     display_nodes[hit_seg]["pos"] = node_pos_locked
                                     correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -2951,22 +3332,29 @@ def main():
                                 "  wait 1.5; turn -30\n"
                                 "  offset 7   (custom offset)\n"
                                 "  reshape    (toggle geometry)\n"
-                                "  latspeed 50   (drive ips override)\n"
+                                "  reverse    (toggle / reverse on/off)\n"
+                                "  swingto 180   (force swing heading)\n"
+                                "  latspeed 50   (drive command override 0-127)\n"
                                 "  turnspeed 180 (deg/s override)\n"
                                 "Angles use 0=left, 90=up, 180=right.",
                                 initialvalue=init
                             )
+                            changed = False
                             if cmd is not None:
                                 parse_and_apply_cmds(node, cmd, pick)
-                            # Keep node anchored while editing commands
-                            node["pos"] = node_pos_locked
-                            display_nodes[pick]["pos"] = node_pos_locked
-                            correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
-                            sync_all_path_endpoints()
-                            util_push_undo_prev(undo_stack, prev)
-                            last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
-                            last_path_sig = None
-                            total_estimate_s = compute_total_estimate_s()
+                                changed = True
+                            if prompt_heading_realization(node, pick):
+                                changed = True
+                            if changed:
+                                # Keep node anchored while editing commands
+                                node["pos"] = node_pos_locked
+                                display_nodes[pick]["pos"] = node_pos_locked
+                                correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
+                                sync_all_path_endpoints()
+                                util_push_undo_prev(undo_stack, prev)
+                                last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
+                                last_path_sig = None
+                                total_estimate_s = compute_total_estimate_s()
 
             if event.type == pygame.MOUSEMOTION:
                 if path_edit_mode and dragging_control_point and selected_control_point is not None:
@@ -3069,6 +3457,8 @@ def main():
                             log_action("wait", s=seg["T"])
                     elif seg["type"] == "reshape":
                         log_action("reshape", state=seg["state"])
+                    elif seg["type"] == "swing":
+                        log_action("turn", h0=seg.get("start_heading"), h1=seg.get("target_heading"))
                     last_logged_seg = seg_i
                 
                 seg_type = seg.get("type")
@@ -3079,6 +3469,11 @@ def main():
                             robot_pos = path_points[-1]
                             if seg.get("reverse"):
                                 robot_heading = (robot_heading + 180.0) % 360.0
+                        seg_i += 1
+                        t_local = 0.0
+                    elif seg_type == "swing":
+                        robot_pos = seg.get("end_pos", robot_pos)
+                        robot_heading = seg.get("target_heading", robot_heading)
                         seg_i += 1
                         t_local = 0.0
                     elif seg_type == "turn":
@@ -3129,13 +3524,17 @@ def main():
                                 dx = look_pt[0] - robot_pos[0]
                                 dy = look_pt[1] - robot_pos[1]
                                 dist = math.hypot(dx, dy)
-                                speed_ips = seg.get("path_speeds", [None])[0] if path_speeds else CFG.get("path_config", {}).get("max_speed_ips", 60.0)
+                                speed_ips = seg.get("path_speeds", [None])[0] if path_speeds else None
                                 try:
                                     idx_progress = int(max(0, min(len(path_points)-1, (t_local / max(1e-6, T)) * (len(path_points)-1))))
                                     if path_speeds:
                                         speed_ips = path_speeds[idx_progress]
                                 except Exception:
                                     pass
+                                if speed_ips is None:
+                                    cfg_cmd = float(CFG.get("path_config", {}).get("max_speed_ips", 127.0))
+                                    cfg_cmd = max(0.0, min(127.0, cfg_cmd))
+                                    speed_ips = vmax_straight(CFG) * (cfg_cmd / 127.0)
                                 v_px = float(speed_ips) * PPI
                                 step = min(dist, v_px * (1.0/60.0))
                                 if dist > 1e-6:
@@ -3171,6 +3570,21 @@ def main():
                             last_lookahead_point = None
                             last_heading_target = None
                     
+                    elif seg_type == "swing":
+                        dg = seg.get("diff_geom", {})
+                        center = dg.get("center")
+                        r0 = dg.get("r0")
+                        delta_deg = dg.get("delta_deg", 0.0)  # geometry delta (screen-space)
+                        delta_heading = seg.get("delta_heading", seg.get("target_heading", robot_heading) - seg.get("start_heading", robot_heading))
+                        frac = 0.0 if T <= 0 else max(0.0, min(1.0, t_local / max(1e-6, T)))
+                        if center is not None and r0 is not None:
+                            ang = math.radians(delta_deg) * frac
+                            cosd, sind = math.cos(ang), math.sin(ang)
+                            rx = r0[0] * cosd - r0[1] * sind
+                            ry = r0[0] * sind + r0[1] * cosd
+                            robot_pos = (center[0] + rx, center[1] + ry)
+                        robot_heading = (seg.get("start_heading", robot_heading) + delta_heading * frac) % 360.0
+                    
                     elif seg_type == "wait":
                         robot_pos = seg.get("pos", robot_pos)
                         robot_heading = seg.get("heading", robot_heading)
@@ -3199,6 +3613,9 @@ def main():
                             robot_heading = seg.get("heading", robot_heading)
                         elif seg_type == "turn":
                             robot_pos, robot_heading = seg["pos"], seg["target_heading"]
+                        elif seg_type == "swing":
+                            robot_pos = seg.get("end_pos", robot_pos)
+                            robot_heading = seg.get("target_heading", robot_heading)
                         elif seg_type == "reshape":
                             reshape_live = True if seg.get("state", 1) == 2 else False
                         seg_i += 1
@@ -3210,6 +3627,25 @@ def main():
         draw_field_objects(screen, CFG)
         draw_geometry_borders(screen, display_nodes, CFG, initial_state["heading"])
         draw_follow_geometry(screen, CFG, robot_pos, robot_heading, reshape_live)
+
+        # Draw swing arcs and movetopose previews (straight segments only)
+        for i in range(len(display_nodes) - 1):
+            node = display_nodes[i]
+            pd = node.get("path_to_next", {})
+            swing_vis = pd.get("swing_vis")
+            pose_preview = pd.get("pose_preview_points")
+            next_eff = effective_node_pos(i + 1)
+            start_override = pd.get("start_override", node.get("pos"))
+            if swing_vis:
+                arc_pts = swing_arc_points(swing_vis)
+                start_pos = swing_vis.get("start_pos", start_override)
+                end_pos = swing_vis.get("end_pos", start_pos)
+                if arc_pts:
+                    pygame.draw.lines(screen, (40, 220, 120), False, arc_pts, 3)
+                pygame.draw.line(screen, (140, 140, 140), start_pos, end_pos, 2)
+                pygame.draw.line(screen, (80, 200, 80), end_pos, next_eff, 2)
+            if pose_preview and not pd.get("use_path", False):
+                draw_curved_path(screen, pose_preview, color=(80, 220, 200), width=3)
         
         # Draw paths for curved segments
         for i, node in enumerate(display_nodes[:-1]):
@@ -3245,6 +3681,8 @@ def main():
         for i in range(len(display_nodes) - 1):
             node = display_nodes[i]
             path_data = node.get("path_to_next", {})
+            if path_data.get("swing_vis") or path_data.get("pose_preview_points"):
+                continue
             if not (path_data.get("use_path") and path_data.get("control_points")):
                 # Draw straight line
                 p0, p1 = display_nodes[i]["pos"], display_nodes[i+1]["pos"]
