@@ -16,7 +16,7 @@
       "value": 11.0
     },
     "t_buffer": {
-      "value": 0.1
+      "value": 0.05
     },
     "max_cmd": {
       "value": 127.0
@@ -27,14 +27,14 @@
     "curvature_gain": {
       "value": 0.12162162162162163
     },
-    "horizontal_drift": {
-      "value": 0.0
-    },
     "advanced_motion": {
       "value": 1.0
     },
     "all_omni": {
       "value": 1.0
+    },
+    "tracking_wheels": {
+      "value": 0.0
     }
   },
   "bot_dimensions": {
@@ -86,10 +86,10 @@
     "lookahead_in": {
       "value": 11.25
     },
-    "min_speed_ips": {
+    "min_speed_cmd": {
       "value": 30.0
     },
-    "max_speed_ips": {
+    "max_speed_cmd": {
       "value": 127.0
     },
     "simulate_pursuit": {
@@ -106,39 +106,42 @@
     "value": 0
   },
   "initial_heading_deg": {
-    "value": 76.464
+    "value": 25.769
   },
   "gear_ratio": {
     "value": 0.75
   },
   "ui": {
     "show_hitboxes": {
-      "value": 1
+      "value": 0
     },
     "show_field_objects": {
+      "value": 1
+    },
+    "show_node_numbers": {
       "value": 1
     }
   },
   "reshape_label": {
-    "value": "Reshape"
+    "value": "matchload_toggle"
   },
   "codegen": {
     "style": {
-      "value": "JAR"
+      "value": "LemLib"
     },
     "templates": {
       "LemLib": {
         "wait": "pros::delay({MS});",
-        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}});",
+        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
         "turn": "turn({HEADING_DEG});",
         "face": "turnToFace({HEADING_DEG});",
-        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}});",
+        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
         "mech": "// MECH: {NAME}",
         "tbuffer": "pros::delay({MS});",
         "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
         "__optional__": [
-          "setpose",
           "reshape",
+          "setpose",
           "swing"
         ],
         "__modes__": {
@@ -146,10 +149,12 @@
           "turn": "turn_global"
         },
         "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
-        "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
-        "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
-        "reshape": "matchload_state({STATE});",
-        "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{SIDE}, {TIMEOUT_MS});"
+        "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
+        "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
+        "reshape": "matchloadPistons.set_value({STATE});",
+        "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
+        "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+        "marker_wait_done": "chassis.waitUntilDone();"
       },
       "PROS": {
         "wait": "pros::delay({MS});",
@@ -166,7 +171,9 @@
         },
         "turn_global": "turn_to({HEADING_DEG});",
         "turn_local": "turn_angle({TURN_DELTA_DEG});",
-        "pose": "// move_to_pose x={X_IN}, y={Y_IN}, h={HEADING_DEG}"
+        "pose": "// move_to_pose x={X_IN}, y={Y_IN}, h={HEADING_DEG}",
+        "marker_wait": "",
+        "marker_wait_done": ""
       },
       "Custom": {
         "wait": "wait({S}, seconds);",
@@ -216,18 +223,308 @@
           "turn": "turn_global"
         },
         "swing": "{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
-        "reshape": "matchload_state({STATE});"
+        "reshape": "matchload_state({STATE});",
+        "marker_wait": "",
+        "marker_wait_done": ""
       }
     },
     "opts": {
       "time_unit": "ms",
       "ticks_per_rotation": 360.0,
-      "pad_factor": 1.2,
+      "pad_factor": 1.3,
       "min_timeout_s": 0.0,
-      "path_lookahead": 15.0
+      "reshape_output": "true/false",
+      "path_lookahead": 15.0,
+      "pid_consider": 1,
+      "pid_style": "JAR"
     },
     "path_dir": {
       "value": "export/paths"
+    },
+    "path_columns": {
+      "value": "{X}, {Y}, {COMMAND}"
+    },
+    "mech_presets": [
+      {
+        "name": "Intake Spin",
+        "mode": "action",
+        "template": "printf(\"Hello World\");",
+        "on": "",
+        "off": "",
+        "default": false
+      },
+      {
+        "name": "reshape",
+        "mode": "toggle",
+        "template": "",
+        "on": "",
+        "off": "",
+        "default": false
+      }
+    ],
+    "calibration": {
+      "enabled": 0,
+      "last_run": "",
+      "trial_count": 0,
+      "hold_ms": 120,
+      "k_noise": 4.0,
+      "err_scale": 1.1,
+      "time_scale": 1.1,
+      "noise": {
+        "drive_in": 0.0,
+        "turn_deg": 0.0
+      },
+      "profiles": {}
+    },
+    "motion_profiles": {
+      "voltage_shapes": {
+        "drive": {
+          "precise": [
+            4.0,
+            6.0,
+            8.0
+          ],
+          "normal": [
+            5.0,
+            7.0,
+            10.0
+          ],
+          "custom": [
+            5.0,
+            7.0,
+            10.0
+          ],
+          "fast": [
+            6.0,
+            8.5,
+            12.0
+          ],
+          "slam": [
+            7.0,
+            9.0,
+            12.0
+          ]
+        },
+        "turn": {
+          "precise": [
+            3.5,
+            5.5,
+            8.0
+          ],
+          "normal": [
+            4.5,
+            6.5,
+            10.0
+          ],
+          "custom": [
+            4.5,
+            6.5,
+            10.0
+          ],
+          "fast": [
+            5.0,
+            7.5,
+            11.0
+          ],
+          "slam": [
+            6.0,
+            9.0,
+            12.0
+          ]
+        },
+        "swing": {
+          "precise": [
+            3.0,
+            5.0,
+            7.0
+          ],
+          "normal": [
+            4.0,
+            6.0,
+            9.0
+          ],
+          "custom": [
+            4.0,
+            6.0,
+            9.0
+          ],
+          "fast": [
+            4.5,
+            7.0,
+            10.0
+          ],
+          "slam": [
+            5.5,
+            8.5,
+            12.0
+          ]
+        }
+      },
+      "settle_base": {
+        "drive": {
+          "precise": {
+            "err_min": 0.5,
+            "err_max": 1.2,
+            "t_min": 220,
+            "t_max": 400
+          },
+          "normal": {
+            "err_min": 0.8,
+            "err_max": 1.6,
+            "t_min": 180,
+            "t_max": 320
+          },
+          "custom": {
+            "err_min": 0.8,
+            "err_max": 1.6,
+            "t_min": 180,
+            "t_max": 320
+          },
+          "fast": {
+            "err_min": 1.0,
+            "err_max": 2.0,
+            "t_min": 150,
+            "t_max": 260
+          },
+          "slam": {
+            "err_min": 1.5,
+            "err_max": 2.0,
+            "t_min": 120,
+            "t_max": 200
+          }
+        },
+        "turn": {
+          "precise": {
+            "err_min": 0.5,
+            "err_max": 1.0,
+            "t_min": 200,
+            "t_max": 380
+          },
+          "normal": {
+            "err_min": 0.8,
+            "err_max": 1.5,
+            "t_min": 170,
+            "t_max": 320
+          },
+          "custom": {
+            "err_min": 0.8,
+            "err_max": 1.5,
+            "t_min": 170,
+            "t_max": 320
+          },
+          "fast": {
+            "err_min": 1.0,
+            "err_max": 2.0,
+            "t_min": 150,
+            "t_max": 280
+          },
+          "slam": {
+            "err_min": 1.5,
+            "err_max": 2.5,
+            "t_min": 120,
+            "t_max": 220
+          }
+        },
+        "swing": {
+          "precise": {
+            "err_min": 0.6,
+            "err_max": 1.2,
+            "t_min": 170,
+            "t_max": 320
+          },
+          "normal": {
+            "err_min": 0.9,
+            "err_max": 1.6,
+            "t_min": 150,
+            "t_max": 260
+          },
+          "custom": {
+            "err_min": 0.9,
+            "err_max": 1.6,
+            "t_min": 150,
+            "t_max": 260
+          },
+          "fast": {
+            "err_min": 1.2,
+            "err_max": 2.0,
+            "t_min": 120,
+            "t_max": 220
+          },
+          "slam": {
+            "err_min": 1.6,
+            "err_max": 2.6,
+            "t_min": 100,
+            "t_max": 180
+          }
+        }
+      },
+      "profile_rules": {
+        "drive": {
+          "precise_max": 12.0,
+          "fast_min": 36.0
+        },
+        "turn": {
+          "precise_max": 25.0,
+          "fast_min": 120.0
+        },
+        "swing": {
+          "precise_max": 25.0,
+          "fast_min": 120.0
+        }
+      }
+    }
+  },
+  "physics_constants": {
+    "load_factor": {
+      "value": 0.9
+    },
+    "weight_exp": {
+      "value": 0.06
+    },
+    "accel_mu_scale": {
+      "value": 0.9
+    },
+    "accel_min": {
+      "value": 60.0
+    },
+    "accel_max": {
+      "value": 450.0
+    },
+    "t_to_v_base": {
+      "value": 0.25
+    },
+    "t_to_v_min": {
+      "value": 0.12
+    },
+    "t_to_v_max": {
+      "value": 0.6
+    },
+    "vmax_min": {
+      "value": 10.0
+    },
+    "vmax_max": {
+      "value": 220.0
+    },
+    "turn_rate_scale": {
+      "value": 0.8
+    },
+    "turn_rate_min": {
+      "value": 120.0
+    },
+    "turn_rate_max": {
+      "value": 900.0
+    },
+    "turn_accel_base": {
+      "value": 0.2
+    },
+    "turn_accel_min": {
+      "value": 0.12
+    },
+    "turn_accel_max": {
+      "value": 0.3
+    },
+    "omni_scale": {
+      "value": 0.9
     }
   }
 }

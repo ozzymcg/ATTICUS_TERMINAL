@@ -3,7 +3,7 @@
 PyInstaller spec for Atticus Terminal.
 Bundles config JSONs and icon so a one-click build works.
 """
-import os, sys
+import os, sys, glob
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
@@ -12,13 +12,20 @@ block_cipher = None
 spec_path = os.path.abspath(sys.argv[0])
 project_root = os.path.abspath(os.path.dirname(spec_path))
 
-# data files to ship alongside the exe
-_datas = [
-    (os.path.join(project_root, "ATTICUS.png"), "."),
-    (os.path.join(project_root, "config.json"), "."),
-    (os.path.join(project_root, "demo_autonskills.json"), "."),
-    (os.path.join(project_root, "mod", "config.json"), "mod"),
-]
+# data files to ship alongside the exe (only if they exist)
+_datas = []
+
+def _maybe_add(path, dest):
+    if os.path.exists(path):
+        _datas.append((path, dest))
+
+_maybe_add(os.path.join(project_root, "ATTICUS.png"), ".")
+_maybe_add(os.path.join(project_root, "config.json"), ".")
+_maybe_add(os.path.join(project_root, "mod", "config.json"), "mod")
+
+# include any demo_autonskills*.json that exist
+for p in glob.glob(os.path.join(project_root, "demo_autonskills*.json")):
+    _maybe_add(p, ".")
 
 # collect all modules inside mod/* so PyInstaller doesn't miss anything
 _hidden = collect_submodules("mod")

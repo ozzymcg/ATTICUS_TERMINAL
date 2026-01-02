@@ -7,28 +7,32 @@ Handles both straight segments and curved path segments.
 import os
 import math
 from typing import List, Tuple, Dict
-from .config import PPI, WINDOW_WIDTH, WINDOW_HEIGHT
-from .path_export import export_lemlib_path, generate_path_asset_name, field_coords_in
-from .util import pros_convert_inches, interpret_input_angle
-from .geom import convert_heading_input
+from .config import PPI, WINDOW_WIDTH, WINDOW_HEIGHT, DEFAULT_CONFIG
+from .pathing import export_lemlib_path, generate_path_asset_name
+from .sim import _move_total_time, turn_time, path_time_with_curvature, vmax_straight, turn_rate, PROFILE_SPEED_SCALE, _cmd_to_ips, _sample_quad_bezier
+from .geom import convert_heading_input, field_coords_in, interpret_input_angle
+from .util import pros_convert_inches
 
 # JAR helper profiles for settle windows and voltage caps
 SETTLE_BASE = {
     "drive": {
         "precise": {"err_min": 0.5, "err_max": 1.2, "t_min": 220, "t_max": 400},
         "normal":  {"err_min": 0.8, "err_max": 1.6, "t_min": 180, "t_max": 320},
+        "custom":  {"err_min": 0.8, "err_max": 1.6, "t_min": 180, "t_max": 320},
         "fast":    {"err_min": 1.0, "err_max": 2.0, "t_min": 150, "t_max": 260},
         "slam":    {"err_min": 1.5, "err_max": 2.0, "t_min": 120, "t_max": 200},
     },
     "turn": {
         "precise": {"err_min": 0.5, "err_max": 1.0, "t_min": 200, "t_max": 380},
         "normal":  {"err_min": 0.8, "err_max": 1.5, "t_min": 170, "t_max": 320},
+        "custom":  {"err_min": 0.8, "err_max": 1.5, "t_min": 170, "t_max": 320},
         "fast":    {"err_min": 1.0, "err_max": 2.0, "t_min": 150, "t_max": 280},
         "slam":    {"err_min": 1.5, "err_max": 2.5, "t_min": 120, "t_max": 220},
     },
     "swing": {
         "precise": {"err_min": 0.6, "err_max": 1.2, "t_min": 170, "t_max": 320},
         "normal":  {"err_min": 0.9, "err_max": 1.6, "t_min": 150, "t_max": 260},
+        "custom":  {"err_min": 0.9, "err_max": 1.6, "t_min": 150, "t_max": 260},
         "fast":    {"err_min": 1.2, "err_max": 2.0, "t_min": 120, "t_max": 220},
         "slam":    {"err_min": 1.6, "err_max": 2.6, "t_min": 100, "t_max": 180},
     }
@@ -38,22 +42,28 @@ VOLTAGE_SHAPES = {
     "drive": {
         "precise": (4.0, 6.0, 8.0),
         "normal":  (5.0, 7.0, 10.0),
+        "custom":  (5.0, 7.0, 10.0),
         "fast":    (6.0, 8.5, 12.0),
         "slam":    (7.0, 9.0, 12.0),
     },
     "turn": {
         "precise": (3.5, 5.5, 8.0),
         "normal":  (4.5, 6.5, 10.0),
+        "custom":  (4.5, 6.5, 10.0),
         "fast":    (5.0, 7.5, 11.0),
         "slam":    (6.0, 9.0, 12.0),
     },
     "swing": {
         "precise": (3.0, 5.0, 7.0),
         "normal":  (4.0, 6.0, 9.0),
+        "custom":  (4.0, 6.0, 9.0),
         "fast":    (4.5, 7.0, 10.0),
         "slam":    (5.5, 8.5, 12.0),
     }
 }
+
+DEFAULT_SWING_MIN_SPEED = 12
+DEFAULT_SWING_EARLY_EXIT = 2.0
 
 
 def _timeout_tokens(duration_s: float, pad_factor: float, min_s: float):
@@ -63,6 +73,198 @@ def _timeout_tokens(duration_s: float, pad_factor: float, min_s: float):
     fin_s = max(min_s, pad_s)
     fin_ms = math.ceil(fin_s * 1000.0)
     return int(fin_ms), round(fin_s, 6)
+
+def _profile_speed_scale(name: str) -> float:
+    if name is None:
+        return 1.0
+    try:
+        key = str(name).strip().lower()
+    except Exception:
+        return 1.0
+    return float(PROFILE_SPEED_SCALE.get(key, 1.0))
+
+def _pose_curve_time_s(seg: dict, cfg: dict, profile: str) -> float:
+    p0 = seg.get("p0")
+    p1 = seg.get("p1")
+    if p0 is None or p1 is None:
+        return 0.0
+    try:
+        dist_px = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+    except Exception:
+        return 0.0
+    if dist_px <= 1e-6:
+        return 0.0
+    pose_heading = None
+    if seg.get("pose_heading") is not None:
+        try:
+            pose_heading = float(seg.get("pose_heading"))
+        except Exception:
+            pose_heading = None
+        if pose_heading is not None and seg.get("reverse", False):
+            pose_heading = (pose_heading + 180.0) % 360.0
+    if pose_heading is None:
+        pose_heading = seg.get("facing", seg.get("target_heading"))
+    if pose_heading is None:
+        return 0.0
+    try:
+        lead_in = float(seg.get("pose_lead_in", 0.0) or 0.0)
+    except Exception:
+        lead_in = 0.0
+    lead_in = max(0.0, lead_in)
+    disp_heading = convert_heading_input(pose_heading, None)
+    th = math.radians(disp_heading)
+    carrot = (
+        p1[0] + math.cos(th) * dist_px * lead_in,
+        p1[1] + math.sin(th) * dist_px * lead_in
+    )
+    samples = max(20, int((dist_px / PPI) * 4.0))
+    path_points = _sample_quad_bezier(p0, carrot, p1, num=samples)
+    speed_mult = _profile_speed_scale(profile)
+    max_override = seg.get("drive_speed_cmd")
+    if max_override is None and seg.get("drive_speed_ips") is not None:
+        try:
+            vmax_cfg = vmax_straight(cfg)
+            if vmax_cfg > 1e-6:
+                max_override = float(seg.get("drive_speed_ips")) / vmax_cfg * 127.0
+        except Exception:
+            max_override = None
+    try:
+        _, t_move, *_rest = path_time_with_curvature(
+            path_points,
+            cfg,
+            speed_mult=speed_mult,
+            min_speed_override=None,
+            max_speed_override=max_override
+        )
+        return float(t_move or 0.0)
+    except Exception:
+        return 0.0
+
+def _physics_timeout_s(seg: dict, move_type: str, cfg: dict, motion_mode: str = None) -> float:
+    """Compute a conservative physics-based travel time for timeout."""
+    if move_type in ("wait", "reshape"):
+        return 0.0
+    if move_type == "path":
+        path_points = seg.get("path_points")
+        if not path_points:
+            return 0.0
+        profile = seg.get("profile_override") or pick_profile("drive", abs(float(seg.get("path_length_in", 0.0) or 0.0)), cfg=cfg)
+        speed_mult = _profile_speed_scale(profile)
+        min_override = seg.get("min_speed_cmd")
+        max_override = seg.get("max_speed_cmd")
+        if max_override is None:
+            max_override = seg.get("drive_speed_cmd")
+        try:
+            _, t_move, *_rest = path_time_with_curvature(
+                path_points,
+                cfg,
+                speed_mult=speed_mult,
+                min_speed_override=min_override,
+                max_speed_override=max_override
+            )
+            return float(t_move or 0.0)
+        except Exception:
+            return 0.0
+    if move_type in ("move", "pose"):
+        length_in = seg.get("length_in")
+        if length_in is None:
+            p0 = seg.get("p0") or seg.get("start_pos")
+            p1 = seg.get("p1") or seg.get("end_pos")
+            if p0 is not None and p1 is not None:
+                try:
+                    length_in = math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / PPI
+                except Exception:
+                    length_in = None
+        if length_in is None:
+            return 0.0
+        profile = seg.get("profile_override") or pick_profile("drive", abs(float(length_in)), cfg=cfg)
+        use_pose_curve = (move_type == "pose") or (move_type == "move" and str(motion_mode).lower() == "pose")
+        if use_pose_curve:
+            curve_t = _pose_curve_time_s(seg, cfg, profile)
+            if curve_t > 0.0:
+                return float(curve_t)
+        v_override = None
+        if seg.get("drive_speed_ips") is not None:
+            try:
+                v_override = float(seg.get("drive_speed_ips"))
+            except Exception:
+                v_override = None
+        if v_override is None and seg.get("drive_speed_cmd") is not None:
+            try:
+                v_override = _cmd_to_ips(float(seg.get("drive_speed_cmd")), cfg)
+            except Exception:
+                v_override = None
+        if v_override is None:
+            v_override = vmax_straight(cfg) * _profile_speed_scale(profile)
+        try:
+            return float(_move_total_time(float(length_in), cfg, v_override=v_override))
+        except Exception:
+            return 0.0
+    if move_type in ("face", "turn"):
+        h0 = seg.get("start_heading", 0.0)
+        h1 = seg.get("target_heading", seg.get("heading", 0.0))
+        try:
+            delta = ((float(h1) - float(h0) + 180.0) % 360.0) - 180.0
+        except Exception:
+            delta = 0.0
+        profile = seg.get("profile_override") or pick_profile("turn", abs(delta), cfg=cfg)
+        rate_override = seg.get("turn_speed_dps")
+        if rate_override is None:
+            rate_override = turn_rate(cfg) * _profile_speed_scale(profile)
+        try:
+            return float(turn_time(delta, cfg, rate_override=rate_override))
+        except Exception:
+            return 0.0
+    if move_type == "swing":
+        length_in = seg.get("length_in")
+        if length_in is None:
+            length_in = 0.0
+        profile = seg.get("profile_override") or pick_profile("swing", abs(float(seg.get("delta_heading", 0.0) or 0.0)), cfg=cfg)
+        v_override = None
+        if seg.get("drive_speed_ips") is not None:
+            try:
+                v_override = float(seg.get("drive_speed_ips"))
+            except Exception:
+                v_override = None
+        if v_override is None and seg.get("drive_speed_cmd") is not None:
+            try:
+                v_override = _cmd_to_ips(float(seg.get("drive_speed_cmd")), cfg)
+            except Exception:
+                v_override = None
+        if v_override is None:
+            v_override = vmax_straight(cfg) * _profile_speed_scale(profile)
+        try:
+            return float(_move_total_time(float(length_in), cfg, v_override=v_override))
+        except Exception:
+            return 0.0
+    return 0.0
+
+def _reshape_state_token(cfg, state) -> str:
+    mode = str(cfg.get("codegen", {}).get("opts", {}).get("reshape_output", "1/2")).strip().lower()
+    if isinstance(state, bool):
+        enabled = state
+    elif isinstance(state, str):
+        state_norm = state.strip().lower()
+        if state_norm in ("true", "on", "yes", "enabled", "reshape", "reshaped"):
+            enabled = True
+        elif state_norm in ("false", "off", "no", "disabled", "normal"):
+            enabled = False
+        else:
+            try:
+                enabled = int(float(state_norm)) >= 2
+            except Exception:
+                enabled = False
+    else:
+        try:
+            enabled = int(state) >= 2
+        except Exception:
+            enabled = False
+    if mode in ("bool", "true/false", "truefalse", "true"):
+        return "true" if enabled else "false"
+    return "2" if enabled else "1"
+
+MIN_CMD_TIMEOUT_S = 0.15
+SETTLE_TIMEOUT_PAD_MS = 50
 
 
 def _clamp(x, lo, hi):
@@ -83,75 +285,427 @@ def _map_piecewise(mag, x1, x2, v_small, v_mid, v_large):
     return v_large
 
 
-def _compute_settle(move_type: str, magnitude: float, voltage_cap: float, profile: str):
-    b = SETTLE_BASE[move_type][profile]
+def _motion_profiles_cfg(cfg) -> dict:
+    mp = cfg.get("codegen", {}).get("motion_profiles", {})
+    return mp if isinstance(mp, dict) else {}
+
+
+def _profile_override(section: dict, move_type: str, profile: str):
+    if not isinstance(section, dict):
+        return None
+    move_cfg = None
+    for k, v in section.items():
+        if str(k).lower() == str(move_type).lower():
+            move_cfg = v
+            break
+    if not isinstance(move_cfg, dict):
+        return None
+    prof_cfg = None
+    for k, v in move_cfg.items():
+        if str(k).lower() == str(profile).lower():
+            prof_cfg = v
+            break
+    if prof_cfg is None:
+        for k, v in move_cfg.items():
+            if str(k).lower() == "default":
+                prof_cfg = v
+                break
+    return prof_cfg
+
+
+def _settle_base_for(cfg, move_type: str, profile: str) -> dict:
+    base = SETTLE_BASE[move_type][profile]
+    mp = _motion_profiles_cfg(cfg)
+    settle_cfg = mp.get("settle_base")
+    prof_cfg = _profile_override(settle_cfg, move_type, profile)
+    if not isinstance(prof_cfg, dict):
+        return base
+    out = dict(base)
+    for key in ("err_min", "err_max", "t_min", "t_max"):
+        if key in prof_cfg:
+            try:
+                out[key] = float(prof_cfg[key])
+            except Exception:
+                pass
+    return out
+
+
+def _voltage_shape_for(cfg, move_type: str, profile: str):
+    base = VOLTAGE_SHAPES[move_type][profile]
+    mp = _motion_profiles_cfg(cfg)
+    volt_cfg = mp.get("voltage_shapes")
+    prof_cfg = _profile_override(volt_cfg, move_type, profile)
+    if prof_cfg is None:
+        return base
+    if isinstance(prof_cfg, (list, tuple)) and len(prof_cfg) >= 3:
+        try:
+            return (float(prof_cfg[0]), float(prof_cfg[1]), float(prof_cfg[2]))
+        except Exception:
+            return base
+    if isinstance(prof_cfg, dict):
+        def _val(keys, fallback):
+            for key in keys:
+                if key in prof_cfg:
+                    try:
+                        return float(prof_cfg[key])
+                    except Exception:
+                        return fallback
+            return fallback
+        return (
+            _val(("v_small", "small"), base[0]),
+            _val(("v_mid", "mid"), base[1]),
+            _val(("v_large", "large"), base[2]),
+        )
+    return base
+
+
+def _compute_settle(cfg, move_type: str, magnitude: float, voltage_cap: float, profile: str):
+    b = _settle_base_for(cfg, move_type, profile)
     if move_type == "drive":
         m = _clamp(magnitude / 48.0, 0.0, 1.0)
     else:
         m = _clamp(magnitude / 180.0, 0.0, 1.0)
-    err = _lerp(b["err_min"], b["err_max"], m)
     v = _clamp(voltage_cap / 12.0, 0.0, 1.0)
-    t = _lerp(b["t_min"], b["t_max"], 0.6 * m + 0.4 * v)
+    err_t = _clamp(0.9 * m + 0.1 * v, 0.0, 1.0)
+    err = _lerp(b["err_min"], b["err_max"], err_t)
+    t = _lerp(b["t_min"], b["t_max"], 0.85 * m + 0.15 * v)
     if (move_type == "drive" and magnitude < 6.0) or (move_type != "drive" and magnitude < 15.0):
         t = max(t, b["t_min"])
     return (round(err, 2), int(round(t)))
 
+def _calibration_active(cfg) -> bool:
+    cal = cfg.get("codegen", {}).get("calibration", {})
+    if not isinstance(cal, dict):
+        return False
+    enabled = cal.get("enabled", 0)
+    if isinstance(enabled, dict):
+        enabled = enabled.get("value", 0)
+    return bool(enabled)
 
-def _compute_voltage_cap(move_type: str, magnitude: float, profile: str):
-    v_small, v_mid, v_large = VOLTAGE_SHAPES[move_type][profile]
+def _bucket_by_magnitude(move_type: str, magnitude: float) -> str:
+    mag = abs(float(magnitude))
+    if move_type == "drive":
+        if mag < 12.0:
+            return "small"
+        if mag < 36.0:
+            return "medium"
+        return "large"
+    if mag < 25.0:
+        return "small"
+    if mag < 120.0:
+        return "medium"
+    return "large"
+
+def _match_key(d: dict, key: str):
+    if not isinstance(d, dict):
+        return None
+    for k in d.keys():
+        if str(k).lower() == str(key).lower():
+            return k
+    return None
+
+def _nearest_numeric_key(d: dict, value: float):
+    best_key = None
+    best_dist = None
+    for k in d.keys():
+        try:
+            kval = float(k)
+        except Exception:
+            continue
+        dist = abs(kval - value)
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_key = k
+    if best_key is not None:
+        return best_key
+    return _match_key(d, "default")
+
+def _cal_section(cal: dict, move_type: str):
+    profiles = cal.get("profiles")
+    if isinstance(profiles, dict) and move_type in profiles:
+        return profiles.get(move_type)
+    return cal.get(move_type)
+
+def _calibration_bucket(cal: dict, move_type: str, profile: str, cap_frac: float, mag_bucket: str):
+    sect = _cal_section(cal, move_type)
+    if not isinstance(sect, dict):
+        return None
+    if any(k in sect for k in ("err_p90", "settle_ms_p90", "err", "settle_ms")):
+        return sect
+    prof_key = _match_key(sect, profile) or _match_key(sect, "default")
+    prof = sect.get(prof_key) if prof_key else sect
+    if not isinstance(prof, dict):
+        return None
+    if any(k in prof for k in ("err_p90", "settle_ms_p90", "err", "settle_ms")):
+        return prof
+    caps = prof.get("caps") if isinstance(prof.get("caps"), dict) else None
+    if caps:
+        cap_key = _nearest_numeric_key(caps, cap_frac)
+        cap_bucket = caps.get(cap_key) if cap_key else caps
+    else:
+        cap_bucket = prof
+    if not isinstance(cap_bucket, dict):
+        return None
+    if mag_bucket in cap_bucket:
+        return cap_bucket.get(mag_bucket)
+    if "default" in cap_bucket:
+        return cap_bucket.get("default")
+    if any(k in cap_bucket for k in ("err_p90", "settle_ms_p90", "err", "settle_ms")):
+        return cap_bucket
+    return None
+
+def _compute_settle_calibrated(cfg, move_type: str, magnitude: float, voltage_cap: float, profile: str):
+    cal = cfg.get("codegen", {}).get("calibration", {})
+    if not isinstance(cal, dict):
+        return None
+    intent_err, intent_time = _compute_settle(cfg, move_type, magnitude, voltage_cap, profile)
+    cap_frac = _clamp(voltage_cap / 12.0, 0.0, 1.0)
+    mag_bucket = _bucket_by_magnitude(move_type, magnitude)
+    bucket = _calibration_bucket(cal, move_type, profile, cap_frac, mag_bucket) or {}
+    err_p90 = bucket.get("err_p90", bucket.get("err"))
+    settle_ms_p90 = bucket.get("settle_ms_p90", bucket.get("settle_ms"))
+    noise = cal.get("noise", {}) if isinstance(cal.get("noise", {}), dict) else {}
+    if move_type == "drive":
+        noise_floor = float(noise.get("drive_in", cal.get("noise_drive_in", 0.0)) or 0.0)
+    else:
+        noise_floor = float(noise.get("turn_deg", cal.get("noise_turn_deg", 0.0)) or 0.0)
+    k_noise = float(cal.get("k_noise", 4.0) or 4.0)
+    err_scale = float(cal.get("err_scale", 1.1) or 1.1)
+    time_scale = float(cal.get("time_scale", 1.1) or 1.1)
+    settle_err = float(intent_err)
+    if err_p90 is not None:
+        try:
+            settle_err = max(settle_err, err_scale * float(err_p90))
+        except Exception:
+            pass
+    if noise_floor > 0.0:
+        settle_err = max(settle_err, k_noise * noise_floor)
+    settle_time = float(intent_time)
+    if settle_ms_p90 is not None:
+        try:
+            settle_time = max(settle_time, time_scale * float(settle_ms_p90))
+        except Exception:
+            pass
+    return round(settle_err, 2), int(round(settle_time))
+
+def _sensor_settle_scale(cfg, move_type: str):
+    rp = cfg.get("robot_physics", {})
+    omni_raw = rp.get("all_omni", 0)
+    if isinstance(omni_raw, dict):
+        omni_raw = omni_raw.get("value", 0)
+    omni = float(omni_raw)
+    adv_raw = rp.get("advanced_motion", 0)
+    if isinstance(adv_raw, dict):
+        adv_raw = adv_raw.get("value", 0)
+    adv_motion = bool(float(adv_raw))
+    if not adv_motion:
+        return 1.0, 1.0
+    try:
+        tracking_raw = rp.get("tracking_wheels", 0)
+        if isinstance(tracking_raw, dict):
+            tracking_raw = tracking_raw.get("value", 0)
+        tracking = int(tracking_raw)
+    except Exception:
+        tracking = 0
+    tracking = max(0, min(2, tracking))
+    if not adv_motion:
+        tracking = 0
+
+    err_scale = 1.0
+    time_scale = 1.0
+
+    if omni:
+        err_scale *= 1.06
+        time_scale *= 1.05
+
+    track_err = {0: 1.0, 1: 0.96, 2: 0.92}
+    track_time = {0: 1.0, 1: 1.0, 2: 1.0}
+    err_scale *= track_err.get(tracking, 0.92)
+    time_scale *= track_time.get(tracking, 0.94)
+
+    if move_type in ("turn", "swing"):
+        err_scale = 1.0 + (err_scale - 1.0) * 0.5
+        time_scale = 1.0 + (time_scale - 1.0) * 0.5
+
+    err_scale = _clamp(err_scale, 0.80, 1.20)
+    time_scale = _clamp(time_scale, 0.85, 1.20)
+    return err_scale, time_scale
+
+def _apply_sensor_settle(cfg, move_type: str, settle_err: float, settle_time: int):
+    err_scale, time_scale = _sensor_settle_scale(cfg, move_type)
+    if err_scale == 1.0 and time_scale == 1.0:
+        return settle_err, settle_time
+    adj_err = max(0.05, float(settle_err) * err_scale)
+    adj_time = max(0, int(round(float(settle_time) * time_scale)))
+    return (round(adj_err, 2), adj_time)
+
+def _apply_settle_adjustments(cfg, move_type: str, settle_err: float, settle_time: int):
+    base_err = float(settle_err)
+    base_time = float(settle_time)
+    settle_err, settle_time = _apply_sensor_settle(cfg, move_type, settle_err, settle_time)
+    min_err = max(0.05, base_err * 0.70)
+    max_err = base_err * 1.25
+    min_time = max(0.0, base_time * 0.75)
+    max_time = base_time * 1.25
+    settle_err = round(_clamp(float(settle_err), min_err, max_err), 2)
+    settle_time = int(round(_clamp(float(settle_time), min_time, max_time)))
+    return settle_err, settle_time
+
+def _compute_settle_final(cfg, move_type: str, magnitude: float, voltage_cap: float, profile: str):
+    if _calibration_active(cfg):
+        calibrated = _compute_settle_calibrated(cfg, move_type, magnitude, voltage_cap, profile)
+        if calibrated:
+            return calibrated
+    settle_err, settle_time = _compute_settle(cfg, move_type, magnitude, voltage_cap, profile)
+    return _apply_settle_adjustments(cfg, move_type, settle_err, settle_time)
+
+def _ensure_timeout(tokens: dict, min_ms: int):
+    try:
+        min_ms = int(min_ms)
+    except Exception:
+        return
+    if min_ms <= 0:
+        return
+    cur = int(tokens.get("TIMEOUT_MS", 0) or 0)
+    if cur >= min_ms:
+        return
+    tokens["TIMEOUT_MS"] = min_ms
+    tokens["MS"] = min_ms
+    tokens["TIMEOUT_S"] = round(min_ms / 1000.0, 6)
+    tokens["S"] = tokens["TIMEOUT_S"]
+
+def _add_settle_timeout(tokens: dict, settle_ms: int, extra_ms: int):
+    try:
+        settle_ms = int(settle_ms)
+        extra_ms = int(extra_ms)
+    except Exception:
+        return
+    base_ms = int(tokens.get("TIMEOUT_MS", 0) or 0)
+    target = base_ms + max(0, settle_ms) + max(0, extra_ms)
+    _ensure_timeout(tokens, target)
+
+def _scale_timeout(tokens: dict, speed_scale: float):
+    try:
+        scale = float(speed_scale)
+    except Exception:
+        return
+    if scale <= 0.0 or scale >= 1.0:
+        return
+    base_ms = int(tokens.get("TIMEOUT_MS", 0) or 0)
+    if base_ms <= 0:
+        return
+    target = int(math.ceil(base_ms / max(1e-6, scale)))
+    _ensure_timeout(tokens, target)
+
+
+def _compute_voltage_cap(cfg, move_type: str, magnitude: float, profile: str):
+    v_small, v_mid, v_large = _voltage_shape_for(cfg, move_type, profile)
     if move_type == "drive":
         return round(_map_piecewise(magnitude, x1=6.0, x2=48.0, v_small=v_small, v_mid=v_mid, v_large=v_large), 2)
     return round(_map_piecewise(magnitude, x1=15.0, x2=90.0, v_small=v_small, v_mid=v_mid, v_large=v_large), 2)
 
 
 def _compute_heading_cap(drive_cap: float, profile: str):
-    frac = {"precise": 0.50, "normal": 0.60, "fast": 0.65, "slam": 0.70}[profile]
+    frac = {"precise": 0.50, "normal": 0.60, "custom": 0.60, "fast": 0.65, "slam": 0.70}[profile]
     return round(_clamp(drive_cap * frac, 3.0, 9.0), 2)
+
+def _num_value(v, default):
+    if isinstance(v, dict):
+        v = v.get("value", default)
+    try:
+        return float(v)
+    except Exception:
+        return float(default)
+
+def _wheel_max_ips_from(rpm, diameter):
+    rpm_f = _num_value(rpm, 200.0)
+    diam_f = max(0.01, _num_value(diameter, 4.0))
+    return max(1e-6, rpm_f * math.pi * diam_f / 60.0)
+
+def _default_speed_ref_ips():
+    try:
+        rp = DEFAULT_CONFIG.get("robot_physics", {})
+        return _wheel_max_ips_from(rp.get("rpm", 200.0), rp.get("diameter", 4.0))
+    except Exception:
+        return 60.0
+
+_DEFAULT_SPEED_REF_IPS = _default_speed_ref_ips()
+
+def _wheel_speed_scale(cfg) -> float:
+    rp = cfg.get("robot_physics", {})
+    vmax_ips = _wheel_max_ips_from(rp.get("rpm", 200.0), rp.get("diameter", 4.0))
+    opts = cfg.get("codegen", {}).get("opts", {})
+    ref_ips = _num_value(opts.get("speed_ref_ips", _DEFAULT_SPEED_REF_IPS), _DEFAULT_SPEED_REF_IPS)
+    ref_ips = max(1e-6, ref_ips)
+    return vmax_ips / ref_ips
 
 
 def _omni_drive_scale(cfg) -> float:
     rp = cfg.get("robot_physics", {})
     omni = float(rp.get("all_omni", 0))
-    drift = max(0.0, min(15.0, float(rp.get("horizontal_drift", 0.0))))
     scale = 1.0
     if omni:
         scale *= 0.9
-    if drift > 0.0:
-        norm = drift / 15.0
-        scale *= max(0.5, 1.0 - 0.3 * norm)
     return max(0.2, min(1.0, scale))
 
 
 def _omni_turn_scale(cfg) -> float:
     rp = cfg.get("robot_physics", {})
     omni = float(rp.get("all_omni", 0))
-    drift = max(0.0, min(15.0, float(rp.get("horizontal_drift", 0.0))))
     scale = 1.0
     if omni:
         scale *= 0.9
-    if drift > 0.0:
-        norm = drift / 15.0
-        scale *= max(0.6, 1.0 - 0.25 * norm)
     return max(0.2, min(1.0, scale))
 
 
-def pick_profile(move_type: str, magnitude: float, default_profile: str = "normal") -> str:
+_PROFILE_RULES_DEFAULT = {
+    "drive": {"precise_max": 12.0, "fast_min": 36.0},
+    "turn": {"precise_max": 25.0, "fast_min": 120.0},
+    "swing": {"precise_max": 25.0, "fast_min": 120.0},
+}
+
+
+def _profile_rules_for(cfg, move_type: str) -> dict:
+    base = dict(_PROFILE_RULES_DEFAULT.get(move_type, {}))
+    mp = _motion_profiles_cfg(cfg)
+    rules = mp.get("profile_rules")
+    if not isinstance(rules, dict):
+        return base
+    user_rules = None
+    for k, v in rules.items():
+        if str(k).lower() == str(move_type).lower():
+            user_rules = v
+            break
+    if not isinstance(user_rules, dict):
+        return base
+    for key in ("precise_max", "fast_min", "slam_min"):
+        if key in user_rules:
+            try:
+                base[key] = float(user_rules[key])
+            except Exception:
+                pass
+    return base
+
+
+def pick_profile(move_type: str, magnitude: float, default_profile: str = "normal", cfg: dict = None) -> str:
     """
     Choose a motion profile label based on move size.
     
     Short moves favor "precise", long moves favor "fast"; otherwise defaults.
     """
     try:
-        if move_type == "drive":
-            if magnitude < 12.0:
-                return "precise"
-            if magnitude > 36.0:
-                return "fast"
-        else:
-            if magnitude < 25.0:
-                return "precise"
-            if magnitude > 120.0:
-                return "fast"
+        rules = _PROFILE_RULES_DEFAULT.get(move_type, {})
+        if cfg is not None:
+            rules = _profile_rules_for(cfg, move_type)
+        precise_max = rules.get("precise_max")
+        fast_min = rules.get("fast_min")
+        slam_min = rules.get("slam_min")
+        if precise_max is not None and magnitude < float(precise_max):
+            return "precise"
+        if slam_min is not None and magnitude >= float(slam_min):
+            return "slam"
+        if fast_min is not None and magnitude > float(fast_min):
+            return "fast"
     except Exception:
         pass
     return default_profile
@@ -186,16 +740,18 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     defaults = {
         "LemLib": {
             "wait": "pros::delay({MS});",
-            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}}});",
-            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
-            "turn_local": "chassis.turnToAngle({HEADING_DEG}, {TIMEOUT_MS});",
-            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .lead = {LEAD_IN}}});",
-            "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{DIR}, {TIMEOUT_MS});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
+            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
+            "turn_local": "chassis.turnToAngle({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
+            "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{SIDE}, {TIMEOUT_MS}, {{.minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}});",
             "path_follow": "chassis.follow({PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS});",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse handled inline",
             "reverse_off": "// reverse handled inline",
             "tbuffer": "pros::delay({MS});",
+            "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+            "marker_wait_done": "chassis.waitUntilDone();",
             "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
         "JAR": {
@@ -210,6 +766,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "reverse_on": "// reverse handled inline",
             "reverse_off": "// reverse handled inline",
             "tbuffer": "pros::delay({MS});",
+            "marker_wait": "",
+            "marker_wait_done": "",
             "setpose": "setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
         "PROS": {
@@ -224,6 +782,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
             "tbuffer": "pros::delay({MS});",
+            "marker_wait": "",
+            "marker_wait_done": "",
             "setpose": "// set pose {X_IN},{Y_IN},{HEADING_DEG}"
         },
         "Custom": {
@@ -238,6 +798,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
             "tbuffer": "pros::delay({MS});",
+            "marker_wait": "waitUntil({MARKER_DIST_IN});",
+            "marker_wait_done": "waitUntilDone();",
             "setpose": "setpose({X_IN},{Y_IN},{HEADING_DEG});"
         }
     }
@@ -267,8 +829,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     # Path config
     path_cfg = cfg.get("path_config", {})
     lookahead_in = float(path_cfg.get("lookahead_in", 15.0))
-    min_speed_cmd = float(path_cfg.get("min_speed_ips", 0.0))
-    max_speed_cmd = float(path_cfg.get("max_speed_ips", 127.0))
+    min_speed_cmd = float(path_cfg.get("min_speed_cmd", path_cfg.get("min_speed_ips", 0.0)))
+    max_speed_cmd = float(path_cfg.get("max_speed_cmd", path_cfg.get("max_speed_ips", 127.0)))
     
     def dist_conversions(p0, p1, reverse=False):
         dist_in = math.hypot(p1[0]-p0[0], p1[1]-p0[1]) / PPI
@@ -333,6 +895,49 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             parts = [p.strip() for p in val.split("||")]
             return [p for p in parts if p]
         return []
+
+    def _escape_struct_braces(part: str) -> str:
+        out = []
+        in_field = False
+        in_struct = False
+        i = 0
+        while i < len(part):
+            ch = part[i]
+            if ch == "{":
+                if i + 1 < len(part) and part[i + 1] == "{":
+                    out.append("{{")
+                    i += 2
+                    continue
+                if (not in_field) and (not in_struct) and i + 1 < len(part) and part[i + 1] == ".":
+                    out.append("{{.")
+                    in_struct = True
+                    i += 2
+                    continue
+                out.append("{")
+                in_field = True
+                i += 1
+                continue
+            if ch == "}":
+                if in_field:
+                    out.append("}")
+                    in_field = False
+                    i += 1
+                    continue
+                if in_struct:
+                    out.append("}}")
+                    in_struct = False
+                    i += 1
+                    continue
+                if i + 1 < len(part) and part[i + 1] == "}":
+                    out.append("}}")
+                    i += 2
+                    continue
+                out.append("}")
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
     
     def emit(template_key, tokens):
         tpl_val = tpls.get(template_key, "")
@@ -340,9 +945,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             try:
                 line = part.format(**tokens)
             except Exception as e:
-                # Attempt to auto-escape lone braces (common with {.forwards = X})
-                part_fixed = part.replace("{.forwards", "{{.forwards")
-                part_fixed = part_fixed.replace("{FORWARDS}}", "{FORWARDS}}}")
+                # Attempt to auto-escape struct-style braces (e.g. {.minSpeed = X})
+                part_fixed = _escape_struct_braces(part)
                 try:
                     line = part_fixed.format(**tokens)
                 except Exception:
@@ -350,6 +954,139 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                     continue
             if line.strip():
                 lines.append(line)
+
+    mech_presets = cfg.get("codegen", {}).get("mech_presets", [])
+    if not isinstance(mech_presets, list):
+        mech_presets = []
+    preset_map = {}
+    for p in mech_presets:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name", "")).strip()
+        if not name:
+            continue
+        preset_map[name.lower()] = p
+    preset_state = {"reshape": False}
+
+    def _render_tpl_lines(tpl_val, tokens):
+        out_lines = []
+        for part in _normalize_tpl(tpl_val):
+            try:
+                line = part.format(**tokens)
+            except Exception:
+                part_fixed = _escape_struct_braces(part)
+                try:
+                    line = part_fixed.format(**tokens)
+                except Exception:
+                    line = part
+            if line.strip():
+                out_lines.append(line)
+        return out_lines
+
+    def _render_marker_actions(actions):
+        out_lines = []
+        if not isinstance(actions, list):
+            return out_lines
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            kind = str(act.get("kind", "code")).lower()
+            if kind == "preset":
+                name = str(act.get("name", "")).strip()
+                key = name.lower()
+                preset = preset_map.get(key)
+                if not preset:
+                    out_lines.append(f"// marker: unknown preset '{name}'")
+                    continue
+                mode = str(preset.get("mode", "action")).strip().lower()
+                if mode not in ("action", "toggle"):
+                    mode = "action"
+                value = str(act.get("value", "") or "").strip()
+                state = str(act.get("state", "") or "").strip().lower()
+                tokens = {"VALUE": value, "STATE": state}
+                if mode == "toggle":
+                    if state not in ("on", "off", "toggle", ""):
+                        state = "toggle"
+                    if state == "on":
+                        next_state = True
+                    elif state == "off":
+                        next_state = False
+                    else:
+                        current = bool(preset_state.get(key, preset.get("default", False)))
+                        next_state = not current
+                    preset_state[key] = next_state
+                    tpl_key = "on" if next_state else "off"
+                    tpl_val = preset.get(tpl_key, "")
+                    if not tpl_val and key == "reshape":
+                        tpl_val = tpls.get("reshape", "")
+                        tokens["STATE"] = _reshape_state_token(cfg, 2 if next_state else 1)
+                    else:
+                        tokens["STATE"] = "on" if next_state else "off"
+                    out_lines.extend(_render_tpl_lines(tpl_val, tokens))
+                else:
+                    tpl_val = preset.get("template", preset.get("action", ""))
+                    if not tpl_val and key == "reshape":
+                        tpl_val = tpls.get("reshape", "")
+                        tokens["STATE"] = _reshape_state_token(cfg, 2)
+                    out_lines.extend(_render_tpl_lines(tpl_val, tokens))
+            else:
+                tpl_val = str(act.get("code", "")).strip()
+                for part in _normalize_tpl(tpl_val):
+                    if part.strip():
+                        out_lines.append(part)
+        return out_lines
+
+    def _emit_edge_markers(seg, total_len_in, tokens_base, path_points=None):
+        if style not in ("LemLib", "Custom"):
+            return
+        events = seg.get("edge_events", [])
+        if not events:
+            return
+        total_len = 0.0
+        if path_points and len(path_points) >= 2:
+            try:
+                plen = 0.0
+                for i_pp in range(len(path_points) - 1):
+                    dx = path_points[i_pp + 1][0] - path_points[i_pp][0]
+                    dy = path_points[i_pp + 1][1] - path_points[i_pp][1]
+                    plen += (math.hypot(dx, dy) / PPI)
+                total_len = max(total_len, plen)
+            except Exception:
+                total_len = 0.0
+        if total_len <= 1e-6:
+            try:
+                total_len = abs(float(total_len_in))
+            except Exception:
+                total_len = 0.0
+        wait_tpl = tpls.get("marker_wait", "")
+        done_tpl = tpls.get("marker_wait_done", "")
+        events_sorted = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if not ev.get("enabled", True):
+                continue
+            try:
+                t_val = float(ev.get("t", 0.0))
+            except Exception:
+                t_val = 0.0
+            events_sorted.append((max(0.0, min(1.0, t_val)), ev))
+        events_sorted.sort(key=lambda item: item[0])
+        for idx, (t_val, ev) in enumerate(events_sorted):
+            dist_in = total_len * t_val
+            tokens = dict(tokens_base)
+            tokens.update({
+                "MARKER_DIST_IN": round(dist_in, 6),
+                "MARKER_FRAC": round(t_val, 6),
+                "MARKER_INDEX": idx
+            })
+            if wait_tpl:
+                emit("marker_wait", tokens)
+            out_lines = _render_marker_actions(ev.get("actions", []))
+            if out_lines:
+                lines.extend(out_lines)
+        if done_tpl:
+            emit("marker_wait_done", tokens_base)
     
     def emit_first(keys, tokens):
         for k in keys:
@@ -358,12 +1095,115 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 return
     
     i = 0
-    tbuf = float(cfg.get("robot_physics", {}).get("t_buffer", 0.0) or 0.0)
+    rp = cfg.get("robot_physics", {})
+    tbuf = float(rp.get("t_buffer", 0.0) or 0.0)
+    adv_raw = rp.get("advanced_motion", 0)
+    if isinstance(adv_raw, dict):
+        adv_raw = adv_raw.get("value", 0)
+    adv_motion_enabled = bool(float(adv_raw))
 
     def emit_jar_constants(kind: str, tokens: dict, voltage: float, settle_err: float, settle_time: int):
         """No-op placeholder; JAR now uses inline placeholders only."""
         return False
         return False
+
+    def _emit_jar_defaults(kind: str, tokens: dict):
+        if style != "JAR" or not adv_motion_enabled:
+            return
+        if kind == "drive":
+            lines.append(f"chassis.drive_max_voltage = {tokens.get('DRIVE_MAX_V', 0)};")
+            lines.append(f"chassis.heading_max_voltage = {tokens.get('HEADING_MAX_V', 0)};")
+            lines.append(f"chassis.drive_settle_error = {tokens.get('DRIVE_SETTLE_ERR', 0)};")
+            lines.append(f"chassis.drive_settle_time = {tokens.get('DRIVE_SETTLE_TIME', 0)};")
+        elif kind == "turn":
+            lines.append(f"chassis.turn_max_voltage = {tokens.get('TURN_MAX_V', 0)};")
+            lines.append(f"chassis.turn_settle_error = {tokens.get('TURN_SETTLE_ERR', 0)};")
+            lines.append(f"chassis.turn_settle_time = {tokens.get('TURN_SETTLE_TIME', 0)};")
+        elif kind == "swing":
+            lines.append(f"chassis.swing_max_voltage = {tokens.get('SWING_MAX_V', 0)};")
+            lines.append(f"chassis.swing_settle_error = {tokens.get('SWING_SETTLE_ERR', 0)};")
+            lines.append(f"chassis.swing_settle_time = {tokens.get('SWING_SETTLE_TIME', 0)};")
+
+    def _first_tpl_key(keys):
+        for k in keys:
+            if k in tpls:
+                return k
+        return None
+
+    def _apply_settle(
+        tokens: dict,
+        move_type: str,
+        magnitude: float,
+        profile: str,
+        settle_mag: float = None,
+        t_speed_frac: float = None,
+        drive_min_speed: int = None,
+        drive_early_exit: float = None,
+        turn_min_speed: int = None,
+        turn_early_exit: float = None,
+        swing_min_speed: int = None,
+        swing_early_exit: float = None
+    ):
+        mag = abs(float(magnitude))
+        cap = _compute_voltage_cap(cfg, move_type, mag, profile)
+        cap = min(12.0, max(0.0, cap))
+        if style == "JAR":
+            cap_frac = _clamp(cap / 12.0, 0.0, 1.0)
+            eff_frac = cap_frac
+            if t_speed_frac is not None:
+                try:
+                    t_frac = float(t_speed_frac)
+                except Exception:
+                    t_frac = None
+                if t_frac is not None and t_frac > 0.0:
+                    t_frac = _clamp(t_frac, 0.2, 1.0)
+                    eff_frac = _clamp(cap_frac / max(1e-6, t_frac), 0.2, 1.0)
+            _scale_timeout(tokens, eff_frac)
+        settle_err = 0.0
+        settle_time_adj = 0
+        if adv_motion_enabled:
+            settle_mag_val = mag if settle_mag is None else abs(float(settle_mag))
+            settle_cap = cap if style == "JAR" else 12.0
+            settle_err, settle_time = _compute_settle_final(cfg, move_type, settle_mag_val, settle_cap, profile)
+            settle_time_adj = int(round(settle_time))
+        drive_early_exit = 0.0 if drive_early_exit is None else drive_early_exit
+        turn_early_exit = 0.0 if turn_early_exit is None else turn_early_exit
+        swing_early_exit = 0.0 if swing_early_exit is None else swing_early_exit
+        drive_min_speed = 0 if drive_min_speed is None else drive_min_speed
+        turn_min_speed = 0 if turn_min_speed is None else turn_min_speed
+        swing_min_speed = 0 if swing_min_speed is None else swing_min_speed
+        drive_min_speed = int(max(0, min(127, drive_min_speed)))
+        turn_min_speed = int(max(0, min(127, turn_min_speed)))
+        swing_min_speed = int(max(0, min(127, swing_min_speed)))
+        if move_type == "drive":
+            tokens.update({
+                "DRIVE_MAX_V": cap,
+                "HEADING_MAX_V": _compute_heading_cap(cap, profile),
+                "DRIVE_SETTLE_ERR": round(float(settle_err), 2),
+                "DRIVE_SETTLE_TIME": int(settle_time_adj),
+                "DRIVE_EARLY_EXIT": round(float(drive_early_exit), 2),
+                "DRIVE_MIN_SPEED": int(drive_min_speed),
+            })
+        elif move_type == "turn":
+            tokens.update({
+                "TURN_MAX_V": cap,
+                "TURN_SETTLE_ERR": round(float(settle_err), 2),
+                "TURN_SETTLE_TIME": int(settle_time_adj),
+                "TURN_EARLY_EXIT": round(float(turn_early_exit), 2),
+                "TURN_MIN_SPEED": int(turn_min_speed),
+            })
+        elif move_type == "swing":
+            tokens.update({
+                "SWING_MAX_V": cap,
+                "SWING_SETTLE_ERR": round(float(settle_err), 2),
+                "SWING_SETTLE_TIME": int(settle_time_adj),
+                "SWING_EARLY_EXIT": round(float(swing_early_exit), 2),
+                "SWING_MIN_SPEED": int(swing_min_speed),
+            })
+        if adv_motion_enabled:
+            emit_jar_constants(move_type, tokens, cap, settle_err, settle_time_adj)
+            _add_settle_timeout(tokens, settle_time_adj, SETTLE_TIMEOUT_PAD_MS)
+        return cap, settle_err, settle_time_adj
     
     while i < len(timeline):
         seg = timeline[i]
@@ -371,22 +1211,108 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         st = seg.get("type")
         if st == "turn":
             st = "face"
+        if st in ("move", "pose", "path", "face", "swing"):
+            phys_T = _physics_timeout_s(seg, st, cfg, motion_mode=motion_mode)
+            if phys_T > 0.0:
+                T = max(T, phys_T)
         # Do not inflate waits (buffer or custom) with pad_factor; pad only movement timeouts
         eff_pad = pad_factor
         if st == "wait" or seg.get("role") == "buffer":
             eff_pad = 1.0
-        to_ms, to_s = _timeout_tokens(T, eff_pad, min_s)
-        h_drift = float(cfg.get("robot_physics", {}).get("horizontal_drift", 0.0))
+        min_s_eff = min_s
+        if st in ("wait",) or seg.get("role") == "buffer":
+            min_s_eff = 0.0
+        elif st in ("move", "pose", "path", "face", "swing"):
+            min_s_eff = max(min_s, MIN_CMD_TIMEOUT_S)
+        to_ms, to_s = _timeout_tokens(T, eff_pad, min_s_eff)
         tokens_base = {
             "MS": to_ms, "S": to_s, "TIMEOUT_MS": to_ms, "TIMEOUT_S": to_s,
-            "STATE": seg.get("state", 0), "NAME": seg.get("name", ""),
-            "LOOKAHEAD": int(lookahead_in),
-            "H_DRIFT": h_drift
+            "STATE": _reshape_state_token(cfg, seg.get("state", 0)), "NAME": seg.get("name", ""),
+            "LOOKAHEAD": int(lookahead_in)
         }
         
         if st == "path":
             # CURVED PATH SEGMENT
             # Generate path file and emit follow call
+            if seg.get("move_to_pose"):
+                p0, p1 = seg["p0"], seg["p1"]
+                x_in, y_in = field_coords_in(p1)
+                dist_in, rotations, deg, ticks = dist_conversions(p0, p1, reverse=seg.get("reverse", False))
+                path_len_in = float(seg.get("path_length_in") or 0.0)
+                if path_len_in <= 0.0:
+                    pts = seg.get("path_points") or []
+                    if len(pts) >= 2:
+                        try:
+                            for idx_pp in range(len(pts) - 1):
+                                dx = pts[idx_pp + 1][0] - pts[idx_pp][0]
+                                dy = pts[idx_pp + 1][1] - pts[idx_pp][1]
+                                path_len_in += (math.hypot(dx, dy) / PPI)
+                        except Exception:
+                            path_len_in = 0.0
+                pose_h = seg.get("pose_heading", seg.get("facing", 0.0))
+                pose_h = convert_heading_input(pose_h, None)
+                # Ensure timeout reflects curved length (use curve estimate if longer)
+                curve_T = None
+                if path_len_in > 0.0:
+                    profile_curve = seg.get("profile_override") or pick_profile("drive", abs(path_len_in), cfg=cfg)
+                    v_override = None
+                    if seg.get("drive_speed_ips") is not None:
+                        try:
+                            v_override = float(seg.get("drive_speed_ips"))
+                        except Exception:
+                            v_override = None
+                    if v_override is None and seg.get("drive_speed_cmd") is not None:
+                        try:
+                            v_override = _cmd_to_ips(float(seg.get("drive_speed_cmd")), cfg)
+                        except Exception:
+                            v_override = None
+                    if v_override is None:
+                        v_override = vmax_straight(cfg) * _profile_speed_scale(profile_curve)
+                    try:
+                        curve_T = float(_move_total_time(path_len_in, cfg, v_override=v_override))
+                    except Exception:
+                        curve_T = None
+                to_ms = tokens_base["TIMEOUT_MS"]
+                to_s = tokens_base["TIMEOUT_S"]
+                if curve_T is not None and curve_T > 0.0 and curve_T > T:
+                    to_ms, to_s = _timeout_tokens(curve_T, eff_pad, min_s_eff)
+                tokens = dict(tokens_base)
+                if to_ms != tokens_base["TIMEOUT_MS"]:
+                    tokens.update({"MS": to_ms, "S": to_s, "TIMEOUT_MS": to_ms, "TIMEOUT_S": to_s})
+                tokens.update({
+                    "X_IN": round(x_in, 6), "Y_IN": round(y_in, 6),
+                    "DIST_IN": round(dist_in, 6), "DIST_ROT": round(rotations, 6),
+                    "DIST_DEG": round(deg, 6), "DIST_TICKS": round(ticks, 6),
+                    "FORWARDS": "false" if seg.get("reverse") else "true",
+                    "FORWARD_PARAM": "{.forwards = " + ("false" if seg.get("reverse") else "true") + "}",
+                    "MOVE_SPEED": "" if seg.get("drive_speed_cmd") is None else round(max(0.0, min(127.0, float(seg.get("drive_speed_cmd")))), 3),
+                    "HEADING_DEG": round(pose_h, 6),
+                    "HEADING_RAD": round(pose_h * math.pi / 180.0, 9),
+                    "LEAD_IN": round(float(seg.get("pose_lead_in", 0.0) or 0.0), 6),
+                    "DRIVE_MAX_V": "",
+                    "HEADING_MAX_V": "",
+                    "DRIVE_SETTLE_ERR": "",
+                    "DRIVE_SETTLE_TIME": "",
+                })
+                prof_len = path_len_in if path_len_in > 0.0 else abs(dist_in)
+                profile = seg.get("profile_override") or pick_profile("drive", abs(prof_len), cfg=cfg)
+                chain_min = seg.get("chain_min_speed") if seg.get("chain_to_next") else None
+                chain_exit = seg.get("chain_early_exit") if seg.get("chain_to_next") else None
+                _apply_settle(
+                    tokens,
+                    "drive",
+                    prof_len,
+                    profile,
+                    settle_mag=prof_len,
+                    t_speed_frac=seg.get("T_speed_frac"),
+                    drive_min_speed=chain_min,
+                    drive_early_exit=chain_exit
+                )
+                _emit_jar_defaults("drive", tokens)
+                emit("pose", tokens)
+                _emit_edge_markers(seg, path_len_in if path_len_in > 0.0 else abs(dist_in), tokens_base, path_points=seg.get("path_points"))
+                i += 1
+                continue
             segment_idx = seg.get("segment_idx", i)
             path_asset_name = generate_path_asset_name(routine_name, segment_idx)
             path_points = seg.get("path_points", [])
@@ -423,7 +1349,12 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             asset_var = base_name.replace("-", "_")
             forward_flag = "false" if seg.get("reverse") else "true"
             la_in_seg = lookahead_in
-            if seg.get("lookahead_px") is not None:
+            if seg.get("lookahead_in_override") is not None:
+                try:
+                    la_in_seg = float(seg["lookahead_in_override"])
+                except Exception:
+                    la_in_seg = lookahead_in
+            elif seg.get("lookahead_px") is not None:
                 try:
                     la_in_seg = float(seg["lookahead_px"]) / PPI
                 except Exception:
@@ -442,30 +1373,43 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "DRIVE_SETTLE_ERR": "",
                 "DRIVE_SETTLE_TIME": "",
             })
-            # JAR: treat path as drive for voltage/settle settings
-            if style == "JAR":
-                # Approximate path length magnitude in inches
+            # Treat path as drive for settle/timeout settings
+            # Approximate path length magnitude in inches
+            path_len_in = 0.0
+            try:
+                for idx_pp in range(len(path_points) - 1):
+                    dx = path_points[idx_pp + 1][0] - path_points[idx_pp][0]
+                    dy = path_points[idx_pp + 1][1] - path_points[idx_pp][1]
+                    path_len_in += (math.hypot(dx, dy) / PPI)
+            except Exception:
                 path_len_in = 0.0
-                try:
-                    for idx_pp in range(len(path_points) - 1):
-                        dx = path_points[idx_pp + 1][0] - path_points[idx_pp][0]
-                        dy = path_points[idx_pp + 1][1] - path_points[idx_pp][1]
-                        path_len_in += (math.hypot(dx, dy) / PPI)
-                except Exception:
-                    path_len_in = 0.0
-                profile = seg.get("profile_override") or pick_profile("drive", abs(path_len_in))
-                drive_dyn = _omni_drive_scale(cfg)
-                drive_cap = _compute_voltage_cap("drive", abs(path_len_in), profile) * drive_dyn
-                drive_cap = min(12.0, max(0.0, drive_cap))
-                settle_err, settle_time = _compute_settle("drive", abs(path_len_in), drive_cap, profile)
-                tokens.update({
-                    "DRIVE_MAX_V": drive_cap,
-                    "HEADING_MAX_V": _compute_heading_cap(drive_cap, profile),
-                    "DRIVE_SETTLE_ERR": settle_err,
-                    "DRIVE_SETTLE_TIME": int(round(settle_time / max(1e-6, drive_dyn))),
-                })
-                emit_jar_constants("drive", tokens, drive_cap, settle_err, settle_time)
-            emit_first(("path_follow", "path"), tokens)
+            profile = seg.get("profile_override") or pick_profile("drive", abs(path_len_in), cfg=cfg)
+            settle_mag = abs(path_len_in)
+            curvatures = seg.get("path_curvatures") or []
+            if curvatures:
+                curv_in_vals = [abs(c) * PPI for c in curvatures]
+                avg_curv = sum(curv_in_vals) / max(1, len(curv_in_vals))
+                max_curv = max(curv_in_vals)
+                curv_metric = max(avg_curv, max_curv * 0.75)
+                curv_scale = min(0.35, curv_metric * 4.0)
+                settle_mag = settle_mag * (1.0 + curv_scale)
+            path_tpl_key = _first_tpl_key(("path_follow", "path"))
+            chain_min = seg.get("chain_min_speed") if seg.get("chain_to_next") else None
+            chain_exit = seg.get("chain_early_exit") if seg.get("chain_to_next") else None
+            _apply_settle(
+                tokens,
+                "drive",
+                path_len_in,
+                profile,
+                settle_mag=settle_mag,
+                t_speed_frac=seg.get("T_speed_frac"),
+                drive_min_speed=chain_min,
+                drive_early_exit=chain_exit
+            )
+            _emit_jar_defaults("drive", tokens)
+            if path_tpl_key:
+                emit(path_tpl_key, tokens)
+                _emit_edge_markers(seg, path_len_in, tokens_base, path_points=seg.get("path_points"))
             
             i += 1
         elif st == "move":
@@ -491,20 +1435,22 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "DRIVE_SETTLE_ERR": "",
                 "DRIVE_SETTLE_TIME": "",
             })
-            if style == "JAR":
-                profile = seg.get("profile_override") or pick_profile("drive", abs(dist_in))
-                drive_dyn = _omni_drive_scale(cfg)
-                drive_cap = _compute_voltage_cap("drive", abs(dist_in), profile) * drive_dyn
-                drive_cap = min(12.0, max(0.0, drive_cap))
-                settle_err, settle_time = _compute_settle("drive", abs(dist_in), drive_cap, profile)
-                tokens.update({
-                    "DRIVE_MAX_V": drive_cap,
-                    "HEADING_MAX_V": _compute_heading_cap(drive_cap, profile),
-                    "DRIVE_SETTLE_ERR": settle_err,
-                    "DRIVE_SETTLE_TIME": int(round(settle_time / max(1e-6, drive_dyn))),
-                })
-                emit_jar_constants("drive", tokens, drive_cap, settle_err, settle_time)
-            emit("pose" if motion_mode == "pose" else "move", tokens)
+            profile = seg.get("profile_override") or pick_profile("drive", abs(dist_in), cfg=cfg)
+            move_tpl_key = "pose" if motion_mode == "pose" else "move"
+            chain_min = seg.get("chain_min_speed") if seg.get("chain_to_next") else None
+            chain_exit = seg.get("chain_early_exit") if seg.get("chain_to_next") else None
+            _apply_settle(
+                tokens,
+                "drive",
+                dist_in,
+                profile,
+                t_speed_frac=seg.get("T_speed_frac"),
+                drive_min_speed=chain_min,
+                drive_early_exit=chain_exit
+            )
+            _emit_jar_defaults("drive", tokens)
+            emit(move_tpl_key, tokens)
+            _emit_edge_markers(seg, dist_in, tokens_base)
             i += 1
         
         elif st == "pose":
@@ -528,20 +1474,22 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "DRIVE_SETTLE_ERR": "",
                 "DRIVE_SETTLE_TIME": "",
             })
-            if style == "JAR":
-                profile = seg.get("profile_override") or pick_profile("drive", abs(dist_in))
-                drive_dyn = _omni_drive_scale(cfg)
-                drive_cap = _compute_voltage_cap("drive", abs(dist_in), profile) * drive_dyn
-                drive_cap = min(12.0, max(0.0, drive_cap))
-                settle_err, settle_time = _compute_settle("drive", abs(dist_in), drive_cap, profile)
-                tokens.update({
-                    "DRIVE_MAX_V": drive_cap,
-                    "HEADING_MAX_V": _compute_heading_cap(drive_cap, profile),
-                    "DRIVE_SETTLE_ERR": settle_err,
-                    "DRIVE_SETTLE_TIME": int(round(settle_time / max(1e-6, drive_dyn))),
-                })
-                emit_jar_constants("drive", tokens, drive_cap, settle_err, settle_time)
-            emit("pose", tokens)
+            profile = seg.get("profile_override") or pick_profile("drive", abs(dist_in), cfg=cfg)
+            pose_tpl_key = "pose"
+            chain_min = seg.get("chain_min_speed") if seg.get("chain_to_next") else None
+            chain_exit = seg.get("chain_early_exit") if seg.get("chain_to_next") else None
+            _apply_settle(
+                tokens,
+                "drive",
+                dist_in,
+                profile,
+                t_speed_frac=seg.get("T_speed_frac"),
+                drive_min_speed=chain_min,
+                drive_early_exit=chain_exit
+            )
+            _emit_jar_defaults("drive", tokens)
+            emit(pose_tpl_key, tokens)
+            _emit_edge_markers(seg, dist_in, tokens_base)
             i += 1
         
         elif st == "face":
@@ -566,18 +1514,15 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 # For local, emit delta instead of absolute heading if template expects it
                 tokens["HEADING_DEG"] = tokens["TURN_DELTA_DEG"]
                 tokens["HEADING_RAD"] = tokens["TURN_DELTA_RAD"]
-            if style == "JAR":
-                profile = seg.get("profile_override") or pick_profile("turn", abs(delta_heading))
-                turn_dyn = _omni_turn_scale(cfg)
-                turn_cap = _compute_voltage_cap("turn", abs(delta_heading), profile) * turn_dyn
-                turn_cap = min(12.0, max(0.0, turn_cap))
-                settle_err, settle_time = _compute_settle("turn", abs(delta_heading), turn_cap, profile)
-                tokens.update({
-                    "TURN_MAX_V": turn_cap,
-                    "TURN_SETTLE_ERR": settle_err,
-                    "TURN_SETTLE_TIME": int(round(settle_time / max(1e-6, turn_dyn))),
-                })
-                emit_jar_constants("turn", tokens, turn_cap, settle_err, settle_time)
+            profile = seg.get("profile_override") or pick_profile("turn", abs(delta_heading), cfg=cfg)
+            _apply_settle(
+                tokens,
+                "turn",
+                abs(delta_heading),
+                profile,
+                t_speed_frac=seg.get("T_speed_frac")
+            )
+            _emit_jar_defaults("turn", tokens)
             emit(chosen_turn, tokens)
             i += 1
         
@@ -592,14 +1537,23 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             h_disp = convert_heading_input(seg["target_heading"], None)
             delta_internal = ((seg["target_heading"] - seg.get("start_heading", 0.0) + 180.0) % 360.0) - 180.0
             delta_heading = -delta_internal
-            dir_token = str(seg.get("swing_dir", "auto")).upper()
-            if dir_token not in ("AUTO", "CW", "CCW"):
-                dir_token = "AUTO"
+            dir_raw = str(seg.get("swing_dir", "auto")).strip().lower()
+            if dir_raw in ("cw", "clockwise", "cw_clockwise"):
+                dir_key = "cw"
+            elif dir_raw in ("ccw", "counterclockwise", "ccw_counterclockwise"):
+                dir_key = "ccw"
+            else:
+                dir_key = "auto"
+            dir_token = {
+                "auto": "AUTO",
+                "cw": "CW_CLOCKWISE",
+                "ccw": "CCW_COUNTERCLOCKWISE",
+            }[dir_key]
             # Derive a side tag for users who prefer specifying a single driven side
             side_token = "AUTO"
-            if dir_token == "CW":
+            if dir_key == "cw":
                 side_token = "LEFT"
-            elif dir_token == "CCW":
+            elif dir_key == "ccw":
                 side_token = "RIGHT"
             tokens = dict(tokens_base)
             tokens.update({
@@ -613,23 +1567,30 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "SWING_SETTLE_ERR": "",
                 "SWING_SETTLE_TIME": "",
             })
-            if style == "JAR":
-                profile = seg.get("profile_override") or pick_profile("swing", abs(delta_heading))
-                turn_dyn = _omni_turn_scale(cfg)
-                swing_cap = _compute_voltage_cap("swing", abs(delta_heading), profile) * turn_dyn
-                swing_cap = min(12.0, max(0.0, swing_cap))
-                settle_err, settle_time = _compute_settle("swing", abs(delta_heading), swing_cap, profile)
-                tokens.update({
-                    "SWING_MAX_V": swing_cap,
-                    "SWING_SETTLE_ERR": settle_err,
-                    "SWING_SETTLE_TIME": int(round(settle_time / max(1e-6, turn_dyn))),
-                })
-                emit_jar_constants("swing", tokens, swing_cap, settle_err, settle_time)
+            profile = seg.get("profile_override") or pick_profile("swing", abs(delta_heading), cfg=cfg)
+            swing_tpl_key = "swing"
+            swing_settle = bool(seg.get("swing_settle", False))
+            swing_min_speed = 0 if swing_settle else DEFAULT_SWING_MIN_SPEED
+            swing_early_exit = 0.0 if swing_settle else DEFAULT_SWING_EARLY_EXIT
+            _apply_settle(
+                tokens,
+                "swing",
+                abs(delta_heading),
+                profile,
+                t_speed_frac=seg.get("T_speed_frac"),
+                swing_min_speed=swing_min_speed,
+                swing_early_exit=swing_early_exit
+            )
+            _emit_jar_defaults("swing", tokens)
             emit("swing", tokens)
             i += 1
         
         elif st == "reshape":
-            emit("reshape", tokens_base)
+            next_state = not bool(preset_state.get("reshape", False))
+            tokens = dict(tokens_base)
+            tokens["STATE"] = _reshape_state_token(cfg, 2 if next_state else 1)
+            emit("reshape", tokens)
+            preset_state["reshape"] = next_state
             i += 1
         
         else:
@@ -664,8 +1625,8 @@ def export_action_list(cfg, timeline, log_lines):
         timeline: Compiled timeline
         log_lines: List to append log output to
     """
-    from .util import pros_convert_inches, coords_str
-    from .geom import convert_heading_input
+    from .util import pros_convert_inches
+    from .geom import convert_heading_input, coords_str
     
     tbuf = float(cfg.get("robot_physics", {}).get("t_buffer", 0.0) or 0.0)
     last_turn = None

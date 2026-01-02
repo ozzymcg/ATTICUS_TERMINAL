@@ -47,11 +47,11 @@ DEFAULT_CONFIG = {
         "mu":             {"value": 0.9},
         "t_buffer":       {"value": 0.0},
         "all_omni":       {"value": 0},
+        "tracking_wheels": {"value": 0},
         "advanced_motion": {"value": 0},
         "max_cmd":        {"value": 127.0},
         "point_density_per_in": {"value": 4.0},
         "curvature_gain": {"value": 0.05},
-        "horizontal_drift": {"value": 0.0},
     },
     "offsets": {
         "offset_1_in": {"value": 5.0},
@@ -63,11 +63,12 @@ DEFAULT_CONFIG = {
         "auto_oob_fix": {"value": 1},
         "time_ms":       {"value": 0},
         "show_field_objects": {"value": 1},
+        "show_node_numbers": {"value": 1},
     },
     "path_config": {
         "lookahead_in": {"value": 15.0},
-        "min_speed_ips": {"value": 30.0},
-        "max_speed_ips": {"value": 127.0},
+        "min_speed_cmd": {"value": 30.0},
+        "max_speed_cmd": {"value": 127.0},
     },
     # plane_mode removed; fixed heading convention
     "field_centric": {"value": 1},
@@ -99,9 +100,48 @@ DEFAULT_CONFIG = {
         "opts": {
             "ticks_per_rotation": 360,
             "pad_factor": 1.0,
-            "min_timeout_s": 0.0
+            "min_timeout_s": 0.0,
+            "reshape_output": "1/2"
         },
-        "path_dir": {"value": "export/paths"}
+        "path_dir": {"value": "export/paths"},
+        "path_columns": {"value": "{X}, {Y}, {COMMAND}"},
+        "mech_presets": [
+            {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False}
+        ],
+        "calibration": {
+            "enabled": 0,
+            "last_run": "",
+            "trial_count": 0,
+            "hold_ms": 120,
+            "k_noise": 4.0,
+            "err_scale": 1.1,
+            "time_scale": 1.1,
+            "noise": {
+                "drive_in": 0.0,
+                "turn_deg": 0.0
+            },
+            "profiles": {}
+        },
+        "motion_profiles": {}
+    },
+    "physics_constants": {
+        "load_factor": {"value": 0.9},
+        "weight_exp": {"value": 0.06},
+        "accel_mu_scale": {"value": 0.95},
+        "accel_min": {"value": 60.0},
+        "accel_max": {"value": 450.0},
+        "t_to_v_base": {"value": 0.2},
+        "t_to_v_min": {"value": 0.12},
+        "t_to_v_max": {"value": 0.60},
+        "vmax_min": {"value": 10.0},
+        "vmax_max": {"value": 220.0},
+        "turn_rate_scale": {"value": 0.8},
+        "turn_rate_min": {"value": 120.0},
+        "turn_rate_max": {"value": 900.0},
+        "turn_accel_base": {"value": 0.20},
+        "turn_accel_min": {"value": 0.12},
+        "turn_accel_max": {"value": 0.30},
+        "omni_scale": {"value": 0.9}
     }
 }
 
@@ -146,6 +186,13 @@ def save_config(cfg_dict: dict) -> bool:
     try:
         def wrap(v): return {"value": v}
         bd = cfg_dict["bot_dimensions"]
+        path_cfg = dict(cfg_dict.get("path_config", {}))
+        if "min_speed_cmd" not in path_cfg and "min_speed_ips" in path_cfg:
+            path_cfg["min_speed_cmd"] = path_cfg.pop("min_speed_ips")
+        if "max_speed_cmd" not in path_cfg and "max_speed_ips" in path_cfg:
+            path_cfg["max_speed_cmd"] = path_cfg.pop("max_speed_ips")
+        path_cfg.pop("min_speed_ips", None)
+        path_cfg.pop("max_speed_ips", None)
         raw = {
             "robot_physics": {k: wrap(float(v)) for k, v in cfg_dict["robot_physics"].items()},
             "bot_dimensions": {
@@ -163,7 +210,7 @@ def save_config(cfg_dict: dict) -> bool:
                 },
             },
             "offsets": {k: wrap(float(v)) for k, v in cfg_dict["offsets"].items()},
-            "path_config": {k: wrap(float(v)) for k, v in cfg_dict.get("path_config", {}).items()},
+            "path_config": {k: wrap(float(v)) for k, v in path_cfg.items()},
             "field_centric":  wrap(int(cfg_dict["field_centric"])),
             "distance_units": wrap(int(cfg_dict["distance_units"])),
             "angle_units":    wrap(int(cfg_dict.get("angle_units", 0))),
@@ -175,7 +222,15 @@ def save_config(cfg_dict: dict) -> bool:
                 "style": {"value": cfg_dict.get("codegen", {}).get("style", "Action List")},
                 "templates": cfg_dict.get("codegen", {}).get("templates", {}),
                 "opts": cfg_dict.get("codegen", {}).get("opts", {}),
-                "path_dir": {"value": cfg_dict.get("codegen", {}).get("path_dir", "export/paths")}
+                "path_dir": {"value": cfg_dict.get("codegen", {}).get("path_dir", "export/paths")},
+                "path_columns": {"value": cfg_dict.get("codegen", {}).get("path_columns", "{X}, {Y}, {COMMAND}")},
+                "mech_presets": cfg_dict.get("codegen", {}).get("mech_presets", []),
+                "calibration": cfg_dict.get("codegen", {}).get("calibration", {}),
+                "motion_profiles": cfg_dict.get("codegen", {}).get("motion_profiles", {})
+            },
+            "physics_constants": {
+                k: wrap(float(v))
+                for k, v in cfg_dict.get("physics_constants", {}).items()
             }
         }
         
@@ -206,3 +261,118 @@ def dims_flat(cfg: dict) -> dict:
 def offsets_flat(cfg: dict) -> dict:
     """Flatten offsets section."""
     return _flatten(cfg.get("offsets", {}))
+
+
+def _coerce_int_range(v, default, valid_range):
+    """Coerce value to integer within range."""
+    if isinstance(v, dict):
+        v = v.get("value", default)
+    try:
+        iv = int(v)
+        return iv if iv in valid_range else default
+    except Exception:
+        return default
+
+
+def _num(x, d=0.0):
+    """Extract numeric value from dict or return default."""
+    if isinstance(x, dict):
+        x = x.get("value", d)
+    try:
+        return float(x)
+    except Exception:
+        return d
+
+
+def reload_cfg() -> dict:
+    """Reload configuration from disk and normalize nested values."""
+    raw = load_config()
+    dims = dims_flat(raw)
+    bd_raw = raw.get("bot_dimensions", {})
+    reshape_raw = bd_raw.get("reshape", {})
+    dims["full_offset_x_in"] = _num(bd_raw.get("full_offset_x_in", {"value": 0.0}), 0.0)
+    dims["full_offset_y_in"] = _num(bd_raw.get("full_offset_y_in", {"value": 0.0}), 0.0)
+    dims["reshape_width"] = _num(reshape_raw.get("width", {"value": dims.get("width", 0.0)}), dims.get("width", 0.0))
+    dims["reshape_length"] = _num(reshape_raw.get("length", {"value": dims.get("length", 0.0)}), dims.get("length", 0.0))
+    dims["reshape_offset_x_in"] = _num(reshape_raw.get("offset_x_in", {"value": 0.0}), 0.0)
+    dims["reshape_offset_y_in"] = _num(reshape_raw.get("offset_y_in", {"value": 0.0}), 0.0)
+
+    ui_raw = raw.get("ui", {})
+    ui = {k: v.get("value", v) if isinstance(v, dict) else v for k, v in ui_raw.items()}
+
+    path_raw = raw.get("path_config", {})
+    path_cfg = {
+        "lookahead_in": _num(path_raw.get("lookahead_in", {"value": 15.0}), 15.0),
+        "min_speed_cmd": _num(path_raw.get("min_speed_cmd", path_raw.get("min_speed_ips", {"value": 0.0})), 0.0),
+        "max_speed_cmd": _num(path_raw.get("max_speed_cmd", path_raw.get("max_speed_ips", {"value": 127.0})), 127.0),
+        "simulate_pursuit": _coerce_int_range(path_raw.get("simulate_pursuit", {"value": 1}), 1, (0, 1)),
+    }
+    try:
+        min_cmd = max(0.0, min(127.0, float(path_cfg.get("min_speed_cmd", 0.0))))
+        max_cmd = max(0.0, min(127.0, float(path_cfg.get("max_speed_cmd", 127.0))))
+        if min_cmd > max_cmd:
+            min_cmd, max_cmd = max_cmd, min_cmd
+        path_cfg["min_speed_cmd"] = min_cmd
+        path_cfg["max_speed_cmd"] = max_cmd
+    except Exception:
+        pass
+
+    codegen_raw = raw.get("codegen", {})
+    style_raw = codegen_raw.get("style", {"value": "Action List"})
+    style_val = style_raw.get("value", "Action List") if isinstance(style_raw, dict) else (style_raw or "Action List")
+    path_dir_raw = codegen_raw.get("path_dir", {"value": "export/paths"})
+    if isinstance(path_dir_raw, dict):
+        path_dir_val = path_dir_raw.get("value", "export/paths")
+    else:
+        path_dir_val = path_dir_raw or "export/paths"
+    path_cols_raw = codegen_raw.get("path_columns", {"value": "{X}, {Y}, {COMMAND}"})
+    if isinstance(path_cols_raw, dict):
+        path_cols_val = path_cols_raw.get("value", "{X}, {Y}, {COMMAND}")
+    else:
+        path_cols_val = path_cols_raw or "{X}, {Y}, {COMMAND}"
+    codegen = {
+        "style": style_val,
+        "templates": codegen_raw.get("templates", {}),
+        "opts": codegen_raw.get("opts", {}),
+        "path_dir": path_dir_val,
+        "path_columns": path_cols_val,
+        "mech_presets": codegen_raw.get("mech_presets", []),
+        "calibration": codegen_raw.get("calibration", {}),
+        "motion_profiles": codegen_raw.get("motion_profiles", {})
+    }
+    phys_raw = raw.get("physics_constants", {})
+    phys_defaults = DEFAULT_CONFIG.get("physics_constants", {})
+    physics_constants = {}
+    for key, default_val in phys_defaults.items():
+        default_num = _num(default_val, 0.0)
+        physics_constants[key] = _num(phys_raw.get(key, {"value": default_num}), default_num)
+    reshape_raw = raw.get("reshape_label", {"value": "Reshape"})
+    if isinstance(reshape_raw, dict):
+        reshape_label = reshape_raw.get("value", "Reshape")
+    else:
+        reshape_label = reshape_raw
+
+    return {
+        "robot_physics": physics_flat(raw),
+        "bot_dimensions": dims,
+        "offsets": offsets_flat(raw),
+        "ui": ui,
+        "field_centric": 1,
+        "distance_units": _coerce_int_range(raw.get("distance_units", 0), 0, (0, 1, 2, 3)),
+        "gear_ratio": _num(raw.get("gear_ratio", {"value": 1.0}), 1.0),
+        "angle_units": _coerce_int_range(raw.get("angle_units", 0), 0, (0, 1)),
+        "initial_heading_deg": _num(raw.get("initial_heading_deg", {"value": 0.0}), 0.0),
+        "codegen": codegen,
+        "path_config": path_cfg,
+        "physics_constants": physics_constants,
+        "reshape_label": str(reshape_label) if reshape_label is not None else "Reshape",
+    }
+
+
+def auto_lookahead_in(cfg: dict) -> float:
+    """Auto-compute base lookahead (inches) from robot size."""
+    bd = cfg.get("bot_dimensions", {})
+    base = float(bd.get("dt_width", bd.get("width", 12.0)))
+    # Slightly tighter, more pragmatic lookahead for pure pursuit/path following
+    base = max(8.0, min(24.0, base * 0.9))
+    return base
