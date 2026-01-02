@@ -561,7 +561,9 @@ def _effective_centers(nodes, cfg, initial_heading):
             ghost_ang = (pose_h + 180.0) % 360.0
         if off_in != 0.0 and ghost_ang is None:
             arrival_heading = None
-            if prev_swing and prev_swing.get("target_heading") is not None:
+            if prev_swing and prev_swing.get("end_pos") is not None:
+                arrival_heading = heading_from_points(prev_swing.get("end_pos"), p)
+            elif prev_swing and prev_swing.get("target_heading") is not None:
                 arrival_heading = prev_swing.get("target_heading")
             else:
                 has_curve = prev_pd.get("use_path", False) or bool(prev_pd.get("pose_preview_points"))
@@ -582,11 +584,36 @@ def _effective_centers(nodes, cfg, initial_heading):
                     arrival_heading = None
             if arrival_heading is not None:
                 ghost_ang = arrival_heading
+        if off_in != 0.0 and ghost_ang is not None and (prev_pd.get("use_path", False) or prev_pd.get("pose_preview_points") or prev_swing):
+            arrival_heading = None
+            if prev_swing and prev_swing.get("end_pos") is not None:
+                arrival_heading = heading_from_points(prev_swing.get("end_pos"), p)
+            elif prev_swing and prev_swing.get("target_heading") is not None:
+                arrival_heading = prev_swing.get("target_heading")
+            if arrival_heading is None:
+                has_curve = prev_pd.get("use_path", False) or bool(prev_pd.get("pose_preview_points"))
+                if has_curve:
+                    pts = list(prev_pd.get("path_points") or prev_pd.get("pose_preview_points") or [])
+                    if not pts:
+                        cps = list(prev_pd.get("control_points", []))
+                        if len(cps) >= 2:
+                            cps[0] = prev_anchor
+                            cps[-1] = p
+                            pts = generate_bezier_path(cps, num_samples=20)
+                    if pts:
+                        arrival_heading = calculate_path_heading(pts, len(pts) - 1)
+                if arrival_heading is None and has_curve:
+                    try:
+                        arrival_heading = calculate_path_heading([prev_anchor, p], 1)
+                    except Exception:
+                        arrival_heading = None
+            if arrival_heading is not None:
+                ghost_ang = arrival_heading
 
         if off_in != 0.0 and ghost_ang is not None:
             rad = math.radians(ghost_ang)
-            eff.append((p[0] + math.cos(rad) * off_in * PPI,
-                        p[1] - math.sin(rad) * off_in * PPI))
+            eff.append((p[0] - math.cos(rad) * off_in * PPI,
+                        p[1] + math.sin(rad) * off_in * PPI))
         elif off_in == 0.0:
             eff.append(p)
         else:
@@ -817,6 +844,28 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             return True
         return False
 
+    def _prev_movetopose_heading(idx):
+        if idx <= 0:
+            return None
+        prev_node = display_nodes[idx - 1]
+        if not prev_node.get("move_to_pose", False):
+            return None
+        prev_pd = prev_node.get("path_to_next", {}) or {}
+        if prev_pd.get("pose_end_heading") is not None:
+            try:
+                return float(prev_pd.get("pose_end_heading")) % 360.0
+            except Exception:
+                return None
+        if prev_pd.get("use_path", False):
+            return None
+        ph = prev_node.get("pose_heading_deg")
+        if ph is None:
+            return None
+        try:
+            return float(ph) % 360.0
+        except Exception:
+            return None
+
     def _dir_between(p0, p1):
         dx = p1[0] - p0[0]
         dy = p1[1] - p0[1]
@@ -895,6 +944,9 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         # Anchor start at the node (do not carry overrides so arcs begin at the segment start)
         start_anchor = p0
         p0 = start_anchor
+        prev_pose_heading = _prev_movetopose_heading(i)
+        if prev_pose_heading is not None:
+            curr_heading = prev_pose_heading
         profile_override = node_i.get("profile_override")
         prof_scale = _profile_speed_scale(profile_override)
         drive_override_cmd = node_i.get("custom_lateral_cmd")
@@ -934,6 +986,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         reverse_after_swing = bool(node_i.get("reverse_after_swing"))
         next_is_swing = display_nodes[i + 1].get("turn_mode") == "swing" if i + 1 < n else False
         edge_events = _edge_events_for(node_i)
+        heading_overridden = False
         if carry_speed > 1e-6 and _node_has_pre_actions(node_i, acts=acts):
             carry_speed = 0.0
         
@@ -963,6 +1016,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                             "T_speed_frac": turn_speed_frac})
                 curr_heading = tgt
                 carry_speed = 0.0
+                heading_overridden = True
             elif t == "swing":
                 tgt = float(act.get("deg", curr_heading)) % 360.0
                 sdir = act.get("dir", "auto")
@@ -977,6 +1031,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     start_anchor = swing_end
                     curr_heading = swing_heading
                     carry_speed = 0.0
+                    heading_overridden = True
         
         # Check if this segment uses a curved path
         path_data = node_i.setdefault("path_to_next", {})
@@ -1177,6 +1232,10 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             # Optional swing arc before the straight/pose motion
             if turn_mode == "swing":
                 swing_start_heading = curr_heading
+                if not heading_overridden:
+                    prev_pose_heading = _prev_movetopose_heading(i)
+                    if prev_pose_heading is not None:
+                        swing_start_heading = prev_pose_heading
                 pose_heading = node_i.get("pose_heading_deg") if node_i.get("move_to_pose") else None
                 pose_lead = node_i.get("pose_lead_in") if node_i.get("move_to_pose") else None
                 swing_res = _swing_segment(
@@ -1378,6 +1437,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     segs[-1]["edge_events"] = edge_events
                 carry_speed = v_end if chain_next else 0.0
                 path_data["pose_preview_points"] = resampled
+                path_data["pose_end_heading"] = end_heading
                 path_data["start_override"] = start_pt
                 curr_heading = pose_heading
             else:

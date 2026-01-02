@@ -1145,6 +1145,56 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
 
 
     # Draw connections (straight lines or path indicators)
+    def _effective_positions_for_links():
+        if cfg is None:
+            return [n["pos"] for n in nodes]
+        eff = []
+        for i, node in enumerate(nodes):
+            p = node["pos"]
+            if i == 0:
+                eff.append(p)
+                continue
+            off_in = get_node_offset_in(node, cfg, i)
+            if off_in == 0.0:
+                eff.append(p)
+                continue
+            prev_node = nodes[i - 1]
+            prev_pos = prev_node["pos"]
+            prev_pd = prev_node.get("path_to_next", {}) or {}
+            prev_swing = prev_pd.get("swing_vis")
+            arrival_heading = None
+            if prev_swing and prev_swing.get("end_pos") is not None:
+                arrival_heading = heading_from_points(prev_swing.get("end_pos"), p)
+            elif prev_swing and prev_swing.get("target_heading") is not None:
+                arrival_heading = prev_swing.get("target_heading")
+            else:
+                has_curve = prev_pd.get("use_path", False) or bool(prev_pd.get("pose_preview_points"))
+                if has_curve:
+                    pts = list(prev_pd.get("path_points") or prev_pd.get("pose_preview_points") or [])
+                    if not pts:
+                        cps = list(prev_pd.get("control_points", []))
+                        if len(cps) >= 2:
+                            cps[0] = prev_pos
+                            cps[-1] = p
+                            pts = generate_bezier_path(cps, num_samples=20)
+                    if pts:
+                        try:
+                            arrival_heading = calculate_path_heading(pts, len(pts) - 1)
+                        except Exception:
+                            arrival_heading = None
+                if arrival_heading is None and has_curve:
+                    try:
+                        arrival_heading = calculate_path_heading([prev_pos, p], 1)
+                    except Exception:
+                        arrival_heading = None
+            if arrival_heading is None:
+                arrival_heading = node.get("offset_ghost_angle")
+            if arrival_heading is None:
+                arrival_heading = heading_from_points(prev_pos, p)
+            rad = math.radians(arrival_heading)
+            eff.append((p[0] - math.cos(rad) * off_in * PPI,
+                        p[1] + math.sin(rad) * off_in * PPI))
+        return eff
 
 
 
@@ -1153,6 +1203,7 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
 
 
     if draw_links:
+        eff_links = _effective_positions_for_links()
         for i in range(len(nodes) - 1):
 
 
@@ -1161,7 +1212,7 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
 
 
 
-            p0, p1 = nodes[i]["pos"], nodes[i+1]["pos"]
+            p0, p1 = eff_links[i], eff_links[i + 1]
 
 
 

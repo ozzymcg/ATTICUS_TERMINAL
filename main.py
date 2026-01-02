@@ -522,6 +522,35 @@ def delete_node_at(idx):
     last_path_sig = None
     total_estimate_s = compute_total_estimate_s()
 
+def _arrival_heading_for_offset(prev_pd, prev_anchor, target_pos):
+    prev_swing = prev_pd.get("swing_vis") if isinstance(prev_pd, dict) else None
+    if prev_swing and prev_swing.get("end_pos") is not None:
+        return heading_from_points(prev_swing.get("end_pos"), target_pos)
+    if prev_swing and prev_swing.get("target_heading") is not None:
+        return prev_swing.get("target_heading")
+    has_curve = False
+    if isinstance(prev_pd, dict):
+        has_curve = bool(prev_pd.get("use_path", False) or prev_pd.get("pose_preview_points"))
+    if has_curve:
+        pts = list(prev_pd.get("path_points") or prev_pd.get("pose_preview_points") or [])
+        if not pts:
+            cps = list(prev_pd.get("control_points", []))
+            if len(cps) >= 2:
+                cps[0] = prev_anchor
+                cps[-1] = target_pos
+                pts = generate_bezier_path(cps, num_samples=20)
+        if pts:
+            try:
+                return calculate_path_heading(pts, len(pts) - 1)
+            except Exception:
+                return None
+        try:
+            return calculate_path_heading([prev_anchor, target_pos], 1)
+        except Exception:
+            return None
+    return None
+
+
 def effective_node_pos(idx):
     """Return node position adjusted for offsets (same logic as motion)."""
     if idx <= 0:
@@ -533,7 +562,7 @@ def effective_node_pos(idx):
     ghost_ang = node.get("offset_ghost_angle")
     prev_pd = display_nodes[idx - 1].get("path_to_next", {}) if idx - 1 >= 0 else {}
     prev_swing = prev_pd.get("swing_vis")
-    use_radial = prev_pd.get("use_path", False) or bool(prev_swing)
+    use_radial = prev_pd.get("use_path", False) or bool(prev_swing) or bool(prev_pd.get("pose_preview_points"))
     if off_in != 0.0 and ghost_ang is None and prev_node.get("move_to_pose"):
         pose_h = prev_node.get("pose_heading_deg")
         if pose_h is None:
@@ -543,22 +572,21 @@ def effective_node_pos(idx):
         ghost_ang = (pose_h + 180.0) % 360.0
         node["offset_ghost_angle"] = ghost_ang
     if use_radial and off_in != 0.0:
-        if ghost_ang is None:
-            try:
-                prev_eff = display_nodes[idx - 1]["pos"] if idx - 1 >= 0 else prev
-            except Exception:
-                prev_eff = prev
-            if prev_swing and prev_swing.get("target_heading") is not None:
-                gh = prev_swing.get("target_heading")
-                ghost_ang = gh
-            else:
-                ghost_ang = heading_from_points(prev_eff, node["pos"])
-            node["offset_ghost_angle"] = ghost_ang
+        try:
+            prev_eff = display_nodes[idx - 1]["pos"] if idx - 1 >= 0 else prev
+        except Exception:
+            prev_eff = prev
+        arrival_heading = _arrival_heading_for_offset(prev_pd, prev_eff, node["pos"])
+        if arrival_heading is not None:
+            ghost_ang = arrival_heading
+        elif ghost_ang is None:
+            ghost_ang = heading_from_points(prev_eff, node["pos"])
+        node["offset_ghost_angle"] = ghost_ang
         if ghost_ang is not None:
             rad = math.radians(ghost_ang)
             return (
-                node["pos"][0] + math.cos(rad) * off_in * PPI,
-                node["pos"][1] - math.sin(rad) * off_in * PPI
+                node["pos"][0] - math.cos(rad) * off_in * PPI,
+                node["pos"][1] + math.sin(rad) * off_in * PPI
             )
     else:
         # Straight segments ignore radial; clear ghost if present
@@ -940,7 +968,10 @@ def enter_path_edit_mode(segment_idx):
         end_node = display_nodes[segment_idx + 1]
         if end_node.get("offset", 0) != 0 or end_node.get("offset_custom_in") is not None:
             if end_node.get("offset_ghost_angle") is None:
-                end_node["offset_ghost_angle"] = heading_from_points(p0, p1)
+                arrival_heading = _arrival_heading_for_offset(path_data, p0, p1)
+                if arrival_heading is None:
+                    arrival_heading = heading_from_points(p0, p1)
+                end_node["offset_ghost_angle"] = arrival_heading
     else:
         cps = list(path_data["control_points"])
     
@@ -7336,7 +7367,7 @@ def main():
                 continue
             if not (path_data.get("use_path") and path_data.get("control_points")):
                 # Draw straight line
-                p0, p1 = display_nodes[i]["pos"], display_nodes[i+1]["pos"]
+                p0, p1 = effective_node_pos(i), effective_node_pos(i + 1)
                 pygame.draw.line(screen, NODE_COLOR, p0, p1, 2)
 
         # Draw edge mechanism markers
@@ -7370,19 +7401,13 @@ def main():
         # Draw nodes with proper arguments
         draw_nodes(screen, display_nodes, selected_idx, font, CFG, path_edit_mode, draw_links=False)
 
-        # Draw grey offset endpoint for movetopose paths
+        # Draw grey offset endpoint for any segment type
         for i in range(len(display_nodes) - 1):
-            node = display_nodes[i]
             next_node = display_nodes[i + 1]
             off_in = get_node_offset_in(next_node, CFG, i + 1)
             if off_in == 0.0:
                 continue
-            if not node.get("move_to_pose"):
-                continue
-            pd = node.get("path_to_next", {})
-            if pd.get("use_path", False) or not pd.get("pose_preview_points"):
-                continue
-            end_pt = pd.get("pose_preview_points", [])[-1] if pd.get("pose_preview_points") else None
+            end_pt = effective_node_pos(i + 1)
             if end_pt is None:
                 continue
             pygame.draw.circle(screen, (140, 140, 140), (int(end_pt[0]), int(end_pt[1])), 6)
