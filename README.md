@@ -1,6 +1,7 @@
-# ATTICUS TERMINAL
+<img width="593" height="596" alt="Screenshot 2026-01-01 232242" src="https://github.com/user-attachments/assets/ee0034d4-2f7f-4463-b9e5-d8dac14abca4" />
 
-An advanced interactive simulation and design tool for autonomous routines. It allows users to place waypoints and paths on a virtual VEX field, and then simulates realistic physics and generates customizable routine code while providing analytical feedback and detailed logging. Autonomous path files are generated in Lemlib standard format.
+# ATTICUS TERMINAL
+An advanced interactive simulation and design tool for autonomous routines. It allows users to place waypoints and paths on a virtual VEX field, and then simulates realistic physics and generates customizable routine code while providing analytical feedback and detailed logging.
 
 ## Quickstart
 1. Download/Extract: grab the latest ZIP (or copy this folder), then open the extracted `ATTICUS TERMINAL` folder.
