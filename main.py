@@ -1187,6 +1187,26 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         x_internal = interpret_input_angle(raw)
                         sd = dir_tok if dir_tok in ("cw", "ccw", "auto") else "auto"
                         acts.append({"type": "swing", "deg": x_internal, "dir": sd, "settle": settle_flag})
+                elif low.startswith(("movetopose", "poseheading", "pose")):
+                    tokens = part.split()
+                    if len(tokens) >= 2 and tokens[1].lower() in ("off", "none", "clear"):
+                        node["move_to_pose"] = False
+                        node.pop("pose_heading_deg", None)
+                        node.pop("pose_lead_in", None)
+                    elif len(tokens) >= 2:
+                        try:
+                            disp = float(tokens[1])
+                            node["move_to_pose"] = True
+                            node["pose_heading_deg"] = interpret_input_angle(disp)
+                            if len(tokens) >= 3:
+                                try:
+                                    node["pose_lead_in"] = float(tokens[2])
+                                except Exception:
+                                    pass
+                            else:
+                                node.pop("pose_lead_in", None)
+                        except Exception:
+                            pass
                 elif low.startswith("offset"):
                     if idx != 0 and int(node.get("offset", 0)) == 0:
                         x = float(low.split()[1].replace("in", ""))
@@ -1677,8 +1697,8 @@ def prompt_heading_realization(node: dict, idx: int) -> bool:
         "Heading realization",
         "turn/swing/settleswing + optional movetopose heading [+lead] (comma/semicolon separated).\n"
         "Optional: profile precise|normal|fast|slam (non-path segments only).\n"
-        "Examples: 'turn auto;'; 'swing cw; movetopose 180 6'; 'settleswing cw'; 'profile precise'.\n"
-        "Omit movetopose to disable enforcing final heading.\n"
+        "Examples: 'turn auto;'; 'swing cw; movetopose 180 6'; 'settleswing cw'; 'movetopose off'; 'profile precise'.\n"
+        "Omit movetopose (or use 'movetopose off') to disable enforcing final heading.\n"
         "Angles use 0=left, 90=up.",
         initialvalue=init
     )
@@ -1808,6 +1828,7 @@ def open_settings_window():
     init_head = tk.StringVar(value=f"{init_heading_disp:.3f}")
     
     show_hitboxes_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_hitboxes", 1)))
+    show_hitbox_conflicts_only_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_hitbox_conflicts_only", 0)))
     show_field_objects_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_field_objects", 1)))
     show_node_numbers_var = tk.IntVar(value=int(CFG.get("ui", {}).get("show_node_numbers", 1)))
     reshape_label_var = tk.StringVar(value=str(CFG.get("reshape_label", "Reshape")))
@@ -2699,7 +2720,29 @@ def open_settings_window():
     _row(tabs["general"], 0, "Distance Units:", ttk.Combobox(tabs["general"], textvariable=dist_var, values=dist_labels, state="readonly"), "Output units")
     _row(tabs["general"], 1, "Angle Units:", ttk.Combobox(tabs["general"], textvariable=ang_var, values=ang_labels, state="readonly"), "Angle units")
     _row(tabs["general"], 2, "Initial heading (deg):", heading_frame, "Robot start heading")
-    _row(tabs["general"], 3, "Show node hitboxes:", ttk.Checkbutton(tabs["general"], variable=show_hitboxes_var), "Toggle geometry boxes")
+    hitbox_row = ttk.Frame(tabs["general"])
+    hitbox_chk = ttk.Checkbutton(hitbox_row, variable=show_hitboxes_var)
+    hitbox_chk.pack(side="left")
+    hitbox_conflicts_lbl = ttk.Label(hitbox_row, text="Collisions only")
+    hitbox_conflicts_lbl.pack(side="left", padx=(10, 4))
+    hitbox_conflicts_chk = ttk.Checkbutton(hitbox_row, variable=show_hitbox_conflicts_only_var)
+    hitbox_conflicts_chk.pack(side="left")
+    _row(tabs["general"], 3, "Show node hitboxes:", hitbox_row, "Toggle geometry boxes")
+    def _refresh_hitbox_conflicts_state(*_):
+        enabled = bool(show_hitboxes_var.get())
+        state = "normal" if enabled else "disabled"
+        try:
+            hitbox_conflicts_chk.configure(state=state)
+            hitbox_conflicts_lbl.configure(state=state)
+        except Exception:
+            pass
+        if not enabled:
+            show_hitbox_conflicts_only_var.set(0)
+    _refresh_hitbox_conflicts_state()
+    try:
+        show_hitboxes_var.trace_add("write", _refresh_hitbox_conflicts_state)
+    except Exception:
+        pass
     field_obj_row = ttk.Frame(tabs["general"])
     field_obj_chk = ttk.Checkbutton(field_obj_row, variable=show_field_objects_var)
     field_obj_chk.pack(side="left")
@@ -2707,6 +2750,8 @@ def open_settings_window():
     node_nums_lbl.pack(side="left", padx=(10, 4))
     node_nums_chk = ttk.Checkbutton(field_obj_row, variable=show_node_numbers_var)
     node_nums_chk.pack(side="left")
+    ui.track_live_widget(hitbox_chk)
+    ui.track_live_widget(hitbox_conflicts_chk)
     ui.track_live_widget(field_obj_chk)
     ui.track_live_widget(node_nums_chk)
     _row(tabs["general"], 4, "Show field objects:", field_obj_row, "Draw field objects / toggle node labels")
@@ -6233,6 +6278,9 @@ def open_settings_window():
             
             # Update UI
             CFG.setdefault("ui", {})["show_hitboxes"] = int(show_hitboxes_var.get())
+            if not show_hitboxes_var.get():
+                show_hitbox_conflicts_only_var.set(0)
+            CFG.setdefault("ui", {})["show_hitbox_conflicts_only"] = int(show_hitbox_conflicts_only_var.get())
             CFG.setdefault("ui", {})["show_field_objects"] = int(show_field_objects_var.get())
             CFG.setdefault("ui", {})["show_node_numbers"] = int(show_node_numbers_var.get())
             CFG["reshape_label"] = reshape_label_var.get().strip() or "Reshape"
@@ -7323,7 +7371,8 @@ def main():
                 end_pos = swing_vis.get("end_pos", start_pos)
                 if arc_pts:
                     pygame.draw.lines(screen, NODE_COLOR, False, arc_pts, 3)
-                pygame.draw.line(screen, NODE_COLOR, end_pos, next_eff, 2)
+                if not pose_preview:
+                    pygame.draw.line(screen, NODE_COLOR, end_pos, next_eff, 2)
             if pose_preview and not pd.get("use_path", False):
                 draw_curved_path(screen, pose_preview, color=(80, 220, 200), width=3)
         
@@ -7398,9 +7447,6 @@ def main():
                 radius = EDGE_MARKER_RADIUS + (2 if marker_hover_idx == (i, j) else 0)
                 pygame.draw.circle(screen, color, (int(p[0]), int(p[1])), radius, 2)
 
-        # Draw nodes with proper arguments
-        draw_nodes(screen, display_nodes, selected_idx, font, CFG, path_edit_mode, draw_links=False)
-
         # Draw grey offset endpoint for any segment type
         for i in range(len(display_nodes) - 1):
             next_node = display_nodes[i + 1]
@@ -7411,6 +7457,9 @@ def main():
             if end_pt is None:
                 continue
             pygame.draw.circle(screen, (140, 140, 140), (int(end_pt[0]), int(end_pt[1])), 6)
+
+        # Draw nodes with proper arguments
+        draw_nodes(screen, display_nodes, selected_idx, font, CFG, path_edit_mode, draw_links=False)
 
         # Shift insert preview (draw hole after lines so it stays visible)
         if insert_preview is not None:

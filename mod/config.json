@@ -113,12 +113,15 @@
   },
   "ui": {
     "show_hitboxes": {
-      "value": 0
+      "value": 1
     },
     "show_field_objects": {
       "value": 1
     },
     "show_node_numbers": {
+      "value": 0
+    },
+    "show_hitbox_conflicts_only": {
       "value": 1
     }
   },

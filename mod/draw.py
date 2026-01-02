@@ -988,8 +988,6 @@ def draw_multicolor_circle(surface, pos, radius, colors):
 
 
 
-
-
     if len(colors) == 1:
 
 
@@ -1202,8 +1200,9 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
 
 
 
+    eff_positions = _effective_positions_for_links()
     if draw_links:
-        eff_links = _effective_positions_for_links()
+        eff_links = eff_positions
         for i in range(len(nodes) - 1):
 
 
@@ -1332,7 +1331,7 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
 
     label_groups = {}
     for idx, node in enumerate(nodes):
-        pos = node["pos"]
+        pos = eff_positions[idx]
         key = (round(pos[0], 3), round(pos[1], 3))
         if key not in label_groups:
             label_groups[key] = {"pos": pos, "indices": [idx]}
@@ -1791,8 +1790,8 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
             for j in range(len(pts) - 1):
                 conflict_segments.append((pts[j], pts[j + 1]))
         else:
-            p0 = nodes[i]["pos"]
-            p1 = nodes[i + 1]["pos"]
+            p0 = eff_positions[i]
+            p1 = eff_positions[i + 1]
             conflict_segments.append((p0, p1))
 
     field_rects = []
@@ -1846,7 +1845,7 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
         return True
 
     label_rects = []
-    node_centers = [n["pos"] for n in nodes]
+    node_centers = list(eff_positions)
     groups_sorted = sorted(label_groups.values(), key=lambda g: min(g["indices"]))
     offsets = [(0, -16)]
     radii = [18, 26, 34]
@@ -3538,6 +3537,7 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
 
 
 
+    collisions_only = int(cfg.get("ui", {}).get("show_hitbox_conflicts_only", 0)) == 1
     bd = cfg["bot_dimensions"]
 
 
@@ -4887,6 +4887,8 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
 
 
 
+        if collisions_only and not is_oob:
+            continue
         color = RED if is_oob else GREY
 
 

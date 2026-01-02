@@ -60,6 +60,7 @@ DEFAULT_CONFIG = {
     },
     "ui": {
         "show_hitboxes": {"value": 1},
+        "show_hitbox_conflicts_only": {"value": 0},
         "auto_oob_fix": {"value": 1},
         "time_ms":       {"value": 0},
         "show_field_objects": {"value": 1},
