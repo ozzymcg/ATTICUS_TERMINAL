@@ -2489,6 +2489,8 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
             sd = str(act.get("dir", "auto")).lower()
+            settle = bool(act.get("settle", False))
+            prefix = "Settle swing" if settle else "Swing"
 
 
 
@@ -2496,7 +2498,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-                lines.append(f"Swing to {disp:g}? ({sd})")
+                lines.append(f"{prefix} to {disp:g}? ({sd})")
 
 
 
@@ -2504,7 +2506,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-                lines.append(f"Swing to {disp:g}?")
+                lines.append(f"{prefix} to {disp:g}?")
 
 
 
@@ -2521,8 +2523,32 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
             lines.append(_reshape_label(cfg))
-
-
+        elif t == "preset":
+            name = str(act.get("name", "")).strip()
+            if name:
+                label = _reshape_label(cfg) if name.lower() == "reshape" else name
+                text = label
+                state_raw = act.get("state", None)
+                if isinstance(state_raw, bool):
+                    state = "on" if state_raw else "off"
+                elif state_raw is None:
+                    state = ""
+                else:
+                    state = str(state_raw).strip().lower()
+                value_raw = act.get("value", None)
+                if value_raw is None:
+                    values = act.get("values", [])
+                    if isinstance(values, list):
+                        value = " ".join(str(v).strip() for v in values if str(v).strip() != "")
+                    else:
+                        value = ""
+                else:
+                    value = str(value_raw).strip()
+                if state:
+                    text = f"{text} {state}"
+                if value:
+                    text = f"{text} {value}"
+                lines.append(text)
 
         elif t == "reverse":
 
@@ -2792,7 +2818,10 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-        lines.append(f"Heading change: swing ({sd})")
+        if node.get("swing_settle"):
+            lines.append(f"Heading change: settle swing ({sd})")
+        else:
+            lines.append(f"Heading change: swing ({sd})")
 
 
 
@@ -4426,11 +4455,24 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
 
 
 
-        if i > 0 and incoming_h is None and nodes[i-1].get("move_to_pose") and nodes[i-1].get("pose_heading_deg") is not None:
-
-
-
-            incoming_h = nodes[i-1].get("pose_heading_deg")
+        if i > 0 and nodes[i - 1].get("move_to_pose"):
+            prev_pd = nodes[i - 1].get("path_to_next", {}) or {}
+            pose_end = prev_pd.get("pose_end_heading")
+            if pose_end is not None:
+                try:
+                    incoming_h = float(pose_end) % 360.0
+                except Exception:
+                    incoming_h = pose_end
+            else:
+                pose_h = nodes[i - 1].get("pose_heading_deg")
+                if pose_h is not None:
+                    try:
+                        pose_val = float(pose_h)
+                        if reverse_state:
+                            pose_val = (pose_val + 180.0) % 360.0
+                        incoming_h = pose_val
+                    except Exception:
+                        incoming_h = pose_h
 
 
 
@@ -4515,37 +4557,10 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
 
 
         # Apply reverse state and upcoming reverse toggle for outgoing orientation
-
-
-
-
-
-
-
+        is_swing_start = bool(swing_vis_here) or nodes[i].get("turn_mode") == "swing"
         outgoing_reverse = reverse_state
-
-
-
-
-
-
-
-        if i < len(nodes) - 1 and nodes[i].get("reverse", False):
-
-
-
-
-
-
-
+        if i < len(nodes) - 1 and nodes[i].get("reverse", False) and not is_swing_start:
             outgoing_reverse = not outgoing_reverse
-
-
-
-
-
-
-
         eff_heading = (base_h + (180.0 if outgoing_reverse else 0.0)) % 360.0
 
 
@@ -4570,14 +4585,8 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
 
 
 
-        if node.get("reverse", False):
-
-
-
-
-
-
-
+        reverse_toggle = node.get("reverse", False) or (node.get("reverse_after_swing", False) and is_swing_start)
+        if reverse_toggle:
             reverse_state = not reverse_state
 
 

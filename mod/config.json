@@ -106,7 +106,7 @@
     "value": 0
   },
   "initial_heading_deg": {
-    "value": 25.769
+    "value": 25.731
   },
   "gear_ratio": {
     "value": 0.75
@@ -198,7 +198,9 @@
         "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {.turn_timeout = {TIMEOUT_MS}});",
         "turn_local": "turn_relative({TURN_DELTA_DEG});",
         "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
-        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
+        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});",
+        "marker_wait": "waitUntil({MARKER_DIST_IN});",
+        "marker_wait_done": "waitUntilDone();"
       },
       "Action List": {
         "__optional__": [],
@@ -209,13 +211,13 @@
       },
       "JAR": {
         "wait": "task::sleep({MS});",
-        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {DRIVE_MAX_V}, {HEADING_MAX_V}, {DRIVE_SETTLE_ERR}, {DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
-        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TURN_SETTLE_ERR}, {TURN_SETTLE_TIME}, {TIMEOUT_MS});",
+        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
         "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
-        "pose": "driveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
         "path_follow": "followPath(\"{PATH_FILE}\", {TIMEOUT_MS});",
         "tbuffer": "task::sleep({MS});",
-        "setpose": "setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});",
         "__optional__": [
           "setpose",
           "swing",
@@ -225,7 +227,7 @@
           "motion": "move",
           "turn": "turn_global"
         },
-        "swing": "{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
+        "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
         "reshape": "matchload_state({STATE});",
         "marker_wait": "",
         "marker_wait_done": ""
@@ -249,9 +251,9 @@
     },
     "mech_presets": [
       {
-        "name": "Intake Spin",
+        "name": "intake",
         "mode": "action",
-        "template": "printf(\"Hello World\");",
+        "template": "set_intake({VALUE1});",
         "on": "",
         "off": "",
         "default": false

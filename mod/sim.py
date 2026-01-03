@@ -837,7 +837,9 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
     def _node_has_pre_actions(node, acts=None):
         acts = acts if acts is not None else node.get("actions_out", node.get("actions", []))
         if acts:
-            return True
+            for act in acts:
+                if act.get("type") != "preset":
+                    return True
         if node.get("reshape_toggle", False):
             return True
         if node.get("reverse", False) and not _has_reverse_action(acts):
@@ -1006,6 +1008,22 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             elif t == "reverse":
                 reverse = _apply_reverse_action(reverse, act)
                 segs.append({"type": "reverse", "T": 0.0, "pos": start_anchor, "state": 2 if reverse else 1})
+            elif t == "preset":
+                name = str(act.get("name", "")).strip()
+                if name:
+                    segs.append({
+                        "type": "marker",
+                        "T": 0.0,
+                        "pos": start_anchor,
+                        "node_i": i,
+                        "actions": [{
+                            "kind": "preset",
+                            "name": name,
+                            "state": act.get("state", None),
+                            "value": act.get("value", None),
+                            "values": act.get("values", []),
+                        }]
+                    })
             elif t == "turn":
                 tgt = float(act.get("deg", curr_heading)) % 360.0
                 diff = _angle_diff_deg(curr_heading, tgt)

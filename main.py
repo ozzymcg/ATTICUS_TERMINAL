@@ -1113,6 +1113,23 @@ def compile_cmd_string(node, idx):
             parts.append(f"wait {act.get('s', 0):g}")
         elif act.get("type") in ("reshape", "geom"):
             parts.append("reshape")
+        elif act.get("type") == "preset":
+            name = str(act.get("name", "")).strip()
+            if name:
+                text = name
+                state_raw = act.get("state", None)
+                if isinstance(state_raw, bool):
+                    state = "on" if state_raw else "off"
+                elif state_raw is None:
+                    state = ""
+                else:
+                    state = str(state_raw).strip().lower()
+                value = _preset_value_text(act)
+                if state:
+                    text = f"{text} {state}"
+                if value:
+                    text = f"{text} {value}"
+                parts.append(text)
         elif act.get("type") == "reverse":
             state = act.get("state", None)
             if state is True:
@@ -1151,6 +1168,12 @@ def parse_and_apply_cmds(node, cmd_str, idx):
     node["reverse"] = orig_reverse
     seen_swingto = False
     has_reverse_action = False
+    presets = _mech_presets()
+    preset_names = [p["name"] for p in presets if str(p.get("name", "")).strip().lower() != "reshape"]
+    preset_names.sort(key=lambda s: len(s), reverse=True)
+    reshape_alias = str(CFG.get("reshape_label", "Reshape")).strip().lower()
+    if reshape_alias in ("reshape", "rs", "geom"):
+        reshape_alias = ""
     if cmd_str:
         for part in [p.strip() for p in cmd_str.replace(";", ",").split(",") if p.strip()]:
             low = part.lower()
@@ -1211,7 +1234,7 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                     if idx != 0 and int(node.get("offset", 0)) == 0:
                         x = float(low.split()[1].replace("in", ""))
                         node["offset_custom_in"] = x
-                elif low in ("reshape", "rs", "geom"):
+                elif low in ("reshape", "rs", "geom") or (reshape_alias and (low == reshape_alias or low.startswith(reshape_alias + " "))):
                     acts.append({"type": "reshape"})
                 elif low.startswith("reverse"):
                     tokens = low.split()
@@ -1272,6 +1295,26 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                                 node["custom_turn_dps"] = val if val > 0 else None
                             except Exception:
                                 pass
+                else:
+                    matched_name = None
+                    for name in preset_names:
+                        name_low = name.lower()
+                        if low == name_low or low.startswith(name_low + " "):
+                            matched_name = name
+                            break
+                    if matched_name:
+                        rem = part[len(matched_name):].strip()
+                        tokens = rem.split() if rem else []
+                        state = None
+                        value = None
+                        values = []
+                        if tokens and tokens[0].lower() in ("on", "off", "toggle"):
+                            state = tokens[0].lower()
+                            tokens = tokens[1:]
+                        if tokens:
+                            value = " ".join(tokens)
+                            values = tokens[:3]
+                        acts.append({"type": "preset", "name": matched_name, "state": state, "value": value, "values": values})
             except Exception:
                 pass
     node["actions"] = acts
@@ -1300,6 +1343,20 @@ def _mech_presets():
         })
     return out
 
+def _preset_value_text(act):
+    value_raw = act.get("value", None)
+    if value_raw is not None:
+        return str(value_raw).strip()
+    values = act.get("values", None)
+    if isinstance(values, list):
+        parts = []
+        for v in values:
+            v_str = str(v).strip()
+            if v_str:
+                parts.append(v_str)
+        return " ".join(parts)
+    return ""
+
 def _marker_actions_to_text(actions):
     parts = []
     if not isinstance(actions, list):
@@ -1310,8 +1367,14 @@ def _marker_actions_to_text(actions):
         kind = str(act.get("kind", "code")).lower()
         if kind == "preset":
             name = str(act.get("name", "")).strip()
-            state = str(act.get("state", "")).strip().lower()
-            value = str(act.get("value", "")).strip()
+            state_raw = act.get("state", None)
+            if isinstance(state_raw, bool):
+                state = "on" if state_raw else "off"
+            elif state_raw is None:
+                state = ""
+            else:
+                state = str(state_raw).strip().lower()
+            value = _preset_value_text(act)
             text = name
             if state:
                 text = f"{text} {state}"
@@ -1358,10 +1421,21 @@ def _marker_hover_text(actions):
         if kind == "preset":
             name = str(act.get("name", "")).strip()
             if name:
-                if name.strip().lower() == "reshape":
-                    items.append(reshape_label)
+                label = reshape_label if name.strip().lower() == "reshape" else name
+                text = label
+                state_raw = act.get("state", None)
+                if isinstance(state_raw, bool):
+                    state = "on" if state_raw else "off"
+                elif state_raw is None:
+                    state = ""
                 else:
-                    items.append(name)
+                    state = str(state_raw).strip().lower()
+                value = _preset_value_text(act)
+                if state:
+                    text = f"{text} {state}"
+                if value:
+                    text = f"{text} {value}"
+                items.append(text)
         else:
             items.append("Custom")
     if not items:
@@ -1388,29 +1462,38 @@ def _parse_marker_actions(text):
     presets = _mech_presets()
     preset_names = [p["name"] for p in presets]
     preset_names.sort(key=lambda s: len(s), reverse=True)
+    reshape_label = str(CFG.get("reshape_label", "Reshape")).strip()
+    reshape_alias = reshape_label.lower() if reshape_label else ""
+    if reshape_alias == "reshape":
+        reshape_alias = ""
     for part in [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]:
         low = part.lower()
         if low.startswith("code "):
             actions.append({"kind": "code", "code": part[5:].strip()})
             continue
-        matched = None
         matched_name = None
-        for name in preset_names:
-            if low == name.lower() or low.startswith(name.lower() + " "):
-                matched = name
-                matched_name = name
-                break
-        if matched:
-            rem = part[len(matched_name):].strip()
+        rem = None
+        if reshape_alias and (low == reshape_alias or low.startswith(reshape_alias + " ")):
+            matched_name = "reshape"
+            rem = part[len(reshape_label):].strip()
+        else:
+            for name in preset_names:
+                if low == name.lower() or low.startswith(name.lower() + " "):
+                    matched_name = name
+                    rem = part[len(matched_name):].strip()
+                    break
+        if matched_name:
             tokens = rem.split() if rem else []
             state = None
             value = None
+            values = []
             if tokens and tokens[0].lower() in ("on", "off", "toggle"):
                 state = tokens[0].lower()
                 tokens = tokens[1:]
             if tokens:
                 value = " ".join(tokens)
-            actions.append({"kind": "preset", "name": matched_name, "state": state, "value": value})
+                values = tokens[:3]
+            actions.append({"kind": "preset", "name": matched_name, "state": state, "value": value, "values": values})
         else:
             actions.append({"kind": "code", "code": part})
     return actions
@@ -1421,6 +1504,8 @@ def _marker_prompt_text():
         "Commands (comma/semicolon separated). Examples:",
         "  intake on, clamp toggle",
         "  lift 300",
+        "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})",
+        "  clamp on 1 2 3     (toggle + values, {STATE} on/off)",
         "  code digitalWrite(PNEU, 1);",
         ""
     ]
@@ -3518,67 +3603,51 @@ def open_settings_window():
     codegen_defaults = {
         "LemLib": {
             "wait": "pros::delay({MS});",
-            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
-            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
+            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
             "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
-            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
-            "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{SIDE}, {TIMEOUT_MS}, {{.minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}});",
-            "reshape": "// RESHAPE state={STATE}",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
+            "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
+            "reshape": "matchloadPistons.set_value({STATE});",
             "reverse_on": "// reverse handled per-command",
             "reverse_off": "// reverse handled per-command",
             "tbuffer": "pros::delay({MS});",
             "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
             "marker_wait_done": "chassis.waitUntilDone();",
-            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {{.forwards = {FORWARDS}}});",
+            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
             "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
         "JAR": {
-            "wait": "pros::delay({MS});",
-            "move": "driveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {HEADING_DEG});",
-            "turn_global": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+            "wait": "task::sleep({MS});",
+            "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+            "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
             "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
-            "pose": "driveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-            "swing": "swingToHeading({HEADING_DEG}, {DIR}, {TIMEOUT_MS});",
+            "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+            "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
             "path_follow": 'followPath("{PATH_FILE}", {TIMEOUT_MS});',
-            "reshape": "// RESHAPE state={STATE}",
+            "reshape": "matchload_state({STATE});",
             "reverse_on": "// reverse handled inline",
             "reverse_off": "// reverse handled inline",
-            "tbuffer": "pros::delay({MS});",
+            "tbuffer": "task::sleep({MS});",
             "marker_wait": "",
             "marker_wait_done": "",
-            "setpose": "setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
-        },
-        "PROS": {
-            "wait": "pros::delay({MS});",
-            "move": "drive_distance({DIST_IN});",
-            "turn_global": "turn_to({HEADING_DEG});",
-            "turn_local": "turn_angle({TURN_DELTA_DEG});",
-            "pose": "// move_to_pose x={X_IN}, y={Y_IN}, h={HEADING_DEG}",
-            "swing": "swing_to({HEADING_DEG}, {DIR});",
-            "reshape": "// RESHAPE state={STATE}",
-            "reverse_on": "// reverse ON",
-            "reverse_off": "// reverse OFF",
-            "tbuffer": "pros::delay({MS});",
-            "marker_wait": "",
-            "marker_wait_done": "",
-            "path_follow": 'follow_path("{PATH_FILE}", {LOOKAHEAD});',
-            "setpose": "// set pose {X_IN},{Y_IN},{HEADING_DEG}"
+            "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
         "Custom": {
-            "wait": "pros::delay({MS});",
-            "move": "move({X_IN}, {Y_IN}, {HEADING_DEG});",
-            "turn_global": "face({HEADING_DEG});",
+            "wait": "wait({S}, seconds);",
+            "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {.drive_timeout = {TIMEOUT_MS}});",
+            "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {.turn_timeout = {TIMEOUT_MS}});",
             "turn_local": "turn_relative({TURN_DELTA_DEG});",
             "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
             "swing": "swing_to_heading({HEADING_DEG}, {DIR});",
-            "reshape": "// RESHAPE state={STATE}",
+            "reshape": "MLadapter({STATE});",
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
-            "tbuffer": "pros::delay({MS});",
+            "tbuffer": "wait ({S}, seconds);",
             "marker_wait": "waitUntil({MARKER_DIST_IN});",
             "marker_wait_done": "waitUntilDone();",
             "path_follow": 'follow_path("{PATH_NAME}", {TIMEOUT_MS}, {LOOKAHEAD});',
-            "setpose": "setpose({X_IN},{Y_IN},{HEADING_DEG});"
+            "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
         }
     }
     # Ensure codegen structure exists in CFG
@@ -3622,7 +3691,10 @@ def open_settings_window():
         CFG["codegen"].setdefault("templates", {}).setdefault(_style, dict(_tpl))
         CFG["codegen"]["templates"].setdefault(_style, {}).setdefault("__optional__", ["setpose"])
 
-    style_labels = ["Action List", "LemLib", "JAR", "PROS", "Custom"]
+    if str(CFG.get("codegen", {}).get("style", "")).strip().lower() == "pros":
+        CFG.setdefault("codegen", {})["style"] = "Custom"
+
+    style_labels = ["Action List", "LemLib", "JAR", "Custom"]
     codegen_style_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("style", "Action List")))
 
     # Template variables for customizable tokens
@@ -5908,8 +5980,10 @@ def open_settings_window():
 
         btn_row = ttk.Frame(left)
         btn_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        ttk.Button(btn_row, text="Add", command=lambda: _add_preset()).pack(side="left")
-        ttk.Button(btn_row, text="Remove", command=lambda: _remove_preset()).pack(side="left", padx=(6, 0))
+        add_btn = ttk.Button(btn_row, text="Add", command=lambda: _add_preset())
+        add_btn.pack(side="left")
+        remove_btn = ttk.Button(btn_row, text="Remove", command=lambda: _remove_preset())
+        remove_btn.pack(side="left", padx=(6, 0))
 
         name_var = tk.StringVar()
         mode_var = tk.StringVar(value="Action")
@@ -5939,7 +6013,11 @@ def open_settings_window():
         off_text = tk.Text(right, height=3, wrap="word")
         off_text.grid(row=5, column=1, sticky="ew", pady=(0, 6))
 
-        ttk.Label(right, text="Hint: Use {VALUE} in templates to insert a number from the marker action.").grid(
+        ttk.Label(
+            right,
+            text="Hint: {VALUE} = all values after the preset name; {VALUE1}/{VALUE2}/{VALUE3} = first three.\n"
+                 "Toggle templates also get {STATE} (on/off) and the same values."
+        ).grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
 
@@ -5966,19 +6044,40 @@ def open_settings_window():
         def _get_text(widget):
             return widget.get("1.0", "end-1c").strip()
 
+        def _is_locked():
+            idx = current_idx.get("idx")
+            if idx is None or idx >= len(presets):
+                return False
+            return str(presets[idx].get("name", "")).strip().lower() == "reshape"
+
         def _refresh_mode_visibility():
             mode = mode_var.get().strip().lower()
             is_toggle = mode == "toggle"
-            default_chk.configure(state="normal" if is_toggle else "disabled")
-            on_text.configure(state="normal" if is_toggle else "disabled")
-            off_text.configure(state="normal" if is_toggle else "disabled")
-            action_text.configure(state="normal" if not is_toggle else "disabled")
+            locked = _is_locked()
+            if locked:
+                name_entry.configure(state="disabled")
+                mode_combo.configure(state="disabled")
+                default_chk.configure(state="disabled")
+                action_text.configure(state="disabled")
+                on_text.configure(state="disabled")
+                off_text.configure(state="disabled")
+                remove_btn.configure(state="disabled")
+            else:
+                name_entry.configure(state="normal")
+                mode_combo.configure(state="readonly")
+                default_chk.configure(state="normal" if is_toggle else "disabled")
+                on_text.configure(state="normal" if is_toggle else "disabled")
+                off_text.configure(state="normal" if is_toggle else "disabled")
+                action_text.configure(state="normal" if not is_toggle else "disabled")
+                remove_btn.configure(state="normal")
 
         def _save_current():
             idx = current_idx.get("idx")
             if idx is None or idx >= len(presets):
                 return
             preset = presets[idx]
+            if str(preset.get("name", "")).strip().lower() == "reshape":
+                return
             name = name_var.get().strip() or f"Preset {idx + 1}"
             mode = mode_var.get().strip().lower()
             if mode not in ("action", "toggle"):
@@ -5990,6 +6089,8 @@ def open_settings_window():
             preset["on"] = _get_text(on_text)
             preset["off"] = _get_text(off_text)
             _refresh_list(idx)
+
+        default_chk.configure(command=_save_current)
 
         def _load_selected(idx):
             if idx is None or idx >= len(presets):
@@ -6034,9 +6135,13 @@ def open_settings_window():
 
         def _apply_and_close():
             _save_current()
+            try:
+                save_config(CFG)
+            except Exception:
+                pass
             win.destroy()
 
-        mode_combo.bind("<<ComboboxSelected>>", lambda _e: _refresh_mode_visibility())
+        mode_combo.bind("<<ComboboxSelected>>", lambda _e: (_refresh_mode_visibility(), _save_current()))
         preset_list.bind("<<ListboxSelect>>", _on_select)
 
         action_text.bind("<FocusOut>", lambda _e: _save_current())
@@ -6049,6 +6154,7 @@ def open_settings_window():
         btns = ttk.Frame(container)
         btns.grid(row=1, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(btns, text="Close", command=_apply_and_close).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", _apply_and_close)
 
     # Expose builder in UI
     def _rebuild_tpl_panel(*_):
@@ -6412,6 +6518,10 @@ def main():
                        round(float(a.get("deg", 0.0)), 3)) if a.get("type") == "turn"
                  else (("reshape" if a.get("type") in ("reshape", "geom") else a.get("type")),
                        ("toggle" if a.get("state", None) is None else bool(a.get("state")))) if a.get("type") == "reverse"
+                 else (("preset",
+                        str(a.get("name", "")).strip().lower(),
+                        (None if a.get("state", None) is None else str(a.get("state")).strip().lower()),
+                        (_preset_value_text(a) or None))) if a.get("type") == "preset"
                  else (("reshape" if a.get("type") in ("reshape", "geom") else a.get("type")),)
                  for a in n.get("actions", [])
              ),
@@ -6552,9 +6662,13 @@ def main():
                         tbuf = float(CFG.get("robot_physics", {}).get("t_buffer", 0.0) or 0.0)
                         for idx, seg in enumerate(tl):
                             T = float(seg.get("T", 0.0))
-                            if T <= 0.0: 
-                                continue
                             st = seg.get("type")
+                            if st == "marker":
+                                label = _marker_actions_to_text(seg.get("actions", []))
+                                log_action("marker", label=label)
+                                continue
+                            if T <= 0.0:
+                                continue
                             if st == "move":
                                 log_action("move", i0=seg.get("i0", ...), i1=seg.get("i1", ...), 
                                           p0=seg["p0"], p1=seg["p1"], reverse=seg.get("reverse", False))
@@ -6928,6 +7042,8 @@ def main():
                                     "  offset 7   (custom offset)\n"
                                     "  reshape    (toggle geometry)\n"
                                     "  reverse    (toggle / reverse on/off)\n"
+                                    "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})\n"
+                                    "  clamp on 1 2 3     (toggle preset + values, {STATE})\n"
                                     "  swingto 180   (force swing heading)\n"
                                     "  latspeed 50   (drive cmd override 0-127)\n"
                                     "  turnspeed 180 (deg/s override)\n"
@@ -6975,6 +7091,8 @@ def main():
                                 "  offset 7   (custom offset)\n"
                                 "  reshape    (toggle geometry)\n"
                                 "  reverse    (toggle / reverse on/off)\n"
+                                "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})\n"
+                                "  clamp on 1 2 3     (toggle preset + values, {STATE})\n"
                                 "  swingto 180   (force swing heading)\n"
                                 "  latspeed 50   (drive cmd override 0-127)\n"
                                 "  turnspeed 180 (deg/s override)\n"
@@ -7139,6 +7257,9 @@ def main():
                             _tbuf = 0.0
                         if not (seg_i == len(timeline)-1 and abs(seg.get("T", 0.0) - _tbuf) <= 1e-6):
                             log_action("wait", s=seg["T"])
+                    elif seg["type"] == "marker":
+                        label = _marker_actions_to_text(seg.get("actions", []))
+                        log_action("marker", label=label)
                     elif seg["type"] == "reshape":
                         log_action("reshape", state=seg["state"])
                     elif seg["type"] == "swing":
@@ -7526,7 +7647,8 @@ def main():
         if path_edit_mode:
             # Help text already drawn in path_edit_overlay
             pass
-        elif hover_idx is not None and 0 <= hover_idx < len(display_nodes):
+        elif (hover_idx is not None and 0 <= hover_idx < len(display_nodes)
+              and not dragging and selected_idx is None):
             draw_hover_box(screen, display_nodes[hover_idx], hover_idx, mouse_pos, CFG, initial_state["heading"], font_small)
         
         draw_time_label(screen, display_nodes, total_estimate_s, font_small)

@@ -1002,8 +1002,25 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 if mode not in ("action", "toggle"):
                     mode = "action"
                 value = str(act.get("value", "") or "").strip()
+                values = act.get("values", [])
+                if not isinstance(values, list):
+                    values = []
+                if not value and values:
+                    value = " ".join(str(v).strip() for v in values if str(v).strip() != "")
+                if not values and value:
+                    values = value.split()
+                values = [str(v).strip() for v in values if str(v).strip() != ""]
+                value1 = values[0] if len(values) > 0 else ""
+                value2 = values[1] if len(values) > 1 else ""
+                value3 = values[2] if len(values) > 2 else ""
                 state = str(act.get("state", "") or "").strip().lower()
-                tokens = {"VALUE": value, "STATE": state}
+                tokens = {
+                    "VALUE": value,
+                    "VALUE1": value1,
+                    "VALUE2": value2,
+                    "VALUE3": value3,
+                    "STATE": state
+                }
                 if mode == "toggle":
                     if state not in ("on", "off", "toggle", ""):
                         state = "toggle"
@@ -1533,6 +1550,12 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 emit(temp_key, tokens_base)
             i += 1
         
+        elif st == "marker":
+            out_lines = _render_marker_actions(seg.get("actions", []))
+            if out_lines:
+                lines.extend(out_lines)
+            i += 1
+        
         elif st == "swing":
             h_disp = convert_heading_input(seg["target_heading"], None)
             delta_internal = ((seg["target_heading"] - seg.get("start_heading", 0.0) + 180.0) % 360.0) - 180.0
@@ -1631,13 +1654,59 @@ def export_action_list(cfg, timeline, log_lines):
     tbuf = float(cfg.get("robot_physics", {}).get("t_buffer", 0.0) or 0.0)
     last_turn = None
     reshape_label = str(cfg.get("reshape_label", "Reshape"))
+
+    def _marker_actions_label(actions):
+        if not isinstance(actions, list):
+            return ""
+        parts = []
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            kind = str(act.get("kind", "code")).lower()
+            if kind == "preset":
+                name = str(act.get("name", "")).strip()
+                if not name:
+                    continue
+                text = name
+                state_raw = act.get("state", None)
+                if isinstance(state_raw, bool):
+                    state = "on" if state_raw else "off"
+                elif state_raw is None:
+                    state = ""
+                else:
+                    state = str(state_raw).strip().lower()
+                value_raw = act.get("value", None)
+                if value_raw is None:
+                    values = act.get("values", [])
+                    if isinstance(values, list):
+                        value = " ".join(str(v).strip() for v in values if str(v).strip() != "")
+                    else:
+                        value = ""
+                else:
+                    value = str(value_raw).strip()
+                if state:
+                    text = f"{text} {state}"
+                if value:
+                    text = f"{text} {value}"
+                parts.append(text)
+            else:
+                code = str(act.get("code", "")).strip()
+                if code:
+                    parts.append(f"code {code}")
+        return ", ".join(parts)
     
     for idx, seg in enumerate(timeline):
         T = float(seg.get("T", 0.0))
+        st = seg.get("type")
+        if st == "marker":
+            label = _marker_actions_label(seg.get("actions", []))
+            if label:
+                log_lines.append(f"  Marker: {label}")
+            else:
+                log_lines.append("  Marker")
+            continue
         if T <= 0.0:
             continue
-        
-        st = seg.get("type")
         
         if st == "path":
             # Curved path segment
