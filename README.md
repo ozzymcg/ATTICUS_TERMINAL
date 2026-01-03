@@ -1,4 +1,5 @@
 <img width="597" height="596" alt="Screenshot 2026-01-02 235826" src="https://github.com/user-attachments/assets/4689fc47-8bfb-477c-b592-026b007dc0ad" />
+
 # ATTICUS TERMINAL
 An advanced interactive simulation and design tool for autonomous routines. It allows users to place waypoints and paths on a virtual VEX field, and then simulates realistic physics and generates customizable routine code while providing analytical feedback and detailed logging.
 
