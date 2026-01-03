@@ -2397,6 +2397,12 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
     lines = []
+    angle_units = int(cfg.get("angle_units", 0))
+
+    def _fmt_angle_disp(disp_deg):
+        if angle_units == 1:
+            return f"{disp_deg * (math.pi / 180.0):.3f} rad"
+        return f"{disp_deg:.3f}°"
 
 
 
@@ -2416,7 +2422,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-        lines.append(f"Initial heading {disp:.3f}°")
+        lines.append(f"Initial heading {_fmt_angle_disp(disp)}")
 
 
 
@@ -2476,7 +2482,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-            lines.append(f"Turn to {disp:g}?")
+            lines.append(f"Turn to {_fmt_angle_disp(disp)}?")
 
 
 
@@ -2498,7 +2504,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-                lines.append(f"{prefix} to {disp:g}? ({sd})")
+                lines.append(f"{prefix} to {_fmt_angle_disp(disp)}? ({sd})")
 
 
 
@@ -2506,7 +2512,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-                lines.append(f"{prefix} to {disp:g}?")
+                lines.append(f"{prefix} to {_fmt_angle_disp(disp)}?")
 
 
 
@@ -2678,7 +2684,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-                lines.append(f"moveToPose h={convert_heading_input(ph, None):.1f}°{suffix}")
+                lines.append(f"moveToPose h={_fmt_angle_disp(convert_heading_input(ph, None))}{suffix}")
 
 
 
@@ -2714,7 +2720,7 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
 
 
 
-                lines.append(f"moveToPose h={convert_heading_input(ph, None):.1f}°{suffix}")
+                lines.append(f"moveToPose h={_fmt_angle_disp(convert_heading_input(ph, None))}{suffix}")
 
 
 

@@ -130,7 +130,7 @@
   },
   "codegen": {
     "style": {
-      "value": "LemLib"
+      "value": "JAR"
     },
     "templates": {
       "LemLib": {
@@ -213,7 +213,7 @@
       },
       "JAR": {
         "wait": "task::sleep({MS});",
-        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG},{DRIVE_MAX_V},{HEADING_MAX_V},{DRIVE_SETTLE_ERR},{DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
         "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
         "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
         "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",

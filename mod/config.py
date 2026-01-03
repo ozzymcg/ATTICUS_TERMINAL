@@ -1,6 +1,6 @@
 # mod/config.py
 from __future__ import annotations
-import json, os
+import json, os, sys
 from typing import Optional
 
 # Window and field
@@ -170,16 +170,28 @@ def _save_json(path: str, data: dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
+def _runtime_root() -> str:
+    if getattr(sys, "frozen", False):
+        try:
+            return os.path.dirname(sys.executable)
+        except Exception:
+            return os.getcwd()
+    return os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir))
+
 def load_config() -> dict:
     """Load config from root or mod directory, create default if missing."""
     here = os.path.dirname(__file__)
     root_candidate = os.path.normpath(os.path.join(here, os.pardir, "config.json"))
     mod_candidate  = os.path.normpath(os.path.join(here, "config.json"))
-    data = _load_json(root_candidate) or _load_json(mod_candidate)
+    exe_candidate = os.path.normpath(os.path.join(_runtime_root(), CONFIG_FILENAME))
+    data = _load_json(exe_candidate) or _load_json(root_candidate) or _load_json(mod_candidate)
     if data is None:
         data = DEFAULT_CONFIG
-        _save_json(root_candidate, data)
-        _save_json(mod_candidate, data)
+        is_frozen = bool(getattr(sys, "frozen", False))
+        _save_json(exe_candidate, data)
+        if not is_frozen:
+            _save_json(root_candidate, data)
+            _save_json(mod_candidate, data)
     return data
 
 def save_config(cfg_dict: dict) -> bool:
@@ -238,9 +250,12 @@ def save_config(cfg_dict: dict) -> bool:
         here = os.path.dirname(__file__)
         root_cfg = os.path.normpath(os.path.join(here, os.pardir, "config.json"))
         mod_cfg = os.path.normpath(os.path.join(here, "config.json"))
-        _save_json(root_cfg, raw)
-        _save_json(mod_cfg, raw)
-        print(f"Config saved to {root_cfg}")
+        exe_cfg = os.path.normpath(os.path.join(_runtime_root(), CONFIG_FILENAME))
+        is_frozen = bool(getattr(sys, "frozen", False))
+        targets = [exe_cfg] if is_frozen else [root_cfg, mod_cfg]
+        for path in targets:
+            _save_json(path, raw)
+        print(f"Config saved to {targets[0]}")
         return True
     except Exception as e:
         print(f"Failed to save config: {e}")
