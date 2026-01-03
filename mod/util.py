@@ -61,11 +61,20 @@ def build_compile_header(cfg, initial_heading_deg):
     rp = cfg["robot_physics"]
     unit_map = {0: "inches", 1: "encoder degrees", 2: "encoder rotations", 3: "ticks"}
     ang_map = {0: "degrees", 1: "radians"}
+    angle_units = int(cfg.get("angle_units", 0))
+    heading_disp = convert_heading_input(initial_heading_deg, None)
+    if angle_units == 1:
+        heading_val = heading_disp * (math.pi / 180.0)
+        heading_line = f"Initial heading: {heading_val:.3f} rad"
+        heading_map = "Heading: 0=left, 1.571=up, 3.142=right, 4.712=down"
+    else:
+        heading_line = f"Initial heading: {heading_disp:.3f} deg"
+        heading_map = "Heading: 0=left, 90=up, 180=right, 270=down"
 
     return [
         "=== ATTICUS TERMINAL COMPILE ===",
-        f"Initial heading: {convert_heading_input(initial_heading_deg, None):.3f} deg",
-        "Heading: 0=left, 90=up, 180=right, 270=down",
+        heading_line,
+        heading_map,
         f"Distance Units: {unit_map.get(cfg['distance_units'], 'inches')}",
         f"Angle Units: {ang_map.get(cfg.get('angle_units', 0), 'degrees')}",
         f"Buffer Time = {rp.get('t_buffer', 0) * 1000} ms",
@@ -78,12 +87,36 @@ def apply_tbuffer(cfg, timeline_list):
     """Insert buffer wait after each move unless node has custom wait."""
     tb = float(cfg["robot_physics"].get("t_buffer", 0.0) or 0.0)
     if tb <= 1e-6:
-        return timeline_list
+        tb = 0.0
 
     out = []
+    def _num_or_none(val):
+        if isinstance(val, dict):
+            for key in ("value", "t_min", "t_max", "ms"):
+                if key in val:
+                    val = val.get(key)
+                    break
+        try:
+            return float(val)
+        except Exception:
+            return None
+
+    def _settle_pause_s(seg):
+        rp = cfg.get("robot_physics", {})
+        settle_base = rp.get("settle_base", {})
+        swing_base = settle_base.get("swing", {}) if isinstance(settle_base, dict) else {}
+        prof = str(seg.get("profile_override") or "normal").strip().lower()
+        bucket = {}
+        if isinstance(swing_base, dict):
+            bucket = swing_base.get(prof) or swing_base.get("normal") or {}
+        t_min = _num_or_none(bucket.get("t_min") if isinstance(bucket, dict) else None)
+        if t_min is None:
+            return tb
+        return max(tb, max(0.0, t_min) / 1000.0)
+
     for seg in timeline_list:
         out.append(seg)
-        if seg.get("type") in ("move", "path", "path_follow") and not seg.get("skip_buffer", False):
+        if tb > 1e-6 and seg.get("type") in ("move", "path", "path_follow") and not seg.get("skip_buffer", False):
             out.append({
                 "type": "wait",
                 "T": tb,
@@ -92,4 +125,15 @@ def apply_tbuffer(cfg, timeline_list):
                 "role": "buffer",
                 "post_edge_i": seg.get("i0", None)
             })
+        if seg.get("type") == "swing" and seg.get("swing_settle", False):
+            settle_s = _settle_pause_s(seg)
+            if settle_s > 1e-6:
+                out.append({
+                    "type": "wait",
+                    "T": settle_s,
+                    "pos": seg.get("end_pos", seg.get("pos", (0, 0))),
+                    "heading": seg.get("target_heading", seg.get("heading", 0.0)),
+                    "role": "settle_swing",
+                    "post_edge_i": seg.get("i0", seg.get("edge_i", seg.get("node_i")))
+                })
     return out

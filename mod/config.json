@@ -73,7 +73,7 @@
   },
   "offsets": {
     "offset_1_in": {
-      "value": 4.25
+      "value": 7.0
     },
     "offset_2_in": {
       "value": 15.25
@@ -145,14 +145,15 @@
         "__optional__": [
           "reshape",
           "setpose",
-          "swing"
+          "swing",
+          "path_follow"
         ],
         "__modes__": {
           "motion": "move",
           "turn": "turn_global"
         },
         "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
-        "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
+        "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
         "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
         "reshape": "matchloadPistons.set_value({STATE});",
         "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
@@ -187,7 +188,8 @@
         "tbuffer": "wait ({S}, seconds);",
         "__optional__": [
           "reshape",
-          "setpose"
+          "setpose",
+          "path_follow"
         ],
         "path_follow": "follow_path(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD});",
         "reshape": "MLadapter({STATE});",
@@ -221,7 +223,8 @@
         "__optional__": [
           "setpose",
           "swing",
-          "reshape"
+          "reshape",
+          "path_follow"
         ],
         "__modes__": {
           "motion": "move",
@@ -241,7 +244,8 @@
       "reshape_output": "true/false",
       "path_lookahead": 15.0,
       "pid_consider": 1,
-      "pid_style": "JAR"
+      "pid_style": "JAR",
+      "path_follow_optional_migrated": true
     },
     "path_dir": {
       "value": "export/paths"

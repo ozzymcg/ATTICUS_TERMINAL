@@ -895,7 +895,12 @@ def log_action(kind, **kw):
         chosen = float(-delta_ccw)
         dir_tag = str(kw.get("dir", "AUTO")).upper()
         to_face_deg = convert_heading_input(h1, None)
-        log_lines.append(f"  Swing: {chosen:.3f}° dir={dir_tag} to {to_face_deg:.3f}°")
+        if int(CFG.get("angle_units", 0)) == 1:
+            chosen_val = chosen * (math.pi/180.0)
+            to_face_val = to_face_deg * (math.pi/180.0)
+            log_lines.append(f"  Swing: {chosen_val:.6f} rad dir={dir_tag} to {to_face_val:.6f} rad")
+        else:
+            log_lines.append(f"  Swing: {chosen:.3f}° dir={dir_tag} to {to_face_deg:.3f}°")
     elif kind == "wait":
         log_lines.append(f"  Wait: {kw['s']:.3f} s")
     elif kind == "reshape":
@@ -3604,7 +3609,7 @@ def open_settings_window():
         "LemLib": {
             "wait": "pros::delay({MS});",
             "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
-            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
+            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
             "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
             "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
             "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
@@ -3687,9 +3692,18 @@ def open_settings_window():
         )
 
     # Initialize defaults for each style if not present
+    opt_cfg = CFG["codegen"].setdefault("opts", {})
+    migrate_path_follow = not bool(opt_cfg.get("path_follow_optional_migrated", False))
     for _style, _tpl in codegen_defaults.items():
         CFG["codegen"].setdefault("templates", {}).setdefault(_style, dict(_tpl))
-        CFG["codegen"]["templates"].setdefault(_style, {}).setdefault("__optional__", ["setpose"])
+        CFG["codegen"]["templates"].setdefault(_style, {}).setdefault("__optional__", ["setpose", "path_follow"])
+        if migrate_path_follow:
+            opt_list = CFG["codegen"]["templates"].get(_style, {}).get("__optional__", [])
+            tpl_map = CFG["codegen"]["templates"].get(_style, {})
+            if isinstance(opt_list, list) and "path_follow" not in opt_list and "path_follow" in tpl_map:
+                opt_list.append("path_follow")
+    if migrate_path_follow:
+        opt_cfg["path_follow_optional_migrated"] = True
 
     if str(CFG.get("codegen", {}).get("style", "")).strip().lower() == "pros":
         CFG.setdefault("codegen", {})["style"] = "Custom"
@@ -3699,7 +3713,7 @@ def open_settings_window():
 
     # Template variables for customizable tokens
     base_tpl_keys = ["wait", "move", "turn_global", "turn_local", "pose", "path_follow", "tbuffer", "setpose", "swing", "marker_wait", "marker_wait_done"]
-    optional_pool = ["reverse_on", "reverse_off", "reshape", "setpose", "swing"]
+    optional_pool = ["reverse_on", "reverse_off", "reshape", "setpose", "swing", "path_follow"]
     tpl_keys = base_tpl_keys + optional_pool
     tpl_vars = {k: tk.StringVar() for k in tpl_keys}
     motion_mode_var = tk.StringVar(value="move")
@@ -5547,22 +5561,29 @@ def open_settings_window():
 
         opt_row = ttk.Frame(options_frame)
         opt_row.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Label(opt_row, text="Optional commands:").pack(side="left")
+        opt_row.columnconfigure(1, weight=1)
+        ttk.Label(opt_row, text="Optional commands:").grid(row=0, column=0, sticky="nw")
+        opt_grid = ttk.Frame(opt_row)
+        opt_grid.grid(row=0, column=1, sticky="w")
         opt_map = {
             "reverse_on": "Reverse on",
             "reverse_off": "Reverse off",
             "reshape": "Reshape",
             "setpose": "Set pose",
-            "swing": "Swing"
+            "swing": "Swing",
+            "path_follow": "Path follow"
         }
         active_optional = set(_active_optional_for(style))
         opt_vars = {}
         opt_widgets = []
-        for key, label in opt_map.items():
+        wrap_cols = 3
+        for idx, (key, label) in enumerate(opt_map.items()):
             var = tk.BooleanVar(value=key in active_optional)
             opt_vars[key] = var
-            chk = ttk.Checkbutton(opt_row, text=label, variable=var)
-            chk.pack(side="left", padx=(8, 0))
+            chk = ttk.Checkbutton(opt_grid, text=label, variable=var)
+            row = idx // wrap_cols
+            col = idx % wrap_cols
+            chk.grid(row=row, column=col, sticky="w", padx=(8, 0), pady=(0, 2))
             opt_widgets.append(chk)
 
         cmd_frame = ttk.LabelFrame(left, text="Active commands")
@@ -5739,7 +5760,7 @@ def open_settings_window():
 
         def _active_cmds_for_builder():
             turn_key = turn_choice_var.get() or ("turn_global" if style == "LemLib" else "turn_local")
-            base_cmds = ["wait", "move", "pose", turn_key, "path_follow", "tbuffer"]
+            base_cmds = ["wait", "move", "pose", turn_key, "tbuffer"]
             if style in ("LemLib", "Custom"):
                 base_cmds += ["marker_wait", "marker_wait_done"]
             optional_cmds = [k for k in optional_pool if opt_vars.get(k) and opt_vars[k].get()]
@@ -6175,16 +6196,6 @@ def open_settings_window():
         modes = _current_modes(style)
         active_optional = _active_optional_for(style)
 
-        # Output options
-        mode_row = ttk.Frame(tpl_panel)
-        mode_row.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        ttk.Label(mode_row, text="Reshape output:").pack(side="left", padx=(10, 3))
-        reshape_combo = ttk.Combobox(mode_row, width=10, values=["1/2", "true/false"], state="readonly", textvariable=reshape_output_var)
-        reshape_combo.pack(side="left")
-        reshape_combo.bind("<<ComboboxSelected>>", lambda _e: on_update())
-        ui.add_tooltip(reshape_combo, "Choose reshape token format (1/2 or true/false).")
-        ui.track_live_widget(reshape_combo)
-
         # Header
         hdr1 = ttk.Label(tpl_panel, text="CMD", font=("Segoe UI", 10, "bold"))
         hdr2 = ttk.Label(tpl_panel, text="Template", font=("Segoe UI", 10, "bold"))
@@ -6223,7 +6234,7 @@ def open_settings_window():
         
         # Active command list honoring selected modes (pose and turn can coexist)
         turn_key = modes.get("turn") or ("turn_global" if style == "LemLib" else "turn_local")
-        base_cmds = ["wait", "move", "pose", turn_key, "path_follow", "tbuffer"]
+        base_cmds = ["wait", "move", "pose", turn_key, "tbuffer"]
         if style in ("LemLib", "Custom"):
             base_cmds += ["marker_wait", "marker_wait_done"]
         active_cmds = base_cmds + active_optional
@@ -6295,7 +6306,7 @@ def open_settings_window():
     def _reset_defaults():
         style = codegen_style_var.get()
         # restore default optional commands (setpose)
-        _set_active_optional(style, ["setpose"])
+        _set_active_optional(style, ["setpose", "path_follow"])
         _set_modes(style, _default_modes(style))
         for k in base_tpl_keys + optional_pool:
             if k in codegen_defaults.get(style, codegen_defaults["Custom"]):

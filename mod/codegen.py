@@ -6,6 +6,7 @@ Handles both straight segments and curved path segments.
 
 import os
 import math
+import re
 from typing import List, Tuple, Dict
 from .config import PPI, WINDOW_WIDTH, WINDOW_HEIGHT, DEFAULT_CONFIG
 from .pathing import export_lemlib_path, generate_path_asset_name
@@ -62,8 +63,8 @@ VOLTAGE_SHAPES = {
     }
 }
 
-DEFAULT_SWING_MIN_SPEED = 12
-DEFAULT_SWING_EARLY_EXIT = 2.0
+DEFAULT_SWING_MIN_SPEED = 40
+DEFAULT_SWING_EARLY_EXIT = 7.0
 
 
 def _timeout_tokens(duration_s: float, pad_factor: float, min_s: float):
@@ -808,7 +809,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     tpls.update(stored_tpl)
     if style == "LemLib" and "swing" not in tpls:
         tpls["swing"] = defaults["LemLib"]["swing"]
-    optional_keys = ["reverse_on", "reverse_off", "reshape", "setpose"]
+    optional_keys = ["reverse_on", "reverse_off", "reshape", "setpose", "path_follow"]
     if style != "LemLib":
         optional_keys += ["pose", "swing"]
     active_opt = stored_tpl.get("__optional__", None)
@@ -883,9 +884,38 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         except Exception:
             pose_heading_internal = float(cfg.get("initial_heading_deg", 0.0) or 0.0)
     pose_heading_disp = convert_heading_input(pose_heading_internal, None)
+    angle_units = int(cfg.get("angle_units", 0))
+    use_radians = angle_units == 1
+
+    def _angle_out(val):
+        try:
+            val_f = float(val)
+        except Exception:
+            return val
+        return val_f * (math.pi / 180.0) if use_radians else val_f
+
+    def _apply_angle_units(tokens: dict):
+        if not use_radians:
+            return
+        for key in (
+            "HEADING_DEG",
+            "TURN_DELTA_DEG",
+            "TURN_SPEED",
+            "TURN_EARLY_EXIT",
+            "SWING_EARLY_EXIT",
+            "TURN_SETTLE_ERR",
+            "SWING_SETTLE_ERR",
+        ):
+            if key not in tokens:
+                continue
+            val = tokens.get(key)
+            if val in ("", None):
+                continue
+            tokens[key] = _angle_out(val)
+    pose_heading_out = _angle_out(pose_heading_disp)
     if style == "LemLib" and pose_pos is not None and "setpose" in tpls:
         x0_in, y0_in = field_coords_in(pose_pos)
-        lines.append(f"chassis.setPose({x0_in:.6f}, {y0_in:.6f}, {pose_heading_disp:.6f});")
+        lines.append(f"chassis.setPose({x0_in:.6f}, {y0_in:.6f}, {pose_heading_out:.6f});")
         lines.append("")
     
     def _normalize_tpl(val):
@@ -938,20 +968,179 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             out.append(ch)
             i += 1
         return "".join(out)
+
+    OMIT_SENTINEL = "__OMIT__"
+    TOKEN_RE = re.compile(r"\{([A-Z0-9_]+)\}")
+    cleanup_defaults = {
+        "FORWARDS": True,
+        "LEAD_IN": 0.0,
+        "MOVE_SPEED": "",
+        "TURN_SPEED": "",
+        "PATH_MIN_SPEED": min_speed_cmd,
+        "PATH_MAX_SPEED": max_speed_cmd,
+        "DRIVE_MIN_SPEED": 0,
+        "TURN_MIN_SPEED": 0,
+        "SWING_MIN_SPEED": 0,
+        "DRIVE_EARLY_EXIT": 0.0,
+        "TURN_EARLY_EXIT": 0.0,
+        "SWING_EARLY_EXIT": 0.0,
+        "DRIVE_MAX_V": 12.0,
+        "HEADING_MAX_V": 12.0,
+        "TURN_MAX_V": 12.0,
+        "SWING_MAX_V": 12.0,
+        "DRIVE_SETTLE_ERR": 0.0,
+        "DRIVE_SETTLE_TIME": 0,
+        "TURN_SETTLE_ERR": 0.0,
+        "TURN_SETTLE_TIME": 0,
+        "SWING_SETTLE_ERR": 0.0,
+        "SWING_SETTLE_TIME": 0,
+        "DIR": "AUTO",
+        "SIDE": "AUTO",
+    }
+
+    def _boolish(val):
+        if isinstance(val, bool):
+            return val
+        s = str(val).strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        if s in ("false", "0", "no", "off"):
+            return False
+        return None
+
+    def _is_default_value(val, default):
+        if isinstance(default, (list, tuple, set)):
+            return any(_is_default_value(val, d) for d in default)
+        if default is None or default == "":
+            return val is None or str(val).strip() == ""
+        if isinstance(default, bool):
+            bool_val = _boolish(val)
+            return bool_val is not None and bool_val == default
+        if isinstance(default, (int, float)):
+            try:
+                return abs(float(val) - float(default)) <= 1e-6
+            except Exception:
+                return False
+        return str(val).strip().lower() == str(default).strip().lower()
+
+    def _token_is_named_segment(part: str, start_idx: int) -> bool:
+        prefix = part[:start_idx]
+        seg_start = max(prefix.rfind(","), prefix.rfind("{"), prefix.rfind("("))
+        segment = prefix[seg_start + 1:]
+        return "=" in segment
+
+    def _tokens_with_omit(part: str, tokens: dict) -> dict:
+        if not part or not cleanup_defaults:
+            return tokens
+        contexts = {}
+        for match in TOKEN_RE.finditer(part):
+            key = match.group(1)
+            if key not in cleanup_defaults:
+                continue
+            ctx = "named" if _token_is_named_segment(part, match.start()) else "positional"
+            contexts.setdefault(key, set()).add(ctx)
+        if not contexts:
+            return tokens
+        out = dict(tokens)
+        for key, ctxs in contexts.items():
+            if "named" in ctxs and "positional" not in ctxs:
+                if _is_default_value(tokens.get(key), cleanup_defaults[key]):
+                    out[key] = OMIT_SENTINEL
+        return out
+
+    def _split_top_level_commas(content: str) -> list:
+        parts = []
+        buf = []
+        depth_paren = depth_brace = depth_bracket = 0
+        for ch in content:
+            if ch == "(":
+                depth_paren += 1
+            elif ch == ")":
+                depth_paren = max(0, depth_paren - 1)
+            elif ch == "{":
+                depth_brace += 1
+            elif ch == "}":
+                depth_brace = max(0, depth_brace - 1)
+            elif ch == "[":
+                depth_bracket += 1
+            elif ch == "]":
+                depth_bracket = max(0, depth_bracket - 1)
+            if ch == "," and depth_paren == depth_brace == depth_bracket == 0:
+                parts.append("".join(buf))
+                buf = []
+                continue
+            buf.append(ch)
+        parts.append("".join(buf))
+        return parts
+
+    def _drop_in_delimited(line: str, open_ch: str, close_ch: str) -> str:
+        out = []
+        i = 0
+        while i < len(line):
+            if line[i] == open_ch:
+                depth = 1
+                j = i + 1
+                while j < len(line) and depth > 0:
+                    if line[j] == open_ch:
+                        depth += 1
+                    elif line[j] == close_ch:
+                        depth -= 1
+                    j += 1
+                if depth != 0:
+                    out.append(line[i:])
+                    break
+                content = line[i + 1:j - 1]
+                if OMIT_SENTINEL in content:
+                    parts = _split_top_level_commas(content)
+                    kept = [p.strip() for p in parts if OMIT_SENTINEL not in p and p.strip()]
+                    content = ", ".join(kept)
+                out.append(open_ch + content + close_ch)
+                i = j
+                continue
+            out.append(line[i])
+            i += 1
+        return "".join(out)
+
+    def _drop_sentinel_segments(line: str) -> str:
+        if OMIT_SENTINEL not in line:
+            return line
+        line = _drop_in_delimited(line, "{", "}")
+        line = _drop_in_delimited(line, "(", ")")
+        if OMIT_SENTINEL in line:
+            line = re.sub(r"\s*=\s*__OMIT__", "", line)
+            line = line.replace(OMIT_SENTINEL, "")
+        line = re.sub(r",\s*\{\s*\}", "", line)
+        line = re.sub(r",\s*,", ", ", line)
+        line = re.sub(r"\(\s*,", "(", line)
+        line = re.sub(r",\s*\)", ")", line)
+        line = re.sub(r"\{\s*,", "{", line)
+        line = re.sub(r",\s*\}", "}", line)
+        line = re.sub(r"\s{2,}", " ", line)
+        return line
+
+    def _format_tpl_part(part: str, tokens: dict, template_key: str = None):
+        tokens_fmt = _tokens_with_omit(part, tokens)
+        try:
+            line = part.format(**tokens_fmt)
+        except Exception as e:
+            part_fixed = _escape_struct_braces(part)
+            try:
+                line = part_fixed.format(**tokens_fmt)
+            except Exception:
+                if template_key:
+                    lines.append(f"// template error in {template_key}: {e}")
+                    return None
+                return part
+        if OMIT_SENTINEL in line:
+            line = _drop_sentinel_segments(line)
+        return line
     
     def emit(template_key, tokens):
         tpl_val = tpls.get(template_key, "")
         for part in _normalize_tpl(tpl_val):
-            try:
-                line = part.format(**tokens)
-            except Exception as e:
-                # Attempt to auto-escape struct-style braces (e.g. {.minSpeed = X})
-                part_fixed = _escape_struct_braces(part)
-                try:
-                    line = part_fixed.format(**tokens)
-                except Exception:
-                    lines.append(f"// template error in {template_key}: {e}")
-                    continue
+            line = _format_tpl_part(part, tokens, template_key=template_key)
+            if line is None:
+                continue
             if line.strip():
                 lines.append(line)
 
@@ -971,14 +1160,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     def _render_tpl_lines(tpl_val, tokens):
         out_lines = []
         for part in _normalize_tpl(tpl_val):
-            try:
-                line = part.format(**tokens)
-            except Exception:
-                part_fixed = _escape_struct_braces(part)
-                try:
-                    line = part_fixed.format(**tokens)
-                except Exception:
-                    line = part
+            line = _format_tpl_part(part, tokens)
+            if line is None:
+                continue
             if line.strip():
                 out_lines.append(line)
         return out_lines
@@ -1325,6 +1509,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                     drive_min_speed=chain_min,
                     drive_early_exit=chain_exit
                 )
+                _apply_angle_units(tokens)
                 _emit_jar_defaults("drive", tokens)
                 emit("pose", tokens)
                 _emit_edge_markers(seg, path_len_in if path_len_in > 0.0 else abs(dist_in), tokens_base, path_points=seg.get("path_points"))
@@ -1423,6 +1608,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 drive_min_speed=chain_min,
                 drive_early_exit=chain_exit
             )
+            _apply_angle_units(tokens)
             _emit_jar_defaults("drive", tokens)
             if path_tpl_key:
                 emit(path_tpl_key, tokens)
@@ -1465,6 +1651,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 drive_min_speed=chain_min,
                 drive_early_exit=chain_exit
             )
+            _apply_angle_units(tokens)
             _emit_jar_defaults("drive", tokens)
             emit(move_tpl_key, tokens)
             _emit_edge_markers(seg, dist_in, tokens_base)
@@ -1504,6 +1691,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 drive_min_speed=chain_min,
                 drive_early_exit=chain_exit
             )
+            _apply_angle_units(tokens)
             _emit_jar_defaults("drive", tokens)
             emit(pose_tpl_key, tokens)
             _emit_edge_markers(seg, dist_in, tokens_base)
@@ -1539,6 +1727,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 profile,
                 t_speed_frac=seg.get("T_speed_frac")
             )
+            _apply_angle_units(tokens)
             _emit_jar_defaults("turn", tokens)
             emit(chosen_turn, tokens)
             i += 1
@@ -1604,6 +1793,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 swing_min_speed=swing_min_speed,
                 swing_early_exit=swing_early_exit
             )
+            _apply_angle_units(tokens)
             _emit_jar_defaults("swing", tokens)
             emit("swing", tokens)
             i += 1
@@ -1774,7 +1964,13 @@ def export_action_list(cfg, timeline, log_lines):
                 delta_ccw -= 360.0
             chosen = float(-delta_ccw)
             dir_tag = seg.get("swing_dir", "AUTO").upper()
-            log_lines.append(f"  Swing: {chosen:.3f}° dir={dir_tag} to {convert_heading_input(h1, None):.3f}°")
+            to_face_deg = convert_heading_input(h1, None)
+            if int(cfg.get("angle_units", 0)) == 1:
+                chosen_val = chosen * (math.pi/180.0)
+                to_face_val = to_face_deg * (math.pi/180.0)
+                log_lines.append(f"  Swing: {chosen_val:.6f} rad dir={dir_tag} to {to_face_val:.6f} rad")
+            else:
+                log_lines.append(f"  Swing: {chosen:.3f}° dir={dir_tag} to {to_face_deg:.3f}°")
     
     # Total time (include buffers to match on-screen estimate/animation)
     total_t = sum(float(sg.get("T", 0.0)) for sg in timeline)
