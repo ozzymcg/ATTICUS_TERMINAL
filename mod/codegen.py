@@ -1,4 +1,3 @@
-# mod/codegen.py
 """
 Code generation module for PROS + LemLib with path file export.
 Handles both straight segments and curved path segments.
@@ -14,7 +13,6 @@ from .sim import _move_total_time, turn_time, path_time_with_curvature, vmax_str
 from .geom import convert_heading_input, field_coords_in, interpret_input_angle
 from .util import pros_convert_inches
 
-# JAR helper profiles for settle windows and voltage caps
 SETTLE_BASE = {
     "drive": {
         "precise": {"err_min": 0.5, "err_max": 1.2, "t_min": 220, "t_max": 400},
@@ -76,6 +74,7 @@ def _timeout_tokens(duration_s: float, pad_factor: float, min_s: float):
     return int(fin_ms), round(fin_s, 6)
 
 def _profile_speed_scale(name: str) -> float:
+    """Handle profile speed scale."""
     if name is None:
         return 1.0
     try:
@@ -85,6 +84,7 @@ def _profile_speed_scale(name: str) -> float:
     return float(PROFILE_SPEED_SCALE.get(key, 1.0))
 
 def _pose_curve_time_s(seg: dict, cfg: dict, profile: str) -> float:
+    """Handle pose curve time s."""
     p0 = seg.get("p0")
     p1 = seg.get("p1")
     if p0 is None or p1 is None:
@@ -241,6 +241,7 @@ def _physics_timeout_s(seg: dict, move_type: str, cfg: dict, motion_mode: str = 
     return 0.0
 
 def _reshape_state_token(cfg, state) -> str:
+    """Handle reshape state token."""
     mode = str(cfg.get("codegen", {}).get("opts", {}).get("reshape_output", "1/2")).strip().lower()
     if isinstance(state, bool):
         enabled = state
@@ -269,14 +270,17 @@ SETTLE_TIMEOUT_PAD_MS = 50
 
 
 def _clamp(x, lo, hi):
+    """Handle clamp."""
     return max(lo, min(hi, x))
 
 
 def _lerp(a, b, t):
+    """Handle lerp."""
     return a + (b - a) * t
 
 
 def _map_piecewise(mag, x1, x2, v_small, v_mid, v_large):
+    """Handle map piecewise."""
     if mag <= 0:
         return v_small
     if mag < x1:
@@ -287,11 +291,13 @@ def _map_piecewise(mag, x1, x2, v_small, v_mid, v_large):
 
 
 def _motion_profiles_cfg(cfg) -> dict:
+    """Handle motion profiles cfg."""
     mp = cfg.get("codegen", {}).get("motion_profiles", {})
     return mp if isinstance(mp, dict) else {}
 
 
 def _profile_override(section: dict, move_type: str, profile: str):
+    """Handle profile override."""
     if not isinstance(section, dict):
         return None
     move_cfg = None
@@ -315,6 +321,7 @@ def _profile_override(section: dict, move_type: str, profile: str):
 
 
 def _settle_base_for(cfg, move_type: str, profile: str) -> dict:
+    """Handle settle base for."""
     base = SETTLE_BASE[move_type][profile]
     mp = _motion_profiles_cfg(cfg)
     settle_cfg = mp.get("settle_base")
@@ -332,6 +339,7 @@ def _settle_base_for(cfg, move_type: str, profile: str) -> dict:
 
 
 def _voltage_shape_for(cfg, move_type: str, profile: str):
+    """Handle voltage shape for."""
     base = VOLTAGE_SHAPES[move_type][profile]
     mp = _motion_profiles_cfg(cfg)
     volt_cfg = mp.get("voltage_shapes")
@@ -345,6 +353,7 @@ def _voltage_shape_for(cfg, move_type: str, profile: str):
             return base
     if isinstance(prof_cfg, dict):
         def _val(keys, fallback):
+            """Handle val."""
             for key in keys:
                 if key in prof_cfg:
                     try:
@@ -361,6 +370,7 @@ def _voltage_shape_for(cfg, move_type: str, profile: str):
 
 
 def _compute_settle(cfg, move_type: str, magnitude: float, voltage_cap: float, profile: str):
+    """Compute settle."""
     b = _settle_base_for(cfg, move_type, profile)
     if move_type == "drive":
         m = _clamp(magnitude / 48.0, 0.0, 1.0)
@@ -375,6 +385,7 @@ def _compute_settle(cfg, move_type: str, magnitude: float, voltage_cap: float, p
     return (round(err, 2), int(round(t)))
 
 def _calibration_active(cfg) -> bool:
+    """Handle calibration active."""
     cal = cfg.get("codegen", {}).get("calibration", {})
     if not isinstance(cal, dict):
         return False
@@ -384,6 +395,7 @@ def _calibration_active(cfg) -> bool:
     return bool(enabled)
 
 def _bucket_by_magnitude(move_type: str, magnitude: float) -> str:
+    """Handle bucket by magnitude."""
     mag = abs(float(magnitude))
     if move_type == "drive":
         if mag < 12.0:
@@ -398,6 +410,7 @@ def _bucket_by_magnitude(move_type: str, magnitude: float) -> str:
     return "large"
 
 def _match_key(d: dict, key: str):
+    """Handle match key."""
     if not isinstance(d, dict):
         return None
     for k in d.keys():
@@ -406,6 +419,7 @@ def _match_key(d: dict, key: str):
     return None
 
 def _nearest_numeric_key(d: dict, value: float):
+    """Handle nearest numeric key."""
     best_key = None
     best_dist = None
     for k in d.keys():
@@ -422,12 +436,14 @@ def _nearest_numeric_key(d: dict, value: float):
     return _match_key(d, "default")
 
 def _cal_section(cal: dict, move_type: str):
+    """Handle cal section."""
     profiles = cal.get("profiles")
     if isinstance(profiles, dict) and move_type in profiles:
         return profiles.get(move_type)
     return cal.get(move_type)
 
 def _calibration_bucket(cal: dict, move_type: str, profile: str, cap_frac: float, mag_bucket: str):
+    """Handle calibration bucket."""
     sect = _cal_section(cal, move_type)
     if not isinstance(sect, dict):
         return None
@@ -456,6 +472,7 @@ def _calibration_bucket(cal: dict, move_type: str, profile: str, cap_frac: float
     return None
 
 def _compute_settle_calibrated(cfg, move_type: str, magnitude: float, voltage_cap: float, profile: str):
+    """Compute settle calibrated."""
     cal = cfg.get("codegen", {}).get("calibration", {})
     if not isinstance(cal, dict):
         return None
@@ -490,6 +507,7 @@ def _compute_settle_calibrated(cfg, move_type: str, magnitude: float, voltage_ca
     return round(settle_err, 2), int(round(settle_time))
 
 def _sensor_settle_scale(cfg, move_type: str):
+    """Handle sensor settle scale."""
     rp = cfg.get("robot_physics", {})
     omni_raw = rp.get("all_omni", 0)
     if isinstance(omni_raw, dict):
@@ -533,6 +551,7 @@ def _sensor_settle_scale(cfg, move_type: str):
     return err_scale, time_scale
 
 def _apply_sensor_settle(cfg, move_type: str, settle_err: float, settle_time: int):
+    """Handle apply sensor settle."""
     err_scale, time_scale = _sensor_settle_scale(cfg, move_type)
     if err_scale == 1.0 and time_scale == 1.0:
         return settle_err, settle_time
@@ -541,6 +560,7 @@ def _apply_sensor_settle(cfg, move_type: str, settle_err: float, settle_time: in
     return (round(adj_err, 2), adj_time)
 
 def _apply_settle_adjustments(cfg, move_type: str, settle_err: float, settle_time: int):
+    """Handle apply settle adjustments."""
     base_err = float(settle_err)
     base_time = float(settle_time)
     settle_err, settle_time = _apply_sensor_settle(cfg, move_type, settle_err, settle_time)
@@ -553,6 +573,7 @@ def _apply_settle_adjustments(cfg, move_type: str, settle_err: float, settle_tim
     return settle_err, settle_time
 
 def _compute_settle_final(cfg, move_type: str, magnitude: float, voltage_cap: float, profile: str):
+    """Compute settle final."""
     if _calibration_active(cfg):
         calibrated = _compute_settle_calibrated(cfg, move_type, magnitude, voltage_cap, profile)
         if calibrated:
@@ -561,6 +582,7 @@ def _compute_settle_final(cfg, move_type: str, magnitude: float, voltage_cap: fl
     return _apply_settle_adjustments(cfg, move_type, settle_err, settle_time)
 
 def _ensure_timeout(tokens: dict, min_ms: int):
+    """Handle ensure timeout."""
     try:
         min_ms = int(min_ms)
     except Exception:
@@ -576,6 +598,7 @@ def _ensure_timeout(tokens: dict, min_ms: int):
     tokens["S"] = tokens["TIMEOUT_S"]
 
 def _add_settle_timeout(tokens: dict, settle_ms: int, extra_ms: int):
+    """Handle add settle timeout."""
     try:
         settle_ms = int(settle_ms)
         extra_ms = int(extra_ms)
@@ -586,6 +609,7 @@ def _add_settle_timeout(tokens: dict, settle_ms: int, extra_ms: int):
     _ensure_timeout(tokens, target)
 
 def _scale_timeout(tokens: dict, speed_scale: float):
+    """Handle scale timeout."""
     try:
         scale = float(speed_scale)
     except Exception:
@@ -600,6 +624,7 @@ def _scale_timeout(tokens: dict, speed_scale: float):
 
 
 def _compute_voltage_cap(cfg, move_type: str, magnitude: float, profile: str):
+    """Compute voltage cap."""
     v_small, v_mid, v_large = _voltage_shape_for(cfg, move_type, profile)
     if move_type == "drive":
         return round(_map_piecewise(magnitude, x1=6.0, x2=48.0, v_small=v_small, v_mid=v_mid, v_large=v_large), 2)
@@ -607,10 +632,12 @@ def _compute_voltage_cap(cfg, move_type: str, magnitude: float, profile: str):
 
 
 def _compute_heading_cap(drive_cap: float, profile: str):
+    """Compute heading cap."""
     frac = {"precise": 0.50, "normal": 0.60, "custom": 0.60, "fast": 0.65, "slam": 0.70}[profile]
     return round(_clamp(drive_cap * frac, 3.0, 9.0), 2)
 
 def _num_value(v, default):
+    """Handle num value."""
     if isinstance(v, dict):
         v = v.get("value", default)
     try:
@@ -619,11 +646,13 @@ def _num_value(v, default):
         return float(default)
 
 def _wheel_max_ips_from(rpm, diameter):
+    """Handle wheel max ips from."""
     rpm_f = _num_value(rpm, 200.0)
     diam_f = max(0.01, _num_value(diameter, 4.0))
     return max(1e-6, rpm_f * math.pi * diam_f / 60.0)
 
 def _default_speed_ref_ips():
+    """Handle default speed ref ips."""
     try:
         rp = DEFAULT_CONFIG.get("robot_physics", {})
         return _wheel_max_ips_from(rp.get("rpm", 200.0), rp.get("diameter", 4.0))
@@ -633,6 +662,7 @@ def _default_speed_ref_ips():
 _DEFAULT_SPEED_REF_IPS = _default_speed_ref_ips()
 
 def _wheel_speed_scale(cfg) -> float:
+    """Handle wheel speed scale."""
     rp = cfg.get("robot_physics", {})
     vmax_ips = _wheel_max_ips_from(rp.get("rpm", 200.0), rp.get("diameter", 4.0))
     opts = cfg.get("codegen", {}).get("opts", {})
@@ -642,6 +672,7 @@ def _wheel_speed_scale(cfg) -> float:
 
 
 def _omni_drive_scale(cfg) -> float:
+    """Handle omni drive scale."""
     rp = cfg.get("robot_physics", {})
     omni = float(rp.get("all_omni", 0))
     scale = 1.0
@@ -651,6 +682,7 @@ def _omni_drive_scale(cfg) -> float:
 
 
 def _omni_turn_scale(cfg) -> float:
+    """Handle omni turn scale."""
     rp = cfg.get("robot_physics", {})
     omni = float(rp.get("all_omni", 0))
     scale = 1.0
@@ -667,6 +699,7 @@ _PROFILE_RULES_DEFAULT = {
 
 
 def _profile_rules_for(cfg, move_type: str) -> dict:
+    """Handle profile rules for."""
     base = dict(_PROFILE_RULES_DEFAULT.get(move_type, {}))
     mp = _motion_profiles_cfg(cfg)
     rules = mp.get("profile_rules")
@@ -727,26 +760,31 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     Returns:
         List of code lines, or None for "Action List" style
     """
-    style = str(cfg.get("codegen", {}).get("style", "Action List"))
+    style_raw = cfg.get("codegen", {}).get("style", "Action List")
+    if isinstance(style_raw, dict):
+        style_raw = style_raw.get("value", "Action List")
+    style = str(style_raw)
+    if style == "EZ-Template":
+        style = "JAR"
     if style.strip().lower() in ("action list", "actionlist", "list"):
         return None
 
-    # Normalize routine name to string for asset naming
     try:
         routine_name = str(routine_name)
     except Exception:
         routine_name = "autonomous"
     
-        # Template defaults
     defaults = {
         "LemLib": {
-            "wait": "pros::delay({MS});",
+            "wait": "task::sleep({MS});",
             "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
             "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
-            "turn_local": "chassis.turnToAngle({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
             "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
             "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{SIDE}, {TIMEOUT_MS}, {{.minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}});",
             "path_follow": "chassis.follow({PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS});",
+            "reshape_on": "// RESHAPE ON state={STATE}",
+            "reshape_off": "// RESHAPE OFF state={STATE}",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse handled inline",
             "reverse_off": "// reverse handled inline",
@@ -757,28 +795,33 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         },
         "JAR": {
             "wait": "pros::delay({MS});",
-            "move": "driveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {HEADING_DEG});",
-            "turn_global": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
-            "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
-            "pose": "driveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-            "swing": "swingToHeading({HEADING_DEG}, {DIR}, {TIMEOUT_MS});",
+            "move": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN});",
+            "turn_global": "chassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
+            "turn_local": "chassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
+            "pose": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN});\nchassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
+            "pose_angle": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG});",
+            "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG});",
             "path_follow": 'followPath("{PATH_FILE}", {TIMEOUT_MS});',
+            "reshape_on": "// RESHAPE ON state={STATE}",
+            "reshape_off": "// RESHAPE OFF state={STATE}",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse handled inline",
             "reverse_off": "// reverse handled inline",
             "tbuffer": "pros::delay({MS});",
             "marker_wait": "",
             "marker_wait_done": "",
-            "setpose": "setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
+            "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
         "PROS": {
             "wait": "pros::delay({MS});",
-            "move": "drive_distance({DIST_IN});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS});",
             "turn_global": "turn_to({HEADING_DEG});",
             "turn_local": "turn_angle({TURN_DELTA_DEG});",
             "pose": "// move_to_pose x={X_IN}, y={Y_IN}, h={HEADING_DEG}, lead={LEAD_IN}",
             "swing": "swing_to({HEADING_DEG}, {DIR});",
             "path_follow": 'follow_path("{PATH_FILE}", {LOOKAHEAD});',
+            "reshape_on": "// RESHAPE ON state={STATE}",
+            "reshape_off": "// RESHAPE OFF state={STATE}",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
@@ -795,6 +838,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG}, {LEAD_IN});",
             "swing": "swing_to_heading({HEADING_DEG}, {DIR});",
             "path_follow": 'follow_path("{PATH_NAME}", {TIMEOUT_MS}, {LOOKAHEAD});',
+            "reshape_on": "// RESHAPE ON state={STATE}",
+            "reshape_off": "// RESHAPE OFF state={STATE}",
             "reshape": "// RESHAPE state={STATE}",
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
@@ -804,20 +849,43 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "setpose": "setpose({X_IN},{Y_IN},{HEADING_DEG});"
         }
     }
+    defaults["JAR (advanced)"] = dict(defaults["JAR"])
+    defaults["JAR (advanced)"].update({
+        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG},{DRIVE_MAX_V},{HEADING_MAX_V},{DRIVE_SETTLE_ERR},{DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
+        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
+        "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
+        "path_follow": "followPath(\"{PATH_FILE}\", {TIMEOUT_MS});",
+    })
+    jar_like_style = style in ("JAR", "JAR (advanced)")
     tpls = dict(defaults.get(style, defaults["Custom"]))
     stored_tpl = cfg.get("codegen", {}).get("templates", {}).get(style, {})
     tpls.update(stored_tpl)
     if style == "LemLib" and "swing" not in tpls:
         tpls["swing"] = defaults["LemLib"]["swing"]
-    optional_keys = ["reverse_on", "reverse_off", "reshape", "setpose", "path_follow"]
+    optional_keys = ["reverse_on", "reverse_off", "reshape_on", "reshape_off", "setpose", "path_follow", "marker_wait", "marker_wait_done"]
     if style != "LemLib":
         optional_keys += ["pose", "swing"]
     active_opt = stored_tpl.get("__optional__", None)
+    if isinstance(active_opt, list) and "reshape" in active_opt:
+        active_opt = [opt for opt in active_opt if opt != "reshape"]
+        if "reshape_on" not in active_opt:
+            active_opt.append("reshape_on")
+        if "reshape_off" not in active_opt:
+            active_opt.append("reshape_off")
     if active_opt is not None:
         active_opt = [opt for opt in active_opt if opt in optional_keys]
         for opt in optional_keys:
             if opt not in active_opt and opt in tpls:
                 tpls.pop(opt, None)
+    legacy_reshape_tpl = stored_tpl.get("reshape") if isinstance(stored_tpl, dict) else None
+    if legacy_reshape_tpl:
+        if not tpls.get("reshape_on"):
+            tpls["reshape_on"] = legacy_reshape_tpl
+        if not tpls.get("reshape_off"):
+            tpls["reshape_off"] = legacy_reshape_tpl
     modes = stored_tpl.get("__modes__", {}) if isinstance(stored_tpl, dict) else {}
     
     opts = cfg.get("codegen", {}).get("opts", {})
@@ -825,15 +893,15 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     pad_factor = float(opts.get("pad_factor", 1.0) or 1.0)
     min_s = float(opts.get("min_timeout_s", 0.0) or 0.0)
     motion_mode = modes.get("motion", "move")
-    turn_mode = modes.get("turn", "face" if style == "LemLib" else "face")
+    turn_mode = modes.get("turn", "turn_global" if style == "LemLib" else "turn_local")
     
-    # Path config
     path_cfg = cfg.get("path_config", {})
     lookahead_in = float(path_cfg.get("lookahead_in", 15.0))
     min_speed_cmd = float(path_cfg.get("min_speed_cmd", path_cfg.get("min_speed_ips", 0.0)))
     max_speed_cmd = float(path_cfg.get("max_speed_cmd", path_cfg.get("max_speed_ips", 127.0)))
     
     def dist_conversions(p0, p1, reverse=False):
+        """Handle dist conversions."""
         dist_in = math.hypot(p1[0]-p0[0], p1[1]-p0[1]) / PPI
         if reverse: 
             dist_in = -dist_in
@@ -859,7 +927,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         "swing_settle_time": None,
     }
     
-    # Determine initial pose (first known position)
     pose_pos = None
     for seg in timeline:
         if "p0" in seg:
@@ -870,15 +937,12 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             break
     pose_heading_internal = initial_heading
     if pose_heading_internal is None:
-        # Try to infer from first segment heading if available
         for seg in timeline:
             pose_heading_internal = seg.get("start_heading") or seg.get("heading")
             if pose_heading_internal is not None:
                 break
-    # Emit initial setpose if available
-    # Defer setpose until tokens_base exists inside the main loop
+    initial_setpose_tokens = None
     if pose_heading_internal is None:
-        # Fallback to config initial heading
         try:
             pose_heading_internal = interpret_input_angle(float(cfg.get("initial_heading_deg", 0.0) or 0.0))
         except Exception:
@@ -888,6 +952,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     use_radians = angle_units == 1
 
     def _angle_out(val):
+        """Handle angle out."""
         try:
             val_f = float(val)
         except Exception:
@@ -895,6 +960,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return val_f * (math.pi / 180.0) if use_radians else val_f
 
     def _apply_angle_units(tokens: dict):
+        """Handle apply angle units."""
         if not use_radians:
             return
         for key in (
@@ -913,20 +979,26 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 continue
             tokens[key] = _angle_out(val)
     pose_heading_out = _angle_out(pose_heading_disp)
-    if style == "LemLib" and pose_pos is not None and "setpose" in tpls:
+    if pose_pos is not None and "setpose" in tpls:
         x0_in, y0_in = field_coords_in(pose_pos)
-        lines.append(f"chassis.setPose({x0_in:.6f}, {y0_in:.6f}, {pose_heading_out:.6f});")
-        lines.append("")
+        initial_setpose_tokens = {
+            "X_IN": round(x0_in, 6),
+            "Y_IN": round(y0_in, 6),
+            "HEADING_DEG": round(pose_heading_out, 6),
+            "HEADING_RAD": round(pose_heading_disp * math.pi / 180.0, 9),
+        }
     
     def _normalize_tpl(val):
+        """Handle normalize tpl."""
         if isinstance(val, (list, tuple)):
             return [str(v) for v in val if str(v).strip()]
         if isinstance(val, str):
-            parts = [p.strip() for p in val.split("||")]
+            parts = [p.strip().replace("\\n", "\n").replace("\\t", "\t") for p in val.split("||")]
             return [p for p in parts if p]
         return []
 
     def _escape_struct_braces(part: str) -> str:
+        """Handle escape struct braces."""
         out = []
         in_field = False
         in_struct = False
@@ -971,34 +1043,40 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
 
     OMIT_SENTINEL = "__OMIT__"
     TOKEN_RE = re.compile(r"\{([A-Z0-9_]+)\}")
-    cleanup_defaults = {
-        "FORWARDS": True,
-        "LEAD_IN": 0.0,
-        "MOVE_SPEED": "",
-        "TURN_SPEED": "",
-        "PATH_MIN_SPEED": min_speed_cmd,
-        "PATH_MAX_SPEED": max_speed_cmd,
-        "DRIVE_MIN_SPEED": 0,
-        "TURN_MIN_SPEED": 0,
-        "SWING_MIN_SPEED": 0,
-        "DRIVE_EARLY_EXIT": 0.0,
-        "TURN_EARLY_EXIT": 0.0,
-        "SWING_EARLY_EXIT": 0.0,
-        "DRIVE_MAX_V": 12.0,
-        "HEADING_MAX_V": 12.0,
-        "TURN_MAX_V": 12.0,
-        "SWING_MAX_V": 12.0,
-        "DRIVE_SETTLE_ERR": 0.0,
-        "DRIVE_SETTLE_TIME": 0,
-        "TURN_SETTLE_ERR": 0.0,
-        "TURN_SETTLE_TIME": 0,
-        "SWING_SETTLE_ERR": 0.0,
-        "SWING_SETTLE_TIME": 0,
-        "DIR": "AUTO",
-        "SIDE": "AUTO",
-    }
+    omit_defaults = bool(cfg.get("codegen", {}).get("opts", {}).get("omit_defaults", 1))
+    cleanup_defaults = {}
+    if omit_defaults:
+        cleanup_defaults = {
+            "FORWARDS": True,
+            "LEAD_IN": 0.0,
+            "MOVE_SPEED": "",
+            "TURN_SPEED": "",
+            "PATH_MIN_SPEED": min_speed_cmd,
+            "PATH_MAX_SPEED": max_speed_cmd,
+            "DRIVE_MIN_SPEED": 0,
+            "TURN_MIN_SPEED": 0,
+            "SWING_MIN_SPEED": 0,
+            "DRIVE_EARLY_EXIT": 0.0,
+            "TURN_EARLY_EXIT": 0.0,
+            "SWING_EARLY_EXIT": 0.0,
+            "DRIVE_MAX_V": 12.0,
+            "HEADING_MAX_V": 12.0,
+            "TURN_MAX_V": 12.0,
+            "SWING_MAX_V": 12.0,
+            "DRIVE_SETTLE_ERR": 0.0,
+            "DRIVE_SETTLE_TIME": 0,
+            "TURN_SETTLE_ERR": 0.0,
+            "TURN_SETTLE_TIME": 0,
+            "SWING_SETTLE_ERR": 0.0,
+            "SWING_SETTLE_TIME": 0,
+            "DIR": "AUTO",
+            "SIDE": "AUTO",
+            "LOCKED_SIDE": "AUTO",
+            "LOCKED_SIDE_": "",
+        }
 
     def _boolish(val):
+        """Handle boolish."""
         if isinstance(val, bool):
             return val
         s = str(val).strip().lower()
@@ -1009,6 +1087,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return None
 
     def _is_default_value(val, default):
+        """Check whether is default value."""
         if isinstance(default, (list, tuple, set)):
             return any(_is_default_value(val, d) for d in default)
         if default is None or default == "":
@@ -1024,12 +1103,21 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return str(val).strip().lower() == str(default).strip().lower()
 
     def _token_is_named_segment(part: str, start_idx: int) -> bool:
+        """Handle token is named segment."""
         prefix = part[:start_idx]
         seg_start = max(prefix.rfind(","), prefix.rfind("{"), prefix.rfind("("))
         segment = prefix[seg_start + 1:]
         return "=" in segment
 
+    ADV_MOTION_TOKENS = {
+        "DRIVE_MAX_V", "HEADING_MAX_V", "TURN_MAX_V", "SWING_MAX_V",
+        "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
+        "TURN_SETTLE_ERR", "TURN_SETTLE_TIME",
+        "SWING_SETTLE_ERR", "SWING_SETTLE_TIME",
+    }
+
     def _tokens_with_omit(part: str, tokens: dict) -> dict:
+        """Handle tokens with omit."""
         if not part or not cleanup_defaults:
             return tokens
         contexts = {}
@@ -1043,12 +1131,16 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             return tokens
         out = dict(tokens)
         for key, ctxs in contexts.items():
+            default_hit = _is_default_value(tokens.get(key), cleanup_defaults[key])
+            if not default_hit:
+                continue
             if "named" in ctxs and "positional" not in ctxs:
-                if _is_default_value(tokens.get(key), cleanup_defaults[key]):
-                    out[key] = OMIT_SENTINEL
+                out[key] = OMIT_SENTINEL
+                continue
         return out
 
     def _split_top_level_commas(content: str) -> list:
+        """Handle split top level commas."""
         parts = []
         buf = []
         depth_paren = depth_brace = depth_bracket = 0
@@ -1074,6 +1166,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return parts
 
     def _drop_in_delimited(line: str, open_ch: str, close_ch: str) -> str:
+        """Handle drop in delimited."""
         out = []
         i = 0
         while i < len(line):
@@ -1102,6 +1195,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return "".join(out)
 
     def _drop_sentinel_segments(line: str) -> str:
+        """Handle drop sentinel segments."""
         if OMIT_SENTINEL not in line:
             return line
         line = _drop_in_delimited(line, "{", "}")
@@ -1116,10 +1210,22 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         line = re.sub(r"\{\s*,", "{", line)
         line = re.sub(r",\s*\}", "}", line)
         line = re.sub(r"\s{2,}", " ", line)
+        kept_lines = []
+        for raw in line.splitlines():
+            s = raw.strip()
+            if re.search(r"\bset_(?:drive|turn|swing)_exit_conditions\s*\(\s*\)\s*;", s):
+                continue
+            kept_lines.append(raw)
+        line = "\n".join(kept_lines)
         return line
 
     def _format_tpl_part(part: str, tokens: dict, template_key: str = None):
+        """Handle format tpl part."""
         tokens_fmt = _tokens_with_omit(part, tokens)
+        if not adv_motion_enabled and style not in ("JAR", "JAR (advanced)"):
+            for key in ADV_MOTION_TOKENS:
+                if key in tokens_fmt:
+                    tokens_fmt[key] = OMIT_SENTINEL
         try:
             line = part.format(**tokens_fmt)
         except Exception as e:
@@ -1136,6 +1242,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return line
     
     def emit(template_key, tokens):
+        """Handle emit."""
         tpl_val = tpls.get(template_key, "")
         for part in _normalize_tpl(tpl_val):
             line = _format_tpl_part(part, tokens, template_key=template_key)
@@ -1158,6 +1265,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     preset_state = {"reshape": False}
 
     def _render_tpl_lines(tpl_val, tokens):
+        """Handle render tpl lines."""
         out_lines = []
         for part in _normalize_tpl(tpl_val):
             line = _format_tpl_part(part, tokens)
@@ -1168,6 +1276,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return out_lines
 
     def _render_marker_actions(actions):
+        """Handle render marker actions."""
         out_lines = []
         if not isinstance(actions, list):
             return out_lines
@@ -1183,7 +1292,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                     out_lines.append(f"// marker: unknown preset '{name}'")
                     continue
                 mode = str(preset.get("mode", "action")).strip().lower()
-                if mode not in ("action", "toggle"):
+                if mode not in ("action", "toggle", "cases"):
                     mode = "action"
                 value = str(act.get("value", "") or "").strip()
                 values = act.get("values", [])
@@ -1203,6 +1312,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                     "VALUE1": value1,
                     "VALUE2": value2,
                     "VALUE3": value3,
+                    "CASE_KEY": "",
                     "STATE": state
                 }
                 if mode == "toggle":
@@ -1219,16 +1329,85 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                     tpl_key = "on" if next_state else "off"
                     tpl_val = preset.get(tpl_key, "")
                     if not tpl_val and key == "reshape":
-                        tpl_val = tpls.get("reshape", "")
+                        tpl_val = tpls.get("reshape_on" if next_state else "reshape_off", "")
+                        if not tpl_val:
+                            tpl_val = tpls.get("reshape", "")
                         tokens["STATE"] = _reshape_state_token(cfg, 2 if next_state else 1)
                     else:
                         tokens["STATE"] = "on" if next_state else "off"
+                    if not str(tpl_val or "").strip():
+                        fallback = preset.get("template", preset.get("action", ""))
+                        if str(fallback or "").strip():
+                            tpl_val = fallback
+                        else:
+                            out_lines.append(f"// marker preset '{name}' has empty {tpl_key} template")
+                            continue
+                    out_lines.extend(_render_tpl_lines(tpl_val, tokens))
+                elif mode == "cases":
+                    case_list = preset.get("cases", [])
+                    if isinstance(case_list, dict):
+                        case_list = [{"key": k, "template": v} for k, v in case_list.items()]
+                    if not isinstance(case_list, list):
+                        case_list = []
+
+                    def _case_match(case_key: str, full_val: str, first_val: str):
+                        """Handle case match."""
+                        key_cmp = str(case_key or "").strip()
+                        if not key_cmp:
+                            return False
+                        if key_cmp in ("*", "_", "default"):
+                            return False
+                        full_cf = str(full_val or "").strip().casefold()
+                        first_cf = str(first_val or "").strip().casefold()
+                        for cand in key_cmp.split("|"):
+                            c = cand.strip().casefold()
+                            if not c:
+                                continue
+                            if c == full_cf or c == first_cf:
+                                return True
+                        return False
+
+                    chosen_key = ""
+                    tpl_val = ""
+                    wildcard_tpl = ""
+                    for case_item in case_list:
+                        if not isinstance(case_item, dict):
+                            continue
+                        ckey = str(case_item.get("key", "")).strip()
+                        ctpl = str(case_item.get("template", "") or "")
+                        if not ckey:
+                            continue
+                        if ckey.strip().casefold() in ("*", "_", "default"):
+                            if not wildcard_tpl:
+                                wildcard_tpl = ctpl
+                            continue
+                        if _case_match(ckey, value, value1):
+                            chosen_key = ckey
+                            tpl_val = ctpl
+                            break
+                    if not tpl_val:
+                        tpl_val = wildcard_tpl
+                        if tpl_val:
+                            chosen_key = "*"
+                    if not tpl_val:
+                        tpl_val = str(preset.get("case_default", "") or "")
+                    if not tpl_val:
+                        tpl_val = str(preset.get("template", preset.get("action", "")) or "")
+                    if not str(tpl_val).strip():
+                        out_lines.append(f"// marker preset '{name}' has no matching case for '{value or value1}'")
+                        continue
+                    tokens["CASE_KEY"] = chosen_key
                     out_lines.extend(_render_tpl_lines(tpl_val, tokens))
                 else:
                     tpl_val = preset.get("template", preset.get("action", ""))
                     if not tpl_val and key == "reshape":
-                        tpl_val = tpls.get("reshape", "")
+                        tpl_val = tpls.get("reshape_on", "")
+                        if not tpl_val:
+                            tpl_val = tpls.get("reshape", "")
                         tokens["STATE"] = _reshape_state_token(cfg, 2)
+                    if not str(tpl_val or "").strip():
+                        out_lines.append(f"// marker preset '{name}' has empty template")
+                        continue
                     out_lines.extend(_render_tpl_lines(tpl_val, tokens))
             else:
                 tpl_val = str(act.get("code", "")).strip()
@@ -1238,8 +1417,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return out_lines
 
     def _emit_edge_markers(seg, total_len_in, tokens_base, path_points=None):
-        if style not in ("LemLib", "Custom"):
-            return
+        """Handle emit edge markers."""
         events = seg.get("edge_events", [])
         if not events:
             return
@@ -1288,8 +1466,26 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 lines.extend(out_lines)
         if done_tpl:
             emit("marker_wait_done", tokens_base)
+
+    def _turn_chain_settings(idx: int, seg: dict):
+        """Handle turn chain settings."""
+        turn_min = seg.get("chain_min_speed") if seg.get("chain_to_next") else None
+        turn_exit = seg.get("chain_early_exit") if seg.get("chain_to_next") else None
+        if seg.get("role") == "explicit" and (turn_min is None or turn_exit is None) and (idx + 1) < len(timeline):
+            nxt = timeline[idx + 1]
+            if isinstance(nxt, dict) and nxt.get("chain_to_next"):
+                node_i = seg.get("node_i")
+                nxt_i0 = nxt.get("i0", None)
+                same_node = (node_i is not None and nxt_i0 is not None and node_i == nxt_i0)
+                if same_node:
+                    if turn_min is None:
+                        turn_min = nxt.get("chain_min_speed")
+                    if turn_exit is None:
+                        turn_exit = nxt.get("chain_early_exit")
+        return turn_min, turn_exit
     
     def emit_first(keys, tokens):
+        """Handle emit first."""
         for k in keys:
             if k in tpls:
                 emit(k, tokens)
@@ -1302,6 +1498,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     if isinstance(adv_raw, dict):
         adv_raw = adv_raw.get("value", 0)
     adv_motion_enabled = bool(float(adv_raw))
+    if initial_setpose_tokens is not None:
+        emit("setpose", initial_setpose_tokens)
+        lines.append("")
 
     def emit_jar_constants(kind: str, tokens: dict, voltage: float, settle_err: float, settle_time: int):
         """No-op placeholder; JAR now uses inline placeholders only."""
@@ -1309,23 +1508,50 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         return False
 
     def _emit_jar_defaults(kind: str, tokens: dict):
-        if style != "JAR" or not adv_motion_enabled:
-            return
-        if kind == "drive":
-            lines.append(f"chassis.drive_max_voltage = {tokens.get('DRIVE_MAX_V', 0)};")
-            lines.append(f"chassis.heading_max_voltage = {tokens.get('HEADING_MAX_V', 0)};")
-            lines.append(f"chassis.drive_settle_error = {tokens.get('DRIVE_SETTLE_ERR', 0)};")
-            lines.append(f"chassis.drive_settle_time = {tokens.get('DRIVE_SETTLE_TIME', 0)};")
-        elif kind == "turn":
-            lines.append(f"chassis.turn_max_voltage = {tokens.get('TURN_MAX_V', 0)};")
-            lines.append(f"chassis.turn_settle_error = {tokens.get('TURN_SETTLE_ERR', 0)};")
-            lines.append(f"chassis.turn_settle_time = {tokens.get('TURN_SETTLE_TIME', 0)};")
-        elif kind == "swing":
-            lines.append(f"chassis.swing_max_voltage = {tokens.get('SWING_MAX_V', 0)};")
-            lines.append(f"chassis.swing_settle_error = {tokens.get('SWING_SETTLE_ERR', 0)};")
-            lines.append(f"chassis.swing_settle_time = {tokens.get('SWING_SETTLE_TIME', 0)};")
+        """Handle emit jar defaults."""
+        return
+
+    _exit_call_re = re.compile(
+        r"^\s*(?:[\w:]+\s*\.\s*)?set_(drive|turn|swing)_exit_conditions\s*\(\s*([^()]*)\s*\)\s*;\s*$",
+        re.IGNORECASE,
+    )
+
+    def _norm_exit_value(raw: str) -> str:
+        """Handle norm exit value."""
+        s = str(raw).strip()
+        try:
+            v = float(s.rstrip("fF"))
+            if abs(v) < 1e-9:
+                v = 0.0
+            return f"{v:.6f}"
+        except Exception:
+            return re.sub(r"\s+", "", s).lower()
+
+    def _dedupe_exit_condition_lines(lines_in):
+        """Handle dedupe exit condition lines."""
+        out = []
+        last_val = {}
+        for entry in lines_in:
+            text = str(entry)
+            parts = text.splitlines() or [text]
+            kept_parts = []
+            for line in parts:
+                m = _exit_call_re.match(line)
+                if not m:
+                    kept_parts.append(line)
+                    continue
+                kind = m.group(1).lower()
+                value = _norm_exit_value(m.group(2))
+                if kind in last_val and last_val[kind] == value:
+                    continue
+                last_val[kind] = value
+                kept_parts.append(line)
+            if kept_parts:
+                out.append("\n".join(kept_parts))
+        return out
 
     def _first_tpl_key(keys):
+        """Handle first tpl key."""
         for k in keys:
             if k in tpls:
                 return k
@@ -1345,26 +1571,28 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         swing_min_speed: int = None,
         swing_early_exit: float = None
     ):
+        """Handle apply settle."""
         mag = abs(float(magnitude))
-        cap = _compute_voltage_cap(cfg, move_type, mag, profile)
-        cap = min(12.0, max(0.0, cap))
-        if style == "JAR":
-            cap_frac = _clamp(cap / 12.0, 0.0, 1.0)
-            eff_frac = cap_frac
-            if t_speed_frac is not None:
-                try:
-                    t_frac = float(t_speed_frac)
-                except Exception:
-                    t_frac = None
-                if t_frac is not None and t_frac > 0.0:
-                    t_frac = _clamp(t_frac, 0.2, 1.0)
-                    eff_frac = _clamp(cap_frac / max(1e-6, t_frac), 0.2, 1.0)
-            _scale_timeout(tokens, eff_frac)
+        cap = 12.0
         settle_err = 0.0
         settle_time_adj = 0
         if adv_motion_enabled:
+            cap = _compute_voltage_cap(cfg, move_type, mag, profile)
+            cap = min(12.0, max(0.0, cap))
+            if jar_like_style:
+                cap_frac = _clamp(cap / 12.0, 0.0, 1.0)
+                eff_frac = cap_frac
+                if t_speed_frac is not None:
+                    try:
+                        t_frac = float(t_speed_frac)
+                    except Exception:
+                        t_frac = None
+                    if t_frac is not None and t_frac > 0.0:
+                        t_frac = _clamp(t_frac, 0.2, 1.0)
+                        eff_frac = _clamp(cap_frac / max(1e-6, t_frac), 0.2, 1.0)
+                _scale_timeout(tokens, eff_frac)
             settle_mag_val = mag if settle_mag is None else abs(float(settle_mag))
-            settle_cap = cap if style == "JAR" else 12.0
+            settle_cap = cap if jar_like_style else 12.0
             settle_err, settle_time = _compute_settle_final(cfg, move_type, settle_mag_val, settle_cap, profile)
             settle_time_adj = int(round(settle_time))
         drive_early_exit = 0.0 if drive_early_exit is None else drive_early_exit
@@ -1376,10 +1604,12 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         drive_min_speed = int(max(0, min(127, drive_min_speed)))
         turn_min_speed = int(max(0, min(127, turn_min_speed)))
         swing_min_speed = int(max(0, min(127, swing_min_speed)))
+        cap_out = cap
+        heading_cap_out = _compute_heading_cap(cap, profile)
         if move_type == "drive":
             tokens.update({
-                "DRIVE_MAX_V": cap,
-                "HEADING_MAX_V": _compute_heading_cap(cap, profile),
+                "DRIVE_MAX_V": cap_out,
+                "HEADING_MAX_V": heading_cap_out,
                 "DRIVE_SETTLE_ERR": round(float(settle_err), 2),
                 "DRIVE_SETTLE_TIME": int(settle_time_adj),
                 "DRIVE_EARLY_EXIT": round(float(drive_early_exit), 2),
@@ -1387,7 +1617,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             })
         elif move_type == "turn":
             tokens.update({
-                "TURN_MAX_V": cap,
+                "TURN_MAX_V": cap_out,
                 "TURN_SETTLE_ERR": round(float(settle_err), 2),
                 "TURN_SETTLE_TIME": int(settle_time_adj),
                 "TURN_EARLY_EXIT": round(float(turn_early_exit), 2),
@@ -1395,7 +1625,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             })
         elif move_type == "swing":
             tokens.update({
-                "SWING_MAX_V": cap,
+                "SWING_MAX_V": cap_out,
                 "SWING_SETTLE_ERR": round(float(settle_err), 2),
                 "SWING_SETTLE_TIME": int(settle_time_adj),
                 "SWING_EARLY_EXIT": round(float(swing_early_exit), 2),
@@ -1416,7 +1646,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             phys_T = _physics_timeout_s(seg, st, cfg, motion_mode=motion_mode)
             if phys_T > 0.0:
                 T = max(T, phys_T)
-        # Do not inflate waits (buffer or custom) with pad_factor; pad only movement timeouts
         eff_pad = pad_factor
         if st == "wait" or seg.get("role") == "buffer":
             eff_pad = 1.0
@@ -1433,8 +1662,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         }
         
         if st == "path":
-            # CURVED PATH SEGMENT
-            # Generate path file and emit follow call
             if seg.get("move_to_pose"):
                 p0, p1 = seg["p0"], seg["p1"]
                 x_in, y_in = field_coords_in(p1)
@@ -1452,7 +1679,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                             path_len_in = 0.0
                 pose_h = seg.get("pose_heading", seg.get("facing", 0.0))
                 pose_h = convert_heading_input(pose_h, None)
-                # Ensure timeout reflects curved length (use curve estimate if longer)
+                if seg.get("reverse", False):
+                    pose_h = (pose_h + 180.0) % 360.0
                 curve_T = None
                 if path_len_in > 0.0:
                     profile_curve = seg.get("profile_override") or pick_profile("drive", abs(path_len_in), cfg=cfg)
@@ -1523,7 +1751,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             tokens_max = max(0.0, min(127.0, float(seg.get("max_speed_cmd", seg.get("max_speed_ips", max_speed_cmd)))))
             
             if path_points and len(path_points) >= 2 and path_asset_name not in generated_paths:
-                # Export path file
                 try:
                     init_v = vels[0] if vels else min_speed_cmd
                     end_v = vels[-1] if vels else min_speed_cmd
@@ -1539,13 +1766,11 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                     )
                     generated_paths.add(path_asset_name)
                     
-                    # Add ASSET declaration
                     asset_var = path_asset_name.replace(".txt", "").replace("-", "_")
                     asset_declarations.append(f'ASSET({asset_var}_txt);')
                 except Exception as e:
                     print(f"Warning: Failed to export path {path_asset_name}: {e}")
             
-            # Emit path following code
             tokens = dict(tokens_base)
             base_name = path_asset_name.replace(".txt", "")
             asset_var = base_name.replace("-", "_")
@@ -1575,8 +1800,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "DRIVE_SETTLE_ERR": "",
                 "DRIVE_SETTLE_TIME": "",
             })
-            # Treat path as drive for settle/timeout settings
-            # Approximate path length magnitude in inches
             path_len_in = 0.0
             try:
                 for idx_pp in range(len(path_points) - 1):
@@ -1616,7 +1839,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             
             i += 1
         elif st == "move":
-            # STRAIGHT SEGMENT
             p0, p1 = seg["p0"], seg["p1"]
             x_in, y_in = field_coords_in(p1)
             dist_in, rotations, deg, ticks = dist_conversions(p0, p1, reverse=seg.get("reverse", False))
@@ -1662,6 +1884,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             x_in, y_in = field_coords_in(p1)
             dist_in, rotations, deg, ticks = dist_conversions(p0, p1, reverse=seg.get("reverse", False))
             pose_h = convert_heading_input(seg.get("facing", 0.0), None)
+            if seg.get("reverse", False):
+                pose_h = (pose_h + 180.0) % 360.0
             tokens = dict(tokens_base)
             tokens.update({
                 "X_IN": round(x_in, 6), "Y_IN": round(y_in, 6),
@@ -1680,6 +1904,16 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             })
             profile = seg.get("profile_override") or pick_profile("drive", abs(dist_in), cfg=cfg)
             pose_tpl_key = "pose"
+            if jar_like_style:
+                jar_pose_opt = opts.get("jar_pose_angle_overload", 0)
+                if isinstance(jar_pose_opt, dict):
+                    jar_pose_opt = jar_pose_opt.get("value", 0)
+                try:
+                    jar_pose_angle = bool(int(jar_pose_opt))
+                except Exception:
+                    jar_pose_angle = bool(jar_pose_opt)
+                if jar_pose_angle and "pose_angle" in tpls:
+                    pose_tpl_key = "pose_angle"
             chain_min = seg.get("chain_min_speed") if seg.get("chain_to_next") else None
             chain_exit = seg.get("chain_early_exit") if seg.get("chain_to_next") else None
             _apply_settle(
@@ -1702,12 +1936,18 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             h_disp = convert_heading_input(seg["target_heading"], None)
             delta_internal = ((seg["target_heading"] - seg.get("start_heading", 0.0) + 180.0) % 360.0) - 180.0
             delta_heading = -delta_internal
+            target_pos = seg.get("target_pos")
+            if not (isinstance(target_pos, (list, tuple)) and len(target_pos) >= 2):
+                target_pos = seg.get("p1", seg.get("pos", (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)))
+            target_x_in, target_y_in = field_coords_in(target_pos)
             tokens = dict(tokens_base)
             tokens.update({
                 "HEADING_DEG": round(h_disp, 6),
                 "HEADING_RAD": round(h_disp * math.pi / 180.0, 9),
                 "TURN_DELTA_DEG": round(delta_heading, 6),
                 "TURN_DELTA_RAD": round(delta_heading * math.pi / 180.0, 9),
+                "TARGET_X_IN": round(target_x_in, 6),
+                "TARGET_Y_IN": round(target_y_in, 6),
                 "TURN_SPEED": "" if seg.get("turn_speed_dps") is None else round(float(seg.get("turn_speed_dps")), 6),
                 "TURN_MAX_V": "",
                 "TURN_SETTLE_ERR": "",
@@ -1716,16 +1956,16 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             chosen_turn = "turn_global"
             if turn_mode == "turn_local":
                 chosen_turn = "turn_local"
-                # For local, emit delta instead of absolute heading if template expects it
-                tokens["HEADING_DEG"] = tokens["TURN_DELTA_DEG"]
-                tokens["HEADING_RAD"] = tokens["TURN_DELTA_RAD"]
             profile = seg.get("profile_override") or pick_profile("turn", abs(delta_heading), cfg=cfg)
+            turn_min, turn_exit = _turn_chain_settings(i, seg)
             _apply_settle(
                 tokens,
                 "turn",
                 abs(delta_heading),
                 profile,
-                t_speed_frac=seg.get("T_speed_frac")
+                t_speed_frac=seg.get("T_speed_frac"),
+                turn_min_speed=turn_min,
+                turn_early_exit=turn_exit
             )
             _apply_angle_units(tokens)
             _emit_jar_defaults("turn", tokens)
@@ -1733,7 +1973,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             i += 1
         
         elif st == "wait":
-            # Skip trailing buffer wait
             if not ((i == len(timeline)-1) and abs(T - tbuf) <= 1e-6 and seg.get("role") == "buffer"):
                 temp_key = "tbuffer" if seg.get("role") == "buffer" else "wait"
                 emit(temp_key, tokens_base)
@@ -1749,6 +1988,10 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             h_disp = convert_heading_input(seg["target_heading"], None)
             delta_internal = ((seg["target_heading"] - seg.get("start_heading", 0.0) + 180.0) % 360.0) - 180.0
             delta_heading = -delta_internal
+            target_pos = seg.get("target_pos")
+            if not (isinstance(target_pos, (list, tuple)) and len(target_pos) >= 2):
+                target_pos = seg.get("p1", seg.get("end_pos", seg.get("pos", (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))))
+            target_x_in, target_y_in = field_coords_in(target_pos)
             dir_raw = str(seg.get("swing_dir", "auto")).strip().lower()
             if dir_raw in ("cw", "clockwise", "cw_clockwise"):
                 dir_key = "cw"
@@ -1756,28 +1999,40 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 dir_key = "ccw"
             else:
                 dir_key = "auto"
-            dir_token = {
-                "auto": "AUTO",
-                "cw": "CW_CLOCKWISE",
-                "ccw": "CCW_COUNTERCLOCKWISE",
-            }[dir_key]
-            # Derive a side tag for users who prefer specifying a single driven side
-            side_token = "AUTO"
-            if dir_key == "cw":
+
+            dir_effective = dir_key
+            if dir_effective == "auto":
+                dir_effective = "ccw" if delta_internal >= 0.0 else "cw"
+
+            dir_token = {"cw": "CW_CLOCKWISE", "ccw": "CCW_COUNTERCLOCKWISE"}[dir_effective]
+
+            if dir_token == "CW_CLOCKWISE":
                 side_token = "LEFT"
-            elif dir_key == "ccw":
+            elif dir_token == "CCW_COUNTERCLOCKWISE":
                 side_token = "RIGHT"
+
+            def _opp_side(side: str) -> str:
+                """Handle opp side."""
+                s = (side or "").strip().upper()
+                if s == "LEFT":  return "RIGHT"
+                if s == "RIGHT": return "LEFT"
+
+            locked_side = _opp_side(side_token)
+
             tokens = dict(tokens_base)
             tokens.update({
                 "HEADING_DEG": round(h_disp, 6),
                 "HEADING_RAD": round(h_disp * math.pi / 180.0, 9),
                 "TURN_DELTA_DEG": round(delta_heading, 6),
                 "TURN_DELTA_RAD": round(delta_heading * math.pi / 180.0, 9),
+                "TARGET_X_IN": round(target_x_in, 6),
+                "TARGET_Y_IN": round(target_y_in, 6),
                 "DIR": dir_token,
                 "SIDE": side_token,
                 "SWING_MAX_V": "",
                 "SWING_SETTLE_ERR": "",
                 "SWING_SETTLE_TIME": "",
+                "LOCKED_SIDE": locked_side,
             })
             profile = seg.get("profile_override") or pick_profile("swing", abs(delta_heading), cfg=cfg)
             swing_tpl_key = "swing"
@@ -1799,17 +2054,27 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             i += 1
         
         elif st == "reshape":
-            next_state = not bool(preset_state.get("reshape", False))
+            state_raw = seg.get("state", 0)
+            try:
+                state_num = int(state_raw)
+            except Exception:
+                state_num = 2 if str(state_raw).strip().lower() in ("2", "on", "true", "yes", "reshaped") else 1
+            next_state = (state_num == 2)
             tokens = dict(tokens_base)
             tokens["STATE"] = _reshape_state_token(cfg, 2 if next_state else 1)
-            emit("reshape", tokens)
+            reshape_key = "reshape_on" if next_state else "reshape_off"
+            if tpls.get(reshape_key, ""):
+                emit(reshape_key, tokens)
+            else:
+                emit("reshape", tokens)
             preset_state["reshape"] = next_state
             i += 1
         
         else:
             i += 1
     
-    # Add time estimate comment
+    lines = _dedupe_exit_condition_lines(lines)
+
     total_t = sum(float(sg.get("T", 0.0)) for sg in timeline)
     if timeline and timeline[-1].get("type") == "wait" and timeline[-1].get("role") == "buffer":
         total_t = max(0.0, total_t - float(tbuf))
@@ -1817,7 +2082,6 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     lines.append("")
     lines.append(f"// Estimated total time: {total_t:.2f} s")
     
-    # Prepend asset declarations
     if asset_declarations:
         header = [
             "// Path asset declarations",
@@ -1846,6 +2110,7 @@ def export_action_list(cfg, timeline, log_lines):
     reshape_label = str(cfg.get("reshape_label", "Reshape"))
 
     def _marker_actions_label(actions):
+        """Handle marker actions label."""
         if not isinstance(actions, list):
             return ""
         parts = []
@@ -1899,7 +2164,6 @@ def export_action_list(cfg, timeline, log_lines):
             continue
         
         if st == "path":
-            # Curved path segment
             p0, p1 = seg["p0"], seg["p1"]
             segment_idx = seg.get("segment_idx", idx)
             path_file = generate_path_asset_name("routine", segment_idx)
@@ -1910,7 +2174,6 @@ def export_action_list(cfg, timeline, log_lines):
             log_lines.append(f"  Path File: {path_file}")
             log_lines.append(f"  Duration: {T:.3f} s")
             
-            # Calculate approximate distance
             if "path_points" in seg:
                 path_points = seg["path_points"]
                 total_dist_px = 0.0
@@ -1972,7 +2235,6 @@ def export_action_list(cfg, timeline, log_lines):
             else:
                 log_lines.append(f"  Swing: {chosen:.3f}° dir={dir_tag} to {to_face_deg:.3f}°")
     
-    # Total time (include buffers to match on-screen estimate/animation)
     total_t = sum(float(sg.get("T", 0.0)) for sg in timeline)
     log_lines.append(f"\nEstimated total time: {total_t:.2f} s")
 

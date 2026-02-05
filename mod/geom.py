@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 
-# Support running without package context
 if __package__ is None or __package__ == "":
     import os
     import sys
@@ -88,6 +87,7 @@ def polygons_intersect(polyA, polyB, eps=1e-9):
         return False
 
     def edges(poly):
+        """Handle edges."""
         n = len(poly)
         for i in range(n):
             x1, y1 = poly[i]
@@ -95,10 +95,12 @@ def polygons_intersect(polyA, polyB, eps=1e-9):
             yield (x2 - x1, y2 - y1)
 
     def axis_normal(dx, dy):
+        """Handle axis normal."""
         L = (dx * dx + dy * dy) ** 0.5
         return (0.0, 0.0) if L <= 1e-12 else (-dy / L, dx / L)
 
     def project(poly, ax, ay):
+        """Handle project."""
         vals = [x * ax + y * ay for (x, y) in poly]
         return (min(vals), max(vals))
 
@@ -158,3 +160,23 @@ def constrain_to_8dirs(origin, target):
 
     ux, uy, dot = best
     return (ox + ux * dot, oy + uy * dot)
+
+
+def point_in_poly(point, poly):
+    """Ray-casting point-in-polygon test (poly as list of (x,y))."""
+    x, y = point
+    inside = False
+    n = len(poly)
+    if n < 3:
+        return False
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        intersects = ((yi > y) != (yj > y))
+        if intersects:
+            x_at_y = (xj - xi) * (y - yi) / max(1e-12, (yj - yi)) + xi
+            if x < x_at_y:
+                inside = not inside
+        j = i
+    return inside

@@ -1,9 +1,7 @@
-# mod/config.py
 from __future__ import annotations
 import json, os, sys
 from typing import Optional
 
-# Window and field
 FIELD_WIDTH_2FT  = 6
 FIELD_HEIGHT_2FT = 6
 PIXELS_PER_2FT   = 100
@@ -12,7 +10,6 @@ WINDOW_HEIGHT    = FIELD_HEIGHT_2FT * PIXELS_PER_2FT
 GRID_SIZE_PX     = PIXELS_PER_2FT
 PPI              = PIXELS_PER_2FT / 24.0
 
-# Colors (RGB)
 BG_COLOR    = (30, 30, 30)
 GRID_COLOR  = (50, 50, 50)
 NODE_COLOR  = (50, 255, 50)
@@ -27,6 +24,162 @@ WHITE       = (255, 255, 255)
 GREY        = (130, 130, 130)
 
 CONFIG_FILENAME = "config.json"
+APP_DIRNAME = "AtticusTerminal"
+
+DEFAULT_MCL = {
+    "enabled": {"value": 1},
+    "motion_ms": {"value": 20},
+    "sensor_ms": {"value": 50},
+    "particles": {
+        "n": {"value": 200},
+        "n_min": {"value": 200},
+        "n_max": {"value": 400}
+    },
+    "motion": {
+        "enabled": {"value": 1},
+        "motion_model": {"value": "drive"},
+        "motion_source": {"value": "encoders"},
+        "use_alpha_model": {"value": 0},
+        "sigma_x_in": {"value": 0.1275},
+        "sigma_y_in": {"value": 0.1275},
+        "sigma_theta_deg": {"value": 1.0},
+        "alpha1": {"value": 0.05},
+        "alpha2": {"value": 0.05},
+        "alpha3": {"value": 0.05},
+        "alpha4": {"value": 0.05}
+    },
+    "set_pose_sigma_xy_in": {"value": 0.2},
+    "set_pose_sigma_theta_deg": {"value": 2.0},
+    "sensors": {
+        "distance": {
+            "enabled": {"value": 1},
+            "model": {"value": "likelihood_field"},
+            "sigma_hit_mm": {"value": 8.5},
+            "w_hit": {"value": 0.9},
+            "w_rand": {"value": 0.1},
+            "w_short": {"value": 0.0},
+            "w_max": {"value": 0.0},
+            "lambda_short": {"value": 0.1},
+            "max_range_mm": {"value": 2000.0},
+            "min_range_mm": {"value": 0.0},
+            "confidence_min": {"value": 0.0},
+            "object_size_min": {"value": 0.0},
+            "object_size_max": {"value": 0.0},
+            "innovation_gate_mm": {"value": 0.0},
+            "median_window": {"value": 3},
+            "lf_ignore_max": {"value": 0},
+            "gate_mm": {"value": 150.0},
+            "gate_mode": {"value": "hard"},
+            "gate_penalty": {"value": 0.05},
+            "likelihood_field": {
+                "resolution_in": {"value": 2.0}
+            }
+        },
+        "imu": {
+            "enabled": {"value": 1},
+            "sigma_deg": {"value": 1.0}
+        },
+        "vision": {
+            "enabled": {"value": 0},
+            "sigma_xy_in": {"value": 2.0},
+            "sigma_theta_deg": {"value": 5.0},
+            "confidence_min": {"value": 0.0},
+            "sim_confidence": {"value": 1.0}
+        }
+    },
+    "sensor_geometry": {
+        "distance_sensors": []
+    },
+    "resample": {
+        "method": {"value": "systematic"},
+        "threshold": {"value": 0.5},
+        "always": {"value": 0}
+    },
+    "kld": {
+        "enabled": {"value": 0},
+        "epsilon": {"value": 0.05},
+        "delta": {"value": 0.99},
+        "bin_xy_in": {"value": 2.0},
+        "bin_theta_deg": {"value": 10.0}
+    },
+    "augmented": {
+        "enabled": {"value": 0},
+        "alpha_slow": {"value": 0.001},
+        "alpha_fast": {"value": 0.1}
+    },
+    "random_injection": {"value": 0.01},
+    "map_objects": {
+        "perimeter": {"value": 1},
+        "long_goals": {"value": 1},
+        "long_goal_braces": {"value": 1},
+        "center_goals": {"value": 1},
+        "matchloaders": {"value": 1},
+        "park_zones": {"value": 0}
+    },
+    "object_selection": {},
+    "sensor_object_visibility": {},
+    "region": {
+        "enabled": {"value": 1},
+        "mode": {"value": "hard"},
+        "type": {"value": "segment_path"},
+        "update_mode": {"value": "segment_path"},
+        "penalty": {"value": 0.2},
+        "perimeter_gate": {"value": 1},
+        "object_gate": {"value": 0},
+        "object_mode": {"value": 1},
+        "object_clip_free_in": {"value": 0.5},
+        "object_clip_max_in": {"value": 2.0},
+        "object_clip_sigma_in": {"value": 0.75},
+        "grid_type": {"value": "quadrant"},
+        "grid_x": {"value": 2},
+        "grid_y": {"value": 2},
+        "x_min_in": {"value": 0.0},
+        "x_max_in": {"value": 144.0},
+        "y_min_in": {"value": 0.0},
+        "y_max_in": {"value": 144.0},
+        "radius_in": {"value": 12.0},
+        "slope_enabled": {"value": 0},
+        "slope_sigma_deg": {"value": 20.0},
+        "sample_attempts": {"value": 50}
+    },
+    "confidence": {
+        "threshold": {"value": 0.0},
+        "auto_reinit": {"value": 0},
+        "reinit_mode": {"value": "global"}
+    },
+    "correction": {
+        "enabled": {"value": 1},
+        "min_confidence": {"value": 0.6},
+        "max_trans_jump_in": {"value": 8.0},
+        "max_theta_jump_deg": {"value": 15.0},
+        "alpha_min": {"value": 0.05},
+        "alpha_max": {"value": 0.25}
+    },
+    "ekf": {
+        "enabled": {"value": 1},
+        "mcl_min_conf": {"value": 0.6},
+        "sigma_dx_in": {"value": 0.1275},
+        "sigma_dy_in": {"value": 0.1275},
+        "sigma_dtheta_deg": {"value": 1.0},
+        "imu_sigma_deg": {"value": 1.0},
+        "mcl_sigma_x_min": {"value": 0.2},
+        "mcl_sigma_x_max": {"value": 6.0},
+        "mcl_sigma_y_min": {"value": 0.2},
+        "mcl_sigma_y_max": {"value": 6.0},
+        "mcl_sigma_theta_min": {"value": 2.0},
+        "mcl_sigma_theta_max": {"value": 15.0},
+        "init_sigma_xy_in": {"value": 0.2},
+        "init_sigma_theta_deg": {"value": 2.0}
+    },
+    "ui": {
+        "show_particles": {"value": 1},
+        "show_estimate": {"value": 1},
+        "show_covariance": {"value": 1},
+        "show_rays": {"value": 1},
+        "show_region": {"value": 1},
+        "show_gating": {"value": 1}
+    }
+}
 
 DEFAULT_CONFIG = {
     "reshape_label": {"value": "Reshape"},
@@ -71,7 +224,6 @@ DEFAULT_CONFIG = {
         "min_speed_cmd": {"value": 30.0},
         "max_speed_cmd": {"value": 127.0},
     },
-    # plane_mode removed; fixed heading convention
     "field_centric": {"value": 1},
     "distance_units": {"value": 0},
     "angle_units": {"value": 0},
@@ -143,7 +295,8 @@ DEFAULT_CONFIG = {
         "turn_accel_min": {"value": 0.12},
         "turn_accel_max": {"value": 0.30},
         "omni_scale": {"value": 0.9}
-    }
+    },
+    "mcl": DEFAULT_MCL
 }
 
 def _flatten(section: dict) -> dict:
@@ -171,6 +324,7 @@ def _save_json(path: str, data: dict) -> None:
         json.dump(data, f, indent=2)
 
 def _runtime_root() -> str:
+    """Handle runtime root."""
     if getattr(sys, "frozen", False):
         try:
             return os.path.dirname(sys.executable)
@@ -178,26 +332,92 @@ def _runtime_root() -> str:
             return os.getcwd()
     return os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir))
 
+def _user_config_root() -> str:
+    """Return per-user writable app config directory."""
+    home = os.path.expanduser("~")
+    if sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if not base:
+            base = os.path.join(home, "AppData", "Local")
+        return os.path.join(base, APP_DIRNAME)
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", APP_DIRNAME)
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if not xdg:
+        xdg = os.path.join(home, ".config")
+    return os.path.join(xdg, APP_DIRNAME.lower())
+
+def _can_write_file(path: str) -> bool:
+    """Check if target file path is writable."""
+    try:
+        parent = os.path.dirname(path) or "."
+        os.makedirs(parent, exist_ok=True)
+        probe = os.path.join(parent, ".atticus_write_test")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+def _config_candidates() -> list:
+    """Build ordered config file candidates."""
+    here = os.path.dirname(__file__)
+    root_candidate = os.path.normpath(os.path.join(here, os.pardir, CONFIG_FILENAME))
+    mod_candidate = os.path.normpath(os.path.join(here, CONFIG_FILENAME))
+    exe_candidate = os.path.normpath(os.path.join(_runtime_root(), CONFIG_FILENAME))
+    user_candidate = os.path.normpath(os.path.join(_user_config_root(), CONFIG_FILENAME))
+    env_cfg = os.environ.get("ATTICUS_CONFIG", "").strip()
+    ordered = []
+    if env_cfg:
+        ordered.append(os.path.normpath(env_cfg))
+    if getattr(sys, "frozen", False):
+        ordered.extend([user_candidate, exe_candidate, root_candidate, mod_candidate])
+    else:
+        ordered.extend([root_candidate, mod_candidate, user_candidate, exe_candidate])
+    out = []
+    seen = set()
+    for p in ordered:
+        if not p:
+            continue
+        key = os.path.normcase(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
 def load_config() -> dict:
     """Load config from root or mod directory, create default if missing."""
-    here = os.path.dirname(__file__)
-    root_candidate = os.path.normpath(os.path.join(here, os.pardir, "config.json"))
-    mod_candidate  = os.path.normpath(os.path.join(here, "config.json"))
-    exe_candidate = os.path.normpath(os.path.join(_runtime_root(), CONFIG_FILENAME))
-    data = _load_json(exe_candidate) or _load_json(root_candidate) or _load_json(mod_candidate)
+    candidates = _config_candidates()
+    data = None
+    for path in candidates:
+        data = _load_json(path)
+        if data is not None:
+            break
     if data is None:
         data = DEFAULT_CONFIG
-        is_frozen = bool(getattr(sys, "frozen", False))
-        _save_json(exe_candidate, data)
-        if not is_frozen:
-            _save_json(root_candidate, data)
-            _save_json(mod_candidate, data)
+        targets = [p for p in candidates if _can_write_file(p)]
+        if not targets:
+            targets = [os.path.normpath(os.path.join(_user_config_root(), CONFIG_FILENAME))]
+        for path in targets[:2]:
+            _save_json(path, data)
     return data
 
 def save_config(cfg_dict: dict) -> bool:
     """Save config dictionary to both root and mod directories."""
     try:
+        """Handle wrap."""
         def wrap(v): return {"value": v}
+        def _wrap_tree(obj):
+            """Handle wrap tree."""
+            if isinstance(obj, dict):
+                if set(obj.keys()) == {"value"}:
+                    return obj
+                return {k: _wrap_tree(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_wrap_tree(v) if isinstance(v, (dict, list)) else v for v in obj]
+            return wrap(obj)
         bd = cfg_dict["bot_dimensions"]
         path_cfg = dict(cfg_dict.get("path_config", {}))
         if "min_speed_cmd" not in path_cfg and "min_speed_ips" in path_cfg:
@@ -244,17 +464,27 @@ def save_config(cfg_dict: dict) -> bool:
             "physics_constants": {
                 k: wrap(float(v))
                 for k, v in cfg_dict.get("physics_constants", {}).items()
-            }
+            },
+            "mcl": _wrap_tree(cfg_dict.get("mcl", DEFAULT_MCL)),
         }
         
-        here = os.path.dirname(__file__)
-        root_cfg = os.path.normpath(os.path.join(here, os.pardir, "config.json"))
-        mod_cfg = os.path.normpath(os.path.join(here, "config.json"))
-        exe_cfg = os.path.normpath(os.path.join(_runtime_root(), CONFIG_FILENAME))
-        is_frozen = bool(getattr(sys, "frozen", False))
-        targets = [exe_cfg] if is_frozen else [root_cfg, mod_cfg]
+        targets = []
+        for path in _config_candidates():
+            if _can_write_file(path):
+                targets.append(path)
+        if not targets:
+            fallback = os.path.normpath(os.path.join(_user_config_root(), CONFIG_FILENAME))
+            targets = [fallback]
+        wrote = 0
         for path in targets:
-            _save_json(path, raw)
+            try:
+                _save_json(path, raw)
+                wrote += 1
+            except Exception:
+                pass
+        if wrote <= 0:
+            print("Failed to save config: no writable config path")
+            return False
         print(f"Config saved to {targets[0]}")
         return True
     except Exception as e:
@@ -298,6 +528,32 @@ def _num(x, d=0.0):
         return float(x)
     except Exception:
         return d
+
+
+def _merge_defaults(defaults, raw):
+    """Merge nested defaults with raw values (raw wins when present)."""
+    if not isinstance(defaults, dict):
+        return raw if raw is not None else defaults
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = {}
+    for key, def_val in defaults.items():
+        merged[key] = _merge_defaults(def_val, raw.get(key))
+    for key, val in raw.items():
+        if key not in merged:
+            merged[key] = val
+    return merged
+
+
+def _unwrap_values(obj):
+    """Recursively unwrap {"value": x} nodes to raw values."""
+    if isinstance(obj, dict):
+        if set(obj.keys()) == {"value"}:
+            return obj.get("value")
+        return {k: _unwrap_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_unwrap_values(v) for v in obj]
+    return obj
 
 
 def reload_cfg() -> dict:
@@ -368,6 +624,36 @@ def reload_cfg() -> dict:
     else:
         reshape_label = reshape_raw
 
+    mcl_defaults = DEFAULT_CONFIG.get("mcl", {})
+    mcl_raw = raw.get("mcl", {})
+    mcl = _unwrap_values(_merge_defaults(mcl_defaults, mcl_raw))
+    rates = mcl.get("rates", {})
+    if isinstance(rates, dict):
+        if "motion_ms" in rates:
+            mcl["motion_ms"] = rates.get("motion_ms", mcl.get("motion_ms", 20.0))
+        if "sensor_ms" in rates:
+            mcl["sensor_ms"] = rates.get("sensor_ms", mcl.get("sensor_ms", 50.0))
+    motion_noise = mcl.get("motion_noise", {})
+    if isinstance(motion_noise, dict):
+        motion_cfg = mcl.setdefault("motion", {})
+        for key in ("sigma_x_in", "sigma_y_in", "sigma_theta_deg", "alpha1", "alpha2", "alpha3", "alpha4"):
+            if key in motion_noise:
+                motion_cfg[key] = motion_noise.get(key, motion_cfg.get(key))
+    if "resample_method" in mcl or "resample_threshold" in mcl or "resample_always" in mcl:
+        resample_cfg = mcl.get("resample", {})
+        if not isinstance(resample_cfg, dict):
+            resample_cfg = {}
+        if "resample_method" in mcl:
+            resample_cfg["method"] = mcl.get("resample_method", resample_cfg.get("method", "systematic"))
+        if "resample_threshold" in mcl:
+            resample_cfg["threshold"] = mcl.get("resample_threshold", resample_cfg.get("threshold", 0.5))
+        if "resample_always" in mcl:
+            resample_cfg["always"] = mcl.get("resample_always", resample_cfg.get("always", 0))
+        mcl["resample"] = resample_cfg
+    parts_cfg = mcl.get("particles", {})
+    if isinstance(parts_cfg, dict) and "random_injection" in parts_cfg:
+        mcl["random_injection"] = parts_cfg.get("random_injection", mcl.get("random_injection", 0.01))
+
     return {
         "robot_physics": physics_flat(raw),
         "bot_dimensions": dims,
@@ -382,6 +668,7 @@ def reload_cfg() -> dict:
         "path_config": path_cfg,
         "physics_constants": physics_constants,
         "reshape_label": str(reshape_label) if reshape_label is not None else "Reshape",
+        "mcl": mcl,
     }
 
 
@@ -389,6 +676,5 @@ def auto_lookahead_in(cfg: dict) -> float:
     """Auto-compute base lookahead (inches) from robot size."""
     bd = cfg.get("bot_dimensions", {})
     base = float(bd.get("dt_width", bd.get("width", 12.0)))
-    # Slightly tighter, more pragmatic lookahead for pure pursuit/path following
     base = max(8.0, min(24.0, base * 0.9))
     return base

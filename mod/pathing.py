@@ -8,7 +8,6 @@ import math
 import os
 from typing import List, Tuple, Optional
 
-# Support running without package context
 if __package__ is None or __package__ == "":
     import sys
     here = os.path.dirname(os.path.abspath(__file__))
@@ -19,47 +18,62 @@ else:
     from .geom import field_coords_in, convert_heading_input
 
 
-def catmull_rom_spline(points: List[Tuple[float, float]], num_samples: int = 50) -> List[Tuple[float, float]]:
+def catmull_rom_spline(points: List[Tuple[float, float]],
+                       num_samples: int = 50,
+                       alpha: float = 0.0) -> List[Tuple[float, float]]:
     """
-    Generate a smooth Catmull-Rom spline through the control points.
-    This creates a curve that passes through all control points naturally.
+    Generate a Catmull-Rom spline through the control points.
+    alpha=0.0 yields uniform, alpha=0.5 yields centripetal parameterization.
     """
     if len(points) < 2:
         return points
     if len(points) == 2:
         return [points[0], points[1]]
 
-    # Add phantom points at start/end for natural curve endpoints
+    alpha = max(0.0, float(alpha))
+
+    def _tj(ti, pi, pj):
+        """Handle tj."""
+        return ti + math.pow(math.hypot(pj[0] - pi[0], pj[1] - pi[1]), alpha)
+
+    def _interp(p0, p1, t0, t1, t):
+        """Handle interp."""
+        if abs(t1 - t0) <= 1e-9:
+            return p1
+        w0 = (t1 - t) / (t1 - t0)
+        w1 = (t - t0) / (t1 - t0)
+        return (p0[0] * w0 + p1[0] * w1, p0[1] * w0 + p1[1] * w1)
+
     extended = [points[0]] + points + [points[-1]]
 
     result = []
     for i in range(1, len(extended) - 2):
         p0, p1, p2, p3 = extended[i - 1], extended[i], extended[i + 1], extended[i + 2]
 
-        # Sample along this segment using Catmull-Rom formula
+        t0 = 0.0
+        t1 = _tj(t0, p0, p1)
+        t2 = _tj(t1, p1, p2)
+        t3 = _tj(t2, p2, p3)
+        if abs(t2 - t1) <= 1e-9:
+            continue
+
         for j in range(num_samples):
-            t = j / num_samples
-            t2 = t * t
-            t3 = t2 * t
-
-            # Catmull-Rom basis functions
-            x = 0.5 * ((2 * p1[0]) +
-                      (-p0[0] + p2[0]) * t +
-                      (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
-                      (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
-
-            y = 0.5 * ((2 * p1[1]) +
-                      (-p0[1] + p2[1]) * t +
-                      (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
-                      (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
-
-            result.append((x, y))
+            t = t1 + (t2 - t1) * (j / num_samples)
+            a1 = _interp(p0, p1, t0, t1, t)
+            a2 = _interp(p1, p2, t1, t2, t)
+            a3 = _interp(p2, p3, t2, t3, t)
+            b1 = _interp(a1, a2, t0, t2, t)
+            b2 = _interp(a2, a3, t1, t3, t)
+            c = _interp(b1, b2, t1, t2, t)
+            result.append(c)
 
     result.append(points[-1])
     return result
 
 
-def generate_bezier_path(control_points: List[Tuple[float, float]], num_samples: int = 50) -> List[Tuple[float, float]]:
+def generate_bezier_path(control_points: List[Tuple[float, float]],
+                         num_samples: int = 50,
+                         spline_type: Optional[str] = None) -> List[Tuple[float, float]]:
     """
     Generate smooth path through control points using Catmull-Rom spline.
     This ensures the path passes through all control points naturally.
@@ -68,18 +82,18 @@ def generate_bezier_path(control_points: List[Tuple[float, float]], num_samples:
         return control_points
 
     if len(control_points) == 2:
-        # Simple straight line
         return [control_points[0], control_points[1]]
 
-    # Use Catmull-Rom for natural smooth curves through all points
-    return catmull_rom_spline(control_points, num_samples)
+    spline_raw = str(spline_type or "uniform").strip().lower()
+    alpha = 0.5 if spline_raw in ("centripetal", "cent", "c") else 0.0
+
+    return catmull_rom_spline(control_points, num_samples, alpha=alpha)
 
 
 def resample_path_uniform(path_points: List[Tuple[float, float]], spacing_px: float) -> List[Tuple[float, float]]:
     """Resample a polyline to uniform arc-length spacing."""
     if not path_points or len(path_points) < 2 or spacing_px <= 0:
         return path_points
-    # Compute cumulative distances
     cum = [0.0]
     for i in range(1, len(path_points)):
         dx = path_points[i][0] - path_points[i - 1][0]
@@ -155,7 +169,6 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
     - velocity_cmd: speed command (0-127) scaled from ips using vmax_straight
     - desired_min_speed/desired_max_speed: clamp in command units (0-127)
     """
-    # Create export directory (user-selectable; default relative to project root)
     export_dir = cfg.get("codegen", {}).get("path_dir", "export/paths")
     export_dir = os.path.expanduser(str(export_dir or "export/paths"))
     if not os.path.isabs(export_dir):
@@ -165,11 +178,11 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
 
     filepath = os.path.join(export_dir, filename)
 
-    # Vex/PROS command range conversion (ips -> 0-127 cmd units)
     max_cmd = float(cfg.get("robot_physics", {}).get("max_cmd", 127.0))
     vmax_ref = max(1e-6, _vmax_straight(cfg))
 
     def _ips_to_cmd(v_ips: float) -> float:
+        """Handle ips to cmd."""
         return max(0.0, min(max_cmd, v_ips / vmax_ref * max_cmd))
 
     min_cmd = None if desired_min_speed is None else max(0.0, min(max_cmd, float(desired_min_speed)))
@@ -178,6 +191,7 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
         min_cmd = min(min_cmd, max_cmd_cap)
 
     def _cap_cmd(v_cmd: float) -> float:
+        """Handle cap cmd."""
         if min_cmd is not None:
             v_cmd = max(min_cmd, v_cmd)
         if max_cmd_cap is not None:
@@ -195,7 +209,6 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
     lines = []
     vel_list: Optional[List[float]] = [float(v) for v in velocities] if velocities else None
     for i, point in enumerate(path_points):
-        # Convert to field inches
         x_in, y_in = field_coords_in(point)
         heading_disp = None
         if "{HEADING" in fmt:
@@ -205,7 +218,6 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
             except Exception:
                 heading_disp = 0.0
 
-        # Per-point velocity (use provided speeds if available), convert to cmd units
         if vel_list and i < len(vel_list):
             v_cmd = _ips_to_cmd(float(vel_list[i]))
         elif len(path_points) > 1:
@@ -215,7 +227,6 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
             v_cmd = _ips_to_cmd(initial_velocity)
         v_cmd = _cap_cmd(v_cmd)
 
-        # Customizable format
         tokens = {
             "X": x_in,
             "Y": y_in,
@@ -228,7 +239,6 @@ def export_lemlib_path(path_points: List[Tuple[float, float]],
         except Exception:
             lines.append(f"{x_in:.3f}, {y_in:.3f}, {v_cmd:.3f}")
 
-    # Write to file
     with open(filepath, "w") as f:
         f.write("\n".join(lines))
 

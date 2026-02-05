@@ -1,22 +1,36 @@
-<img width="597" height="596" alt="Screenshot 2026-01-02 235826" src="https://github.com/user-attachments/assets/4689fc47-8bfb-477c-b592-026b007dc0ad" />
+# Atticus Terminal
 
-# ATTICUS TERMINAL
-An advanced interactive simulation and design tool for autonomous routines. It allows users to place waypoints and paths on a virtual VEX field, and then simulates realistic physics and generates customizable routine code while providing analytical feedback and detailed logging.
+Cross-platform path planning and simulation UI for VEX workflows.
 
-## Quickstart
-1. Download/Extract: grab the latest ZIP (or copy this folder), then open the extracted `ATTICUS TERMINAL` folder.
-2. Build the EXE: double-click `export/build_exe.bat` (it will create a `.venv`, install deps, and run PyInstaller).
-3. Run it: open `dist/AtticusTerminal/AtticusTerminal.exe`.
-4. To Update:
-   - If you cloned with Git: run `git pull`, then double-click `export/build_exe.bat` again.
-   - If you used the ZIP: re-download the ZIP, replace the files in this folder (keep your `config.json` / auton files if you?ve customized them), then run `export/build_exe.bat`.
+## Quick Start (Git Clone)
 
-## One-command build (PowerShell)
-```powershell
-cd "<extracted folder>"
-.\export\build_exe.ps1
-```
-Pass `-Force` to rebuild the virtualenv if you want to refresh dependencies: `.\export\build_exe.ps1 -Force`.
+1. Clone this repository.
+2. Open a terminal in this folder.
+3. Install dependencies:
+   - Windows: `py -m pip install -r requirements.txt`
+   - macOS/Linux: `python3 -m pip install -r requirements.txt`
+4. Run environment checks:
+   - `py doctor.py` (Windows) or `python3 doctor.py` (macOS/Linux)
+5. Launch:
+   - `py main.py` (Windows) or `python3 main.py` (macOS/Linux)
 
+## Notes by Platform
 
-For bug reporting or assistance, contact Austin/Ozzy of 15800A through most public VEX servers.
+- Windows Store Python works, but pip commands should usually use `py -m pip ...`.
+- Linux may require a tkinter package from your distro (for example `python3-tk`).
+- If pygame import fails, run dependency install again using the exact Python executable you launch with.
+
+## Build (PyInstaller)
+
+The included `atticus_terminal.spec` bundles project data (docs, pros templates, configs, assets) so exported builds are portable.
+
+- Build command:
+  - Install build deps: `py -m pip install -r requirements-build.txt` (or `python3 -m pip ...`)
+  - `py -m PyInstaller atticus_terminal.spec` (Windows)
+  - `python3 -m PyInstaller atticus_terminal.spec` (macOS/Linux)
+
+## Configuration Behavior
+
+- The app auto-selects a writable config path.
+- In frozen builds it prefers a per-user config location.
+- You can override config file path with environment variable `ATTICUS_CONFIG`.

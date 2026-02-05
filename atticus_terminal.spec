@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec for Atticus Terminal.
-Bundles config JSONs and icon so a one-click build works.
+Bundles full project data for one-click, cross-machine portability.
 """
-import os, sys, glob
+import os, sys
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
@@ -12,20 +12,29 @@ block_cipher = None
 spec_path = os.path.abspath(sys.argv[0])
 project_root = os.path.abspath(os.path.dirname(spec_path))
 
-# data files to ship alongside the exe (only if they exist)
 _datas = []
+_skip_dirs = {
+    ".git", "__pycache__", "build", "dist", ".venv", "venv",
+    ".mypy_cache", ".pytest_cache",
+}
+_skip_ext = {".py", ".pyc", ".pyo"}
 
-def _maybe_add(path, dest):
-    if os.path.exists(path):
-        _datas.append((path, dest))
+def _add_data_file(path):
+    rel = os.path.relpath(path, project_root).replace("\\", "/")
+    dest = os.path.dirname(rel) or "."
+    _datas.append((path, dest))
 
-_maybe_add(os.path.join(project_root, "ATTICUS.png"), ".")
-_maybe_add(os.path.join(project_root, "config.json"), ".")
-_maybe_add(os.path.join(project_root, "mod", "config.json"), "mod")
-
-# include any demo_autonskills*.json that exist
-for p in glob.glob(os.path.join(project_root, "demo_autonskills*.json")):
-    _maybe_add(p, ".")
+for root, dirs, files in os.walk(project_root):
+    rel_root = os.path.relpath(root, project_root).replace("\\", "/")
+    dirs[:] = [d for d in dirs if d not in _skip_dirs]
+    if rel_root.startswith("dist") or rel_root.startswith("build"):
+        continue
+    for name in files:
+        ext = os.path.splitext(name)[1].lower()
+        if ext in _skip_ext:
+            continue
+        src = os.path.join(root, name)
+        _add_data_file(src)
 
 # collect all modules inside mod/* so PyInstaller doesn't miss anything
 _hidden = collect_submodules("mod")

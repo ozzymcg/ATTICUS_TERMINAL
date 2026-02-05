@@ -1,15 +1,53 @@
-# terminal/main.py
-import os, math, json, copy, re
+import os, math, json, copy, re, random, sys, subprocess
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
-# Ensure SDL picks a usable video driver (helps when run from terminals that default to headless)
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    try:
+        APP_ROOT = os.path.dirname(os.path.abspath(sys.executable))
+    except Exception:
+        APP_ROOT = os.getcwd()
+try:
+    os.chdir(APP_ROOT)
+except Exception:
+    pass
+
 if os.name == "nt" and not os.environ.get("SDL_VIDEODRIVER"):
     os.environ["SDL_VIDEODRIVER"] = "windows"
 
-import pygame
-import tkinter as tk
-from tkinter import simpledialog, ttk, messagebox, filedialog
+try:
+    import tkinter as tk
+    from tkinter import simpledialog, ttk, messagebox, filedialog
+except ModuleNotFoundError:
+    msg = (
+        "Missing dependency: tkinter.\n\n"
+        "Linux users typically need to install your distro tkinter package\n"
+        "(for example: python3-tk), then rerun Atticus Terminal."
+    )
+    print(msg)
+    raise SystemExit(1)
+
+try:
+    import pygame
+except ModuleNotFoundError:
+    py_cmd = "py" if os.name == "nt" else "python3"
+    exe_hint = f"\"{sys.executable}\" -m pip install -r requirements.txt"
+    msg = (
+        "Missing dependency: pygame.\n\n"
+        "Install it with one of:\n"
+        f"  {py_cmd} -m pip install -r requirements.txt\n"
+        f"  {exe_hint}\n\n"
+        "Tip (Windows Store Python): use the `py -m pip ...` form."
+    )
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Atticus Terminal Startup Error", msg)
+        root.destroy()
+    except Exception:
+        print(msg)
+    raise SystemExit(1)
 
 from mod.config import (
     WINDOW_WIDTH, WINDOW_HEIGHT, GRID_SIZE_PX, BG_COLOR, NODE_COLOR, TEXT_COLOR, PPI,
@@ -17,7 +55,7 @@ from mod.config import (
 )
 from mod.geom import (
     convert_heading_input, interpret_input_angle, heading_from_points,
-    coords_str, constrain_to_8dirs, approach_unit
+    coords_str, constrain_to_8dirs, approach_unit, point_in_poly
 )
 from mod.sim import (
     snap_to_grid, compile_timeline,
@@ -29,7 +67,7 @@ from mod.draw import (
     draw_hover_box, draw_time_label, draw_constraint_visual,
     draw_field_objects, draw_geometry_borders, draw_follow_geometry,
     draw_curved_path, swing_arc_points, draw_path_control_points, draw_path_edit_overlay,
-    draw_label
+    draw_label, get_field_object_entries
 )
 from mod.storage import save_nodes, load_nodes, compile_log
 from mod.util import (
@@ -39,9 +77,11 @@ from mod.util import (
 )
 from mod.codegen import build_export_lines, pick_profile, SETTLE_BASE, VOLTAGE_SHAPES
 from mod import ui
+from mod import mcl as mcl_mod
+from mod import mcl_codegen
+from mod import mcl_tuning as mcl_tuning_mod
 
 
-# Try to import path utilities - these are NEW modules
 try:
     from mod.pathing import generate_bezier_path, calculate_path_heading, resample_path_uniform
     from mod.pathing import export_lemlib_path, generate_path_asset_name
@@ -49,18 +89,20 @@ try:
 except ImportError:
     PATH_FEATURES_AVAILABLE = False
     print("Warning: Path utilities not available. Path editing disabled.")
-    # Define dummy functions
-    def generate_bezier_path(points, num_samples=50):
+    def generate_bezier_path(points, num_samples=50, spline_type=None):
+        """Handle generate bezier path."""
         return points
     def calculate_path_heading(points, index):
+        """Handle calculate path heading."""
         return 0.0
     def export_lemlib_path(points, name, cfg):
+        """Handle export lemlib path."""
         pass
     def generate_path_asset_name(routine, idx):
+        """Handle generate path asset name."""
         return f"path_{idx}"
 
-# Type helpers for linting
-generate_bezier_path: Callable[[Any, int], Any]
+generate_bezier_path: Callable[[Any, int, Optional[str]], Any]
 calculate_path_heading: Callable[[Any, Any], float]
 export_lemlib_path: Callable[..., Any]
 generate_path_asset_name: Callable[..., str]
@@ -75,6 +117,7 @@ CONTROLS = [
     ("RightClick", "Node commands: turn X, wait Y,\n offset Z, reshape"),
     ("M", "Add/Edit a mechanism marker on the hovered segment."),
     ("P", "Toggle path edit mode for \n hovered/selected node"),
+    ("U", "Toggle spline type in path edit mode\n(uniform/centripetal)."),
     ("T", "Toggle path look-ahead simulation \n(Pure Pursuit)"),
     ("SPACE / CTRL+SPACE", "Start-Pause / Reset"),
     ("Q", "Toggle Snap-to-Grid"),
@@ -89,7 +132,6 @@ CONTROLS = [
     ("O", "Toggle Output window"),
 ]
 
-# ---------------- pygame init ----------------
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
 pygame.display.set_caption(APP_TITLE)
@@ -103,12 +145,10 @@ clock = pygame.time.Clock()
 font = pygame.font.SysFont(None, 20)
 font_small = pygame.font.SysFont(None, 16)
 
-# Drawing colors
 TEMPLATE_BG = "#f2f4f7"
 
 CFG = reload_cfg()
 
-# ---------------- app state ----------------
 initial_state = {"position": (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2), "heading": 0.0}
 try:
     saved_deg = float(CFG.get("initial_heading_deg", 0.0))
@@ -146,7 +186,6 @@ history_freeze = False
 total_estimate_s = 0.0
 log_lines = []
 
-# Path sim parameters
 path_lookahead_enabled = bool(CFG.get("path_config", {}).get("simulate_pursuit", 1))
 path_lookahead_px = float(CFG.get("path_config", {}).get("lookahead_in", auto_lookahead_in(CFG))) * PPI
 last_lookahead_point = None
@@ -155,7 +194,6 @@ last_heading_target = None
 path_draw_cache = {}  # cache for gradient-drawn path segments
 insert_preview = None  # (segment_idx, (x,y), t) while shift-inserting
 
-# Path editing state
 path_edit_mode = False
 path_edit_segment_idx = None  # Which segment (node index) is being edited
 path_control_points = []  # Current control points being edited
@@ -165,8 +203,282 @@ PATH_CONTROL_RADIUS = 8  # Click detection radius for control points
 EDGE_MARKER_RADIUS = 7
 EDGE_MARKER_HIT_RADIUS = 10
 edge_marker_drag = None  # {"seg_idx": int, "event_idx": int, "prev": snapshot}
+PATH_SPLINE_OPTIONS = ("uniform", "centripetal")
+
+TUTORIAL_FLAG_DEFAULTS = {
+    "added_node": False,
+    "dragged_node": False,
+    "axis_lock_used": False,
+    "shift_insert": False,
+    "right_click_prompt": False,
+    "mech_marker": False,
+    "entered_path_edit": False,
+    "spline_toggled": False,
+    "path_speed_prompt": False,
+    "ran_sim": False,
+    "opened_template_editor": False,
+    "save_load_used": False,
+    "compiled_once": False,
+}
+
+tutorial_state = {
+    "win": None,
+    "flags": dict(TUTORIAL_FLAG_DEFAULTS),
+    "tabs_seen": set(),
+    "active": False,
+}
+
+mcl_state = mcl_mod.MCLState()
+mcl_enabled = bool(CFG.get("mcl", {}).get("enabled", 0))
+
+def _mcl_heading_from_internal(heading_deg: float) -> float:
+    """Convert internal math-frame heading to MCL/UI convention (0=left, clockwise+)."""
+    try:
+        return convert_heading_input(heading_deg, None)
+    except Exception:
+        return float(heading_deg or 0.0)
+
+def _internal_heading_from_mcl(heading_deg: float) -> float:
+    """Convert MCL/UI heading to internal math-frame heading."""
+    try:
+        return interpret_input_angle(heading_deg)
+    except Exception:
+        return float(heading_deg or 0.0)
+
+
+def _mcl_particle_target(cfg):
+    """Handle mcl particle target."""
+    mcl_cfg = cfg.get("mcl", {})
+    parts = mcl_cfg.get("particles", {})
+    try:
+        n = int(parts.get("n", parts.get("n_min", 200)))
+    except Exception:
+        n = 200
+    return max(1, n)
+
+
+def _mcl_build_path_polyline():
+    """Handle mcl build path polyline."""
+    pts = []
+    for i in range(len(display_nodes) - 1):
+        seg_pts = _edge_polyline(i)
+        if not seg_pts:
+            continue
+        if pts and seg_pts[0] == pts[-1]:
+            pts.extend(seg_pts[1:])
+        else:
+            pts.extend(seg_pts)
+    return pts
+
+
+def _mcl_update_region_gate():
+    """Handle mcl update region gate."""
+    region = CFG.get("mcl", {}).get("region", {})
+    if int(region.get("enabled", 0)) != 1:
+        mcl_state.region_gate = None
+        return
+    region_type = str(region.get("type", "segment_path")).strip().lower()
+    if region_type in ("segment_path", "segment_band", "segment", "band", "path"):
+        radius_in = float(region.get("radius_in", 12.0))
+        pts = _mcl_build_path_polyline()
+        if pts and radius_in > 0.0:
+            gate = {"points": pts, "radius_px": radius_in * PPI}
+            if int(region.get("slope_enabled", 0)) == 1:
+                gate["slope_field"] = [{"points": pts}]
+            mcl_state.region_gate = gate
+        else:
+            mcl_state.region_gate = None
+    else:
+        mcl_state.region_gate = None
+
+
+def _mcl_apply_cfg(reset_particles=False):
+    """Handle mcl apply cfg."""
+    global mcl_enabled
+    mcl_cfg = CFG.get("mcl", {})
+    mcl_enabled = int(mcl_cfg.get("enabled", 0)) == 1
+    if not mcl_enabled:
+        mcl_state.particles = []
+        mcl_state.estimate = None
+        mcl_state.ekf_pose = None
+        mcl_state.ekf_P = None
+        return
+    if reset_particles or not mcl_state.particles:
+        mcl_state.particles = []
+        mcl_heading = _mcl_heading_from_internal(robot_heading)
+        mcl_mod.reset_state_to_pose(mcl_state, CFG, (robot_pos[0], robot_pos[1], mcl_heading))
+    mcl_mod.update_map_segments(mcl_state, CFG)
+    _mcl_update_region_gate()
+    mcl_state.last_true_pose = (robot_pos[0], robot_pos[1], _mcl_heading_from_internal(robot_heading))
+    mcl_state.motion_accum = 0.0
+    mcl_state.sensor_accum = 0.0
+    if mcl_state.ekf_pose is None:
+        mcl_heading = _mcl_heading_from_internal(robot_heading)
+        mcl_mod.ekf_reset_state(mcl_state, CFG, (robot_pos[0], robot_pos[1], mcl_heading))
+
+
+def _draw_heading_marker(surface, pos, heading_deg, color, size=10, width=2):
+    """Draw heading marker."""
+    heading_internal = _internal_heading_from_mcl(heading_deg)
+    rad = math.radians(heading_internal)
+    tip = (pos[0] + math.cos(rad) * size, pos[1] - math.sin(rad) * size)
+    left = (pos[0] + math.cos(rad + 2.5) * size * 0.7, pos[1] - math.sin(rad + 2.5) * size * 0.7)
+    right = (pos[0] + math.cos(rad - 2.5) * size * 0.7, pos[1] - math.sin(rad - 2.5) * size * 0.7)
+    pygame.draw.polygon(surface, color, [tip, left, right], width)
+
+
+def _draw_covariance_ellipse(surface, mean, cov, color=(200, 80, 200), n_sigma=2.0):
+    """Draw covariance ellipse."""
+    var_x, var_y, cov_xy = cov
+    if var_x <= 0.0 or var_y <= 0.0:
+        return
+    trace = var_x + var_y
+    det = var_x * var_y - cov_xy * cov_xy
+    if det <= 0.0:
+        return
+    root = max(0.0, (trace * trace) / 4.0 - det)
+    eig1 = trace / 2.0 + math.sqrt(root)
+    eig2 = trace / 2.0 - math.sqrt(root)
+    if eig1 <= 0.0 or eig2 <= 0.0:
+        return
+    a = math.sqrt(eig1) * n_sigma
+    b = math.sqrt(eig2) * n_sigma
+    angle = 0.5 * math.atan2(2.0 * cov_xy, var_x - var_y)
+    pts = []
+    steps = 40
+    ca = math.cos(angle)
+    sa = math.sin(angle)
+    for i in range(steps):
+        t = (i / float(steps)) * 2.0 * math.pi
+        x = a * math.cos(t)
+        y = b * math.sin(t)
+        xr = x * ca - y * sa
+        yr = x * sa + y * ca
+        pts.append((mean[0] + xr, mean[1] + yr))
+    if len(pts) >= 3:
+        pygame.draw.lines(surface, color, True, pts, 2)
+
+
+def _draw_mcl_overlay(surface):
+    """Draw mcl overlay."""
+    if not mcl_enabled:
+        return
+    mcl_cfg = CFG.get("mcl", {})
+    ui_cfg = mcl_cfg.get("ui", {})
+    region_cfg = mcl_cfg.get("region", {})
+    show_particles = int(ui_cfg.get("show_particles", 1)) == 1
+    show_estimate = int(ui_cfg.get("show_estimate", 1)) == 1
+    show_cov = int(ui_cfg.get("show_covariance", 1)) == 1
+    show_rays = int(ui_cfg.get("show_rays", 1)) == 1
+    show_region = int(ui_cfg.get("show_region", 1)) == 1
+    show_gating = int(ui_cfg.get("show_gating", 1)) == 1
+
+    if show_region and int(region_cfg.get("enabled", 0)) == 1:
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        region_type = str(region_cfg.get("type", "segment_path")).strip().lower()
+        if region_type in ("segment_path", "segment_band", "segment", "band", "path"):
+            gate = mcl_state.region_gate or {}
+            pts = gate.get("points", [])
+            radius_px = float(gate.get("radius_px", 0.0))
+            if pts:
+                pygame.draw.lines(overlay, (40, 200, 90, 120), False, pts, 2)
+                if radius_px > 0.0:
+                    step = max(1, int(len(pts) / 50))
+                    for p in pts[::step]:
+                        pygame.draw.circle(overlay, (40, 200, 90, 40), (int(p[0]), int(p[1])), int(radius_px), 1)
+        elif region_type == "grid":
+            grid_type = str(region_cfg.get("grid_type", "quadrant")).strip().lower()
+            if grid_type == "quadrant":
+                gx, gy = 2, 2
+            else:
+                gx = max(1, int(region_cfg.get("grid_x", 2)))
+                gy = max(1, int(region_cfg.get("grid_y", 2)))
+            x_min = float(region_cfg.get("x_min_in", 0.0)) * PPI
+            y_min = float(region_cfg.get("y_min_in", 0.0)) * PPI
+            x_max = float(region_cfg.get("x_max_in", WINDOW_WIDTH / PPI)) * PPI
+            y_max = float(region_cfg.get("y_max_in", WINDOW_HEIGHT / PPI)) * PPI
+            if x_max <= x_min:
+                x_max = x_min + WINDOW_WIDTH
+            if y_max <= y_min:
+                y_max = y_min + WINDOW_HEIGHT
+            cell_w = (x_max - x_min) / max(1, gx)
+            cell_h = (y_max - y_min) / max(1, gy)
+            for i in range(gx + 1):
+                x = x_min + i * cell_w
+                pygame.draw.line(overlay, (40, 200, 90, 80), (x, y_min), (x, y_max), 1)
+            for j in range(gy + 1):
+                y = y_min + j * cell_h
+                pygame.draw.line(overlay, (40, 200, 90, 80), (x_min, y), (x_max, y), 1)
+            cur = region_cfg.get("current_region", None)
+            if cur is not None:
+                allowed = set(cur) if isinstance(cur, (list, tuple, set)) else {cur}
+                for j in range(gy):
+                    for i in range(gx):
+                        rid = j * gx + i
+                        if rid not in allowed:
+                            continue
+                        rx0 = x_min + i * cell_w
+                        ry0 = y_min + j * cell_h
+                        pygame.draw.rect(overlay, (40, 200, 90, 40),
+                                         (rx0, ry0, cell_w, cell_h))
+        elif region_type in ("manual", "bounds", "rect", "rectangle"):
+            x_min = float(region_cfg.get("x_min_in", 0.0)) * PPI
+            y_min = float(region_cfg.get("y_min_in", 0.0)) * PPI
+            x_max = float(region_cfg.get("x_max_in", WINDOW_WIDTH / PPI)) * PPI
+            y_max = float(region_cfg.get("y_max_in", WINDOW_HEIGHT / PPI)) * PPI
+            if x_max <= x_min:
+                x_max = x_min + WINDOW_WIDTH
+            if y_max <= y_min:
+                y_max = y_min + WINDOW_HEIGHT
+            rect = (x_min, y_min, x_max - x_min, y_max - y_min)
+            pygame.draw.rect(overlay, (40, 200, 90, 40), rect)
+            pygame.draw.rect(overlay, (40, 200, 90, 120), rect, 2)
+        surface.blit(overlay, (0, 0))
+
+    if show_particles and mcl_state.particles:
+        max_draw = max(1, int(ui_cfg.get("max_particles_draw", 500)))
+        step = max(1, int(len(mcl_state.particles) / max_draw))
+        for p in mcl_state.particles[::step]:
+            try:
+                pygame.draw.circle(surface, (80, 160, 255), (int(p["x"]), int(p["y"])), 2)
+            except Exception:
+                continue
+
+    if show_cov and mcl_state.estimate is not None:
+        _draw_covariance_ellipse(surface, mcl_state.estimate, mcl_state.cov_xy, color=(200, 80, 200), n_sigma=2.0)
+
+    if show_estimate and mcl_state.estimate is not None:
+        _draw_heading_marker(surface, mcl_state.estimate, mcl_state.estimate[2], (255, 220, 60), size=12, width=2)
+
+    if show_rays and mcl_state.last_rays:
+        for ray in mcl_state.last_rays:
+            if not isinstance(ray, dict):
+                continue
+            gated = bool(ray.get("gated", False))
+            meas_color = (200, 40, 40) if (gated and show_gating) else (80, 200, 80)
+            pred_color = (80, 160, 255)
+            origin = ray.get("origin")
+            meas_end = ray.get("meas_end")
+            pred_origin = ray.get("pred_origin")
+            pred_end = ray.get("pred_end")
+            if origin is not None and meas_end is not None:
+                pygame.draw.line(surface, meas_color, origin, meas_end, 2)
+                pygame.draw.circle(surface, meas_color, (int(meas_end[0]), int(meas_end[1])), 4, 1)
+            if pred_origin is not None and pred_end is not None:
+                pygame.draw.line(surface, pred_color, pred_origin, pred_end, 1)
+                pygame.draw.circle(surface, pred_color, (int(pred_end[0]), int(pred_end[1])), 3, 1)
+
+    vis_meas = mcl_state.last_measurements.get("vision") if isinstance(mcl_state.last_measurements, dict) else None
+    if show_rays and isinstance(vis_meas, dict):
+        try:
+            vx = float(vis_meas.get("x_in", 0.0)) * PPI
+            vy = float(vis_meas.get("y_in", 0.0)) * PPI
+            pygame.draw.circle(surface, (120, 200, 255), (int(vx), int(vy)), 5, 2)
+        except Exception:
+            pass
 
 def _edge_events_sig(node):
+    """Handle edge events sig."""
     events = node.get("edge_events", [])
     if not isinstance(events, list):
         return ()
@@ -201,6 +513,17 @@ def _edge_events_sig(node):
         sig.append((t_val, enabled, tuple(act_sig)))
     return tuple(sig)
 
+def _normalize_spline_type(raw):
+    """Handle normalize spline type."""
+    raw = str(raw or "uniform").strip().lower()
+    return "centripetal" if raw in ("centripetal", "cent", "c") else "uniform"
+
+def _path_spline_type(path_data):
+    """Handle path spline type."""
+    if not isinstance(path_data, dict):
+        return "uniform"
+    return _normalize_spline_type(path_data.get("spline_type"))
+
 def path_sig_for_node(node):
     """Small signature tuple capturing path state for change detection."""
     pd = node.get("path_to_next")
@@ -211,7 +534,7 @@ def path_sig_for_node(node):
             chain_val = None if chain_val is None else round(float(chain_val), 4)
         except Exception:
             chain_val = None
-        return (False, (), _edge_events_sig(node), chain_flag, chain_val)
+        return (False, (), _edge_events_sig(node), chain_flag, chain_val, None)
     cps = pd.get("control_points") or []
     cps_sig = tuple((int(round(cp[0])), int(round(cp[1]))) for cp in cps)
     chain_flag = bool(node.get("chain_through", False) or node.get("chain", False))
@@ -220,15 +543,18 @@ def path_sig_for_node(node):
         chain_val = None if chain_val is None else round(float(chain_val), 4)
     except Exception:
         chain_val = None
+    spline_type = _path_spline_type(pd)
     return (
         bool(pd.get("use_path", False)),
         cps_sig,
         _edge_events_sig(node),
         chain_flag,
-        chain_val
+        chain_val,
+        spline_type
     )
 
 def _path_speed_override_cmd(path_data, key):
+    """Handle path speed override cmd."""
     if not path_data:
         return None
     val = path_data.get(key)
@@ -237,6 +563,7 @@ def _path_speed_override_cmd(path_data, key):
     return val
 
 def _path_speed_cmd(path_data, cfg, key, default):
+    """Handle path speed cmd."""
     val = _path_speed_override_cmd(path_data, key)
     if val is None:
         pcfg = cfg.get("path_config", {})
@@ -246,18 +573,21 @@ def _path_speed_cmd(path_data, cfg, key, default):
     return default if val is None else val
 
 def _node_lateral_cmd(node):
+    """Handle node lateral cmd."""
     val = node.get("custom_lateral_cmd")
     if val is None:
         val = node.get("custom_lateral_ips")
     return val
 
 def _clamp_cmd(val, default=0.0):
+    """Handle clamp cmd."""
     try:
         return max(0.0, min(127.0, float(val)))
     except Exception:
         return float(default)
 
 def _normalize_cmd_range(min_val, max_val):
+    """Handle normalize cmd range."""
     min_cmd = _clamp_cmd(min_val)
     max_cmd = _clamp_cmd(max_val, default=127.0)
     if min_cmd > max_cmd:
@@ -265,6 +595,7 @@ def _normalize_cmd_range(min_val, max_val):
     return min_cmd, max_cmd
 
 def _apply_profile_override_for_speed_overrides(node):
+    """Handle apply profile override for speed overrides."""
     lat_cmd = _node_lateral_cmd(node)
     turn_dps = node.get("custom_turn_dps")
     has_lat = False
@@ -283,6 +614,7 @@ def _apply_profile_override_for_speed_overrides(node):
         node.pop("profile_override", None)
 
 def normalize_speed_units(nodes):
+    """Handle normalize speed units."""
     for node in nodes:
         if node.get("custom_lateral_cmd") is None and node.get("custom_lateral_ips") is not None:
             node["custom_lateral_cmd"] = node.pop("custom_lateral_ips")
@@ -324,18 +656,17 @@ def build_shaded_segments(node_idx):
     cps = list(pd.get("control_points", []))
     if len(cps) < 2:
         return None
-    # Anchor endpoints
     cps[0] = effective_node_pos(node_idx)
     cps[-1] = effective_node_pos(node_idx + 1)
     if not PATH_FEATURES_AVAILABLE:
         return [("plain", cps)]
     try:
-        smooth_path = generate_bezier_path(cps, num_samples=50)
+        spline_type = _path_spline_type(pd)
+        smooth_path = generate_bezier_path(cps, num_samples=50, spline_type=spline_type)
         if len(smooth_path) < 2:
             return None
         min_override = _path_speed_override_cmd(pd, "min_speed_cmd")
         max_override = _path_speed_override_cmd(pd, "max_speed_cmd")
-        # Shading driven by speeds/curvature
         _, _, sampled, curvs, speeds, _ = path_time_with_curvature(
             smooth_path, CFG,
             min_speed_override=min_override,
@@ -372,7 +703,6 @@ def _tangent_into_node(idx):
         cps = prev_seg["control_points"]
         if len(cps) >= 2:
             return (cps[-1][0] - cps[-2][0], cps[-1][1] - cps[-2][1])
-    # fallback straight line
     p_prev = effective_node_pos(idx - 1)
     p_here = effective_node_pos(idx)
     return (p_here[0] - p_prev[0], p_here[1] - p_prev[1])
@@ -386,7 +716,6 @@ def _tangent_out_of_node(idx):
         cps = next_seg["control_points"]
         if len(cps) >= 2:
             return (cps[1][0] - cps[0][0], cps[1][1] - cps[0][1])
-    # fallback straight line
     p_here = effective_node_pos(idx)
     p_next = effective_node_pos(idx + 1)
     return (p_next[0] - p_here[0], p_next[1] - p_here[1])
@@ -419,11 +748,9 @@ def sync_all_path_endpoints():
     """Anchor all path endpoints to their owning nodes."""
     for i in range(max(0, len(display_nodes) - 1)):
         sync_path_endpoints_for_node(i)
-        # If the segment is no longer a path, clear ghost angle on the endpoint so offset snaps inline
         pd = display_nodes[i].get("path_to_next", {})
         if not pd.get("use_path", False) and (i + 1) < len(display_nodes):
             display_nodes[i + 1].pop("offset_ghost_angle", None)
-    # Path geometry changed; invalidate cached gradients
     path_draw_cache.clear()
 
 def annotate_motion_profiles(timeline_list):
@@ -523,6 +850,7 @@ def delete_node_at(idx):
     total_estimate_s = compute_total_estimate_s()
 
 def _arrival_heading_for_offset(prev_pd, prev_anchor, target_pos):
+    """Handle arrival heading for offset."""
     prev_swing = prev_pd.get("swing_vis") if isinstance(prev_pd, dict) else None
     if prev_swing and prev_swing.get("end_pos") is not None:
         return heading_from_points(prev_swing.get("end_pos"), target_pos)
@@ -538,7 +866,8 @@ def _arrival_heading_for_offset(prev_pd, prev_anchor, target_pos):
             if len(cps) >= 2:
                 cps[0] = prev_anchor
                 cps[-1] = target_pos
-                pts = generate_bezier_path(cps, num_samples=20)
+                spline_type = _path_spline_type(prev_pd)
+                pts = generate_bezier_path(cps, num_samples=20, spline_type=spline_type)
         if pts:
             try:
                 return calculate_path_heading(pts, len(pts) - 1)
@@ -549,7 +878,6 @@ def _arrival_heading_for_offset(prev_pd, prev_anchor, target_pos):
         except Exception:
             return None
     return None
-
 
 def effective_node_pos(idx):
     """Return node position adjusted for offsets (same logic as motion)."""
@@ -563,25 +891,45 @@ def effective_node_pos(idx):
     prev_pd = display_nodes[idx - 1].get("path_to_next", {}) if idx - 1 >= 0 else {}
     prev_swing = prev_pd.get("swing_vis")
     use_radial = prev_pd.get("use_path", False) or bool(prev_swing) or bool(prev_pd.get("pose_preview_points"))
-    if off_in != 0.0 and ghost_ang is None and prev_node.get("move_to_pose"):
+    force_pose_ghost = False
+    if off_in != 0.0 and prev_node.get("move_to_pose"):
         pose_h = prev_node.get("pose_heading_deg")
         if pose_h is None:
             pose_h = heading_from_points(prev, node["pos"])
-        if prev_node.get("reverse", False):
-            pose_h = (pose_h + 180.0) % 360.0
-        ghost_ang = (pose_h + 180.0) % 360.0
+        try:
+            pose_h = float(pose_h)
+        except Exception:
+            pose_h = heading_from_points(prev, node["pos"])
+        ghost_ang = pose_h % 360.0
         node["offset_ghost_angle"] = ghost_ang
-    if use_radial and off_in != 0.0:
+        force_pose_ghost = True
+    if off_in == 0.0:
+        return node["pos"]
+    if force_pose_ghost:
+        if ghost_ang is None:
+            ghost_ang = heading_from_points(prev, node["pos"])
+            node["offset_ghost_angle"] = ghost_ang
+        if ghost_ang is not None:
+            rad = math.radians(ghost_ang)
+            return (
+                node["pos"][0] - math.cos(rad) * off_in * PPI,
+                node["pos"][1] + math.sin(rad) * off_in * PPI
+            )
+    if use_radial:
         try:
             prev_eff = display_nodes[idx - 1]["pos"] if idx - 1 >= 0 else prev
         except Exception:
             prev_eff = prev
-        arrival_heading = _arrival_heading_for_offset(prev_pd, prev_eff, node["pos"])
-        if arrival_heading is not None:
-            ghost_ang = arrival_heading
+        if not force_pose_ghost:
+            arrival_heading = _arrival_heading_for_offset(prev_pd, prev_eff, node["pos"])
+            if arrival_heading is not None:
+                ghost_ang = arrival_heading
+            elif ghost_ang is None:
+                ghost_ang = heading_from_points(prev_eff, node["pos"])
+            node["offset_ghost_angle"] = ghost_ang
         elif ghost_ang is None:
             ghost_ang = heading_from_points(prev_eff, node["pos"])
-        node["offset_ghost_angle"] = ghost_ang
+            node["offset_ghost_angle"] = ghost_ang
         if ghost_ang is not None:
             rad = math.radians(ghost_ang)
             return (
@@ -589,14 +937,10 @@ def effective_node_pos(idx):
                 node["pos"][1] + math.sin(rad) * off_in * PPI
             )
     else:
-        # Straight segments ignore radial; clear ghost if present
         node.pop("offset_ghost_angle", None)
-    if off_in == 0.0:
-        return node["pos"]
     ux, uy = approach_unit(prev, node["pos"])
     return (node["pos"][0] - ux * off_in * PPI, node["pos"][1] - uy * off_in * PPI)
 
-# ---------------- compile helpers ----------------
 def compute_total_estimate_s():
     """Compute total routine time estimate."""
     tl = build_timeline_with_buffers()
@@ -608,7 +952,6 @@ def clamp_heading_rate(current_h, target_h, cfg, dt):
     max_rate = turn_rate(cfg)  # deg/s from physics
     max_step = max_rate * dt
     d = ((target_h - current_h + 180.0) % 360.0) - 180.0
-    # Snap tiny errors to eliminate jitter on very small turns (animation only)
     if abs(d) < max(0.5, max_step):
         return (target_h + 360.0) % 360.0
     if abs(d) <= max_step:
@@ -633,7 +976,6 @@ def _segment_insert_preview(pos):
     best = None
     for i in range(len(display_nodes) - 1):
         pd = display_nodes[i].get("path_to_next", {}) or {}
-        # Skip movetopose segments (pose preview points)
         if pd.get("pose_preview_points") and not pd.get("use_path", False):
             continue
         pts = _edge_polyline(i)
@@ -646,6 +988,7 @@ def _segment_insert_preview(pos):
     return best
 
 def _split_edge_events(events, t_split):
+    """Handle split edge events."""
     if not isinstance(events, list):
         return None, None
     t_split = max(0.0, min(1.0, float(t_split)))
@@ -673,6 +1016,7 @@ def _split_edge_events(events, t_split):
     return left, right
 
 def _split_path_control_points(cps, insert_pt):
+    """Handle split path control points."""
     if not cps or len(cps) < 2:
         return [insert_pt], [insert_pt]
     best_i = 0
@@ -697,6 +1041,7 @@ def _split_path_control_points(cps, insert_pt):
     return left, right
 
 def _edge_polyline(seg_idx):
+    """Handle edge polyline."""
     if seg_idx < 0 or seg_idx >= len(display_nodes) - 1:
         return []
     node = display_nodes[seg_idx]
@@ -709,7 +1054,8 @@ def _edge_polyline(seg_idx):
         if len(cps) >= 2:
             cps[0] = start
             cps[-1] = end
-        pts = generate_bezier_path(cps, num_samples=60)
+        spline_type = _path_spline_type(pd)
+        pts = generate_bezier_path(cps, num_samples=60, spline_type=spline_type)
     elif pd.get("pose_preview_points"):
         pts = list(pd.get("pose_preview_points") or [])
         if pts:
@@ -730,6 +1076,7 @@ def _edge_polyline(seg_idx):
     return pts
 
 def _polyline_lengths(pts):
+    """Handle polyline lengths."""
     seg_lens = []
     total = 0.0
     for i in range(len(pts) - 1):
@@ -741,6 +1088,7 @@ def _polyline_lengths(pts):
     return seg_lens, total
 
 def _polyline_point_at(pts, t):
+    """Handle polyline point at."""
     if not pts:
         return (0.0, 0.0)
     t = max(0.0, min(1.0, float(t)))
@@ -761,6 +1109,7 @@ def _polyline_point_at(pts, t):
     return pts[-1]
 
 def _polyline_nearest(pos, pts):
+    """Handle polyline nearest."""
     if len(pts) < 2:
         return 0.0, (pts[0] if pts else (0.0, 0.0)), float("inf")
     best_d2 = float("inf")
@@ -790,6 +1139,7 @@ def _polyline_nearest(pos, pts):
     return t, best_pt, best_d2
 
 def _polyline_tangent(pts, t):
+    """Handle polyline tangent."""
     if len(pts) < 2:
         return (1.0, 0.0)
     t = max(0.0, min(1.0, float(t)))
@@ -811,6 +1161,7 @@ def _polyline_tangent(pts, t):
     return (1.0, 0.0)
 
 def _edge_marker_hit(pos):
+    """Handle edge marker hit."""
     best = None
     hit_r2 = EDGE_MARKER_HIT_RADIUS * EDGE_MARKER_HIT_RADIUS
     for i in range(len(display_nodes) - 1):
@@ -831,6 +1182,7 @@ def _edge_marker_hit(pos):
     return best
 
 def _edge_marker_preview(pos):
+    """Handle edge marker preview."""
     best = None
     thresh = EDGE_MARKER_HIT_RADIUS * 1.8
     best_d2 = thresh * thresh
@@ -945,11 +1297,10 @@ def enter_path_edit_mode(segment_idx):
     dragging = False
     constrain_active = False
     constrain_origin = None
+    tutorial_state["flags"]["entered_path_edit"] = True
 
     node = display_nodes[segment_idx]
 
-    # Initialize or load path data. If this segment is currently straight
-    # (no usable control points), create a default three-point path.
     path_data = node.get("path_to_next") or {}
     cps = None
     if (
@@ -958,27 +1309,39 @@ def enter_path_edit_mode(segment_idx):
         or not path_data.get("control_points")
         or len(path_data.get("control_points", ())) < 2
     ):
-        # Create default path with one mid control point
         p0 = effective_node_pos(segment_idx)
         p1 = effective_node_pos(segment_idx + 1)
         mid_x = (p0[0] + p1[0]) // 2
         mid_y = (p0[1] + p1[1]) // 2
 
         cps = [p0, (mid_x, mid_y), p1]
+        default_spline = _path_spline_type(path_data)
         node["path_to_next"] = {
             "use_path": True,
-            "control_points": cps
+            "control_points": cps,
+            "spline_type": default_spline
         }
-        # Seed offset ghost for endpoint if offset is active
         end_node = display_nodes[segment_idx + 1]
         if end_node.get("offset", 0) != 0 or end_node.get("offset_custom_in") is not None:
             if end_node.get("offset_ghost_angle") is None:
-                arrival_heading = _arrival_heading_for_offset(path_data, p0, p1)
-                if arrival_heading is None:
-                    arrival_heading = heading_from_points(p0, p1)
-                end_node["offset_ghost_angle"] = arrival_heading
+                if node.get("move_to_pose"):
+                    pose_h = node.get("pose_heading_deg")
+                    if pose_h is None:
+                        pose_h = heading_from_points(p0, p1)
+                    try:
+                        pose_h = float(pose_h)
+                    except Exception:
+                        pose_h = heading_from_points(p0, p1)
+                    pose_h = pose_h % 360.0
+                    end_node["offset_ghost_angle"] = pose_h
+                else:
+                    arrival_heading = _arrival_heading_for_offset(path_data, p0, p1)
+                    if arrival_heading is None:
+                        arrival_heading = heading_from_points(p0, p1)
+                    end_node["offset_ghost_angle"] = arrival_heading
     else:
         cps = list(path_data["control_points"])
+        path_data.setdefault("spline_type", _path_spline_type(path_data))
     
     path_control_points = list(cps)
     selected_control_point = None
@@ -991,11 +1354,8 @@ def exit_path_edit_mode():
 
     if path_edit_mode and path_edit_segment_idx is not None:
         node = display_nodes[path_edit_segment_idx]
-        # If there are at least one internal control point (endpoints + handles),
-        # keep this segment curved. Otherwise, treat it as straight.
         if path_control_points and len(path_control_points) > 2:
             cp = list(path_control_points)
-            # Ensure endpoints follow the current node positions
             cp[0] = effective_node_pos(path_edit_segment_idx)
             cp[-1] = effective_node_pos(path_edit_segment_idx + 1)
             node.setdefault("path_to_next", {})
@@ -1004,7 +1364,6 @@ def exit_path_edit_mode():
         else:
             path_to_next = node.get("path_to_next")
             if path_to_next is not None:
-                # No internal handles: fall back to a straight segment
                 path_to_next["control_points"] = []
                 path_to_next["use_path"] = False
                 path_to_next.pop("min_speed_cmd", None)
@@ -1025,7 +1384,6 @@ def exit_path_edit_mode():
     constrain_active = False
     constrain_origin = None
 
-    # Trigger recompilation
     last_path_sig = None
     last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
     total_estimate_s = compute_total_estimate_s()
@@ -1038,10 +1396,8 @@ def toggle_segment_curved(segment_idx):
     node = display_nodes[segment_idx]
     
     if "path_to_next" in node and node["path_to_next"].get("use_path"):
-        # Disable curved path
         node["path_to_next"]["use_path"] = False
     else:
-        # Enable curved path - enter edit mode to set it up
         enter_path_edit_mode(segment_idx)
 
 def add_control_point_at_mouse(mouse_pos):
@@ -1051,7 +1407,6 @@ def add_control_point_at_mouse(mouse_pos):
     if not path_edit_mode or not path_control_points:
         return
     
-    # Find where to insert (closest segment)
     min_dist = float('inf')
     insert_idx = 1
     
@@ -1059,7 +1414,6 @@ def add_control_point_at_mouse(mouse_pos):
         p1 = path_control_points[i]
         p2 = path_control_points[i + 1]
         
-        # Distance from mouse to line segment
         dx = p2[0] - p1[0]
         dy = p2[1] - p1[1]
         length_sq = dx*dx + dy*dy
@@ -1085,14 +1439,82 @@ def remove_control_point(point_idx):
     if not path_edit_mode or not path_control_points:
         return
 
-    # Cannot remove first or last point (segment endpoints)
     if point_idx <= 0 or point_idx >= len(path_control_points) - 1:
         return
 
     path_control_points.pop(point_idx)
     selected_control_point = None
 
-# ---------------- node command parsing ----------------
+def toggle_path_spline_type(segment_idx=None):
+    """Toggle spline type between uniform and centripetal for a segment."""
+    global last_path_sig, last_snapshot, total_estimate_s
+    if segment_idx is None:
+        segment_idx = path_edit_segment_idx
+    if segment_idx is None or segment_idx >= len(display_nodes) - 1:
+        return
+    node = display_nodes[segment_idx]
+    pd = node.setdefault("path_to_next", {})
+    cur_type = _path_spline_type(pd)
+    new_type = "centripetal" if cur_type == "uniform" else "uniform"
+    pd["spline_type"] = new_type
+    tutorial_state["flags"]["spline_toggled"] = True
+    path_draw_cache.clear()
+    last_path_sig = None
+    last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
+    total_estimate_s = compute_total_estimate_s()
+
+def _split_command_parts(text):
+    """Split command text on comma/semicolon, ignoring delimiters inside (), [], {}, and quotes."""
+    if not text:
+        return []
+    out = []
+    buf = []
+    d_paren = d_brack = d_brace = 0
+    in_single = False
+    in_double = False
+    esc = False
+    for ch in str(text):
+        if esc:
+            buf.append(ch)
+            esc = False
+            continue
+        if ch == "\\" and (in_single or in_double):
+            buf.append(ch)
+            esc = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            buf.append(ch)
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            buf.append(ch)
+            continue
+        if not in_single and not in_double:
+            if ch == "(":
+                d_paren += 1
+            elif ch == ")":
+                d_paren = max(0, d_paren - 1)
+            elif ch == "[":
+                d_brack += 1
+            elif ch == "]":
+                d_brack = max(0, d_brack - 1)
+            elif ch == "{":
+                d_brace += 1
+            elif ch == "}":
+                d_brace = max(0, d_brace - 1)
+            elif ch in ",;" and d_paren == 0 and d_brack == 0 and d_brace == 0:
+                part = "".join(buf).strip()
+                if part:
+                    out.append(part)
+                buf = []
+                continue
+        buf.append(ch)
+    part = "".join(buf).strip()
+    if part:
+        out.append(part)
+    return out
+
 def compile_cmd_string(node, idx):
     """Generate command string from node actions."""
     parts = []
@@ -1135,6 +1557,10 @@ def compile_cmd_string(node, idx):
                 if value:
                     text = f"{text} {value}"
                 parts.append(text)
+        elif act.get("type") == "code":
+            code = str(act.get("code", "")).strip()
+            if code:
+                parts.append(f"code {code}")
         elif act.get("type") == "reverse":
             state = act.get("state", None)
             if state is True:
@@ -1164,41 +1590,61 @@ def compile_cmd_string(node, idx):
         parts.append(f"turnspeed {node['custom_turn_dps']:g}")
     return ", ".join(parts)
 
+
+
 def parse_and_apply_cmds(node, cmd_str, idx):
     """Parse and apply commands to node."""
     acts = []
     node.pop("swing_target_heading_deg", None)
-    node.pop("reverse_after_swing", None)
     orig_reverse = bool(node.get("reverse", False))
     node["reverse"] = orig_reverse
-    seen_swingto = False
     has_reverse_action = False
     presets = _mech_presets()
-    preset_names = [p["name"] for p in presets if str(p.get("name", "")).strip().lower() != "reshape"]
-    preset_names.sort(key=lambda s: len(s), reverse=True)
+    preset_names = [p["name"] for p in presets if str(p.get("name", "")).strip()]
+    preset_names.sort(key=lambda name: len(name), reverse=True)
+    preset_map = {str(name).strip().lower(): name for name in preset_names}
+
     reshape_alias = str(CFG.get("reshape_label", "Reshape")).strip().lower()
     if reshape_alias in ("reshape", "rs", "geom"):
         reshape_alias = ""
+
+    def _num_token(tok):
+        """Handle num token."""
+        t = str(tok or "").strip().lower()
+        t = t.replace("deg/s", "").replace("dps", "")
+        t = t.replace("deg", "").replace("\u00b0", "")
+        t = t.replace("sec", "").replace("s", "")
+        t = re.sub(r"[^0-9eE+\-\.]", "", t)
+        return t
+
     if cmd_str:
-        for part in [p.strip() for p in cmd_str.replace(";", ",").split(",") if p.strip()]:
+        for part in _split_command_parts(cmd_str):
             low = part.lower()
+            tokens_raw = part.split()
+            cmd = tokens_raw[0].lower() if tokens_raw else ""
             try:
-                if low.startswith(("wait", "w", "sleep", "pause")):
-                    x = float(low.split()[1].replace("sec", "").replace("s", ""))
-                    if x > 0:
+                if cmd in ("wait", "w", "sleep", "pause"):
+                    if len(tokens_raw) >= 2:
+                        x = float(_num_token(tokens_raw[1]))
+                    else:
+                        x = 0.0
+                    if x > 0.0:
                         acts.append({"type": "wait", "s": x})
-                elif low.startswith(("turn", "t", "rotate")):
-                    raw = float(low.split()[1].replace("deg", "").replace("Aų", ""))
-                    x_internal = interpret_input_angle(raw)
-                    acts.append({"type": "turn", "deg": x_internal})
-                elif low.startswith("swingto"):
-                    raw = float(low.split()[1].replace("deg", "").replace("Aų", ""))
-                    node["turn_mode"] = "swing"
-                    node["swing_dir"] = "auto"
-                    node["swing_target_heading_deg"] = interpret_input_angle(raw)
-                    seen_swingto = True
-                elif low.startswith("settleswing") or low.startswith("swing"):
-                    settle_flag = low.startswith("settleswing")
+
+                elif cmd in ("turn", "t", "rotate"):
+                    if len(tokens_raw) >= 2:
+                        raw = float(_num_token(tokens_raw[1]))
+                        acts.append({"type": "turn", "deg": interpret_input_angle(raw)})
+
+                elif cmd == "swingto":
+                    if len(tokens_raw) >= 2:
+                        raw = float(_num_token(tokens_raw[1]))
+                        node["turn_mode"] = "swing"
+                        node["swing_dir"] = "auto"
+                        node["swing_target_heading_deg"] = interpret_input_angle(raw)
+
+                elif cmd in ("settleswing", "swing"):
+                    settle_flag = (cmd == "settleswing")
                     tokens = low.split()
                     dir_tok = None
                     val_tok = None
@@ -1211,68 +1657,73 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         if len(tokens) >= 3 and tokens[2] in ("cw", "ccw", "auto"):
                             dir_tok = tokens[2]
                     if val_tok is not None:
-                        raw = float(val_tok.replace("deg", "").replace("AŹ3", ""))
-                        x_internal = interpret_input_angle(raw)
+                        raw = float(_num_token(val_tok))
                         sd = dir_tok if dir_tok in ("cw", "ccw", "auto") else "auto"
-                        acts.append({"type": "swing", "deg": x_internal, "dir": sd, "settle": settle_flag})
-                elif low.startswith(("movetopose", "poseheading", "pose")):
-                    tokens = part.split()
+                        acts.append({"type": "swing", "deg": interpret_input_angle(raw), "dir": sd, "settle": settle_flag})
+
+                elif cmd in ("movetopose", "poseheading", "pose"):
+                    tokens = tokens_raw
                     if len(tokens) >= 2 and tokens[1].lower() in ("off", "none", "clear"):
                         node["move_to_pose"] = False
                         node.pop("pose_heading_deg", None)
                         node.pop("pose_lead_in", None)
                     elif len(tokens) >= 2:
                         try:
-                            disp = float(tokens[1])
                             node["move_to_pose"] = True
-                            node["pose_heading_deg"] = interpret_input_angle(disp)
+                            node["pose_heading_deg"] = interpret_input_angle(float(_num_token(tokens[1])))
                             if len(tokens) >= 3:
                                 try:
-                                    node["pose_lead_in"] = float(tokens[2])
+                                    node["pose_lead_in"] = float(_num_token(tokens[2]))
                                 except Exception:
                                     pass
                             else:
                                 node.pop("pose_lead_in", None)
                         except Exception:
                             pass
-                elif low.startswith("offset"):
-                    if idx != 0 and int(node.get("offset", 0)) == 0:
-                        x = float(low.split()[1].replace("in", ""))
-                        node["offset_custom_in"] = x
-                elif low in ("reshape", "rs", "geom") or (reshape_alias and (low == reshape_alias or low.startswith(reshape_alias + " "))):
-                    acts.append({"type": "reshape"})
-                elif low.startswith("reverse"):
-                    tokens = low.split()
-                    if seen_swingto:
-                        node["reverse_after_swing"] = True
+
+                elif cmd == "offset":
+                    if idx != 0 and int(node.get("offset", 0)) == 0 and len(tokens_raw) >= 2:
+                        node["offset_custom_in"] = float(_num_token(tokens_raw[1]))
+
+                elif cmd in ("reshape", "rs", "geom") or (reshape_alias and (low == reshape_alias or low.startswith(reshape_alias + " "))):
+                    if cmd in ("reshape", "rs", "geom"):
+                        rem = part[len(tokens_raw[0]):].strip() if tokens_raw else ""
                     else:
-                        state = None
-                        if len(tokens) >= 2 and tokens[1] in ("on", "1", "true", "yes"):
-                            state = True
-                        elif len(tokens) >= 2 and tokens[1] in ("off", "0", "false", "no"):
-                            state = False
-                        acts.append({"type": "reverse", "state": state})
-                        has_reverse_action = True
-                elif low.startswith(("latspeed", "lat", "drive_speed")):
-                    parts_split = low.split()
-                    if len(parts_split) >= 2:
-                        token = parts_split[1]
+                        rem = part[len(reshape_alias):].strip()
+                    rem_tokens = rem.split() if rem else []
+                    if rem_tokens and rem_tokens[0].lower() in ("on", "off", "toggle"):
+                        state = rem_tokens[0].lower()
+                        tail = rem_tokens[1:]
+                        value = " ".join(tail) if tail else None
+                        acts.append({"type": "preset", "name": "reshape", "state": state, "value": value, "values": tail[:3]})
+                    else:
+                        acts.append({"type": "reshape"})
+
+                elif cmd == "reverse":
+                    tokens = low.split()
+                    state = None
+                    if len(tokens) >= 2 and tokens[1] in ("on", "1", "true", "yes"):
+                        state = True
+                    elif len(tokens) >= 2 and tokens[1] in ("off", "0", "false", "no"):
+                        state = False
+                    acts.append({"type": "reverse", "state": state})
+                    has_reverse_action = True
+
+                elif cmd in ("latspeed", "lat", "drive_speed"):
+                    if len(tokens_raw) >= 2:
+                        token = tokens_raw[1].lower()
                         if token in ("off", "none", "clear"):
                             node.pop("custom_lateral_cmd", None)
                             node.pop("custom_lateral_ips", None)
                         else:
-                            try:
-                                if token.endswith("ips"):
-                                    continue
+                            if not token.endswith("ips"):
                                 if token.endswith("cmd"):
                                     token = token[:-3]
-                                val = float(token)
-                                val = max(0.0, min(127.0, val))
+                                val = max(0.0, min(127.0, float(_num_token(token))))
                                 node["custom_lateral_cmd"] = val if val > 0 else None
                                 node.pop("custom_lateral_ips", None)
-                            except Exception:
-                                pass
-                elif low.startswith("chain"):
+
+                elif cmd == "chain":
                     tokens = low.split()
                     if len(tokens) >= 2 and tokens[1] in ("off", "0", "false", "no", "disable"):
                         node["chain_through"] = False
@@ -1283,30 +1734,31 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         node.pop("chain", None)
                         if len(tokens) >= 2 and tokens[1] not in ("on", "true", "1", "yes"):
                             try:
-                                val = float(tokens[1])
-                                val = max(0.0, min(1.0, val))
-                                node["chain_looseness"] = val
+                                node["chain_looseness"] = max(0.0, min(1.0, float(tokens[1])))
                             except Exception:
                                 pass
-                elif low.startswith(("turnspeed", "turnrate", "omega")):
-                    parts_split = low.split()
-                    if len(parts_split) >= 2:
-                        token = parts_split[1]
+
+                elif cmd in ("turnspeed", "turnrate", "omega"):
+                    if len(tokens_raw) >= 2:
+                        token = tokens_raw[1].lower()
                         if token in ("off", "none", "clear"):
                             node.pop("custom_turn_dps", None)
                         else:
-                            try:
-                                val = float(token.replace("dps", "").replace("deg/s", ""))
-                                node["custom_turn_dps"] = val if val > 0 else None
-                            except Exception:
-                                pass
+                            node["custom_turn_dps"] = float(_num_token(token))
+
+                elif cmd == "code":
+                    code = part[len(tokens_raw[0]):].strip() if tokens_raw else ""
+                    if code:
+                        acts.append({"type": "code", "code": code})
+
                 else:
-                    matched_name = None
-                    for name in preset_names:
-                        name_low = name.lower()
-                        if low == name_low or low.startswith(name_low + " "):
-                            matched_name = name
-                            break
+                    matched_name = preset_map.get(cmd)
+                    if matched_name is None:
+                        for name in preset_names:
+                            name_low = name.lower()
+                            if low == name_low or low.startswith(name_low + " "):
+                                matched_name = name
+                                break
                     if matched_name:
                         rem = part[len(matched_name):].strip()
                         tokens = rem.split() if rem else []
@@ -1320,14 +1772,142 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                             value = " ".join(tokens)
                             values = tokens[:3]
                         acts.append({"type": "preset", "name": matched_name, "state": state, "value": value, "values": values})
+                    else:
+                        code = part.strip()
+                        if code:
+                            acts.append({"type": "code", "code": code})
             except Exception:
                 pass
+    if has_reverse_action:
+        node["reverse"] = False
     node["actions"] = acts
+    node["actions_out"] = list(acts)
+
+def _normalize_node_mech_payload(node):
+    """Canonicalize node mechanism actions/events so save/load/export stay in sync."""
+    if not isinstance(node, dict):
+        return
+
+    def _norm_preset_like(src):
+        """Handle norm preset like."""
+        name = str(src.get("name", "")).strip()
+        if not name:
+            return None
+        state = src.get("state", None)
+        value = src.get("value", None)
+        values = src.get("values", [])
+        if not isinstance(values, list):
+            values = []
+        values = [str(v) for v in values[:3]]
+        if value in (None, "") and values:
+            value = " ".join(values)
+        return {
+            "name": name,
+            "state": state,
+            "value": value,
+            "values": values,
+        }
+
+    src_actions = node.get("actions")
+    if not isinstance(src_actions, list):
+        src_actions = node.get("actions_out")
+    if not isinstance(src_actions, list):
+        src_actions = []
+    out_actions = []
+    for act in src_actions:
+        if not isinstance(act, dict):
+            continue
+        t = str(act.get("type", "")).strip().lower()
+        if t == "geom":
+            t = "reshape"
+        if t == "preset":
+            preset = _norm_preset_like(act)
+            if preset is None:
+                continue
+            out_actions.append({"type": "preset", **preset})
+            continue
+        if t == "code":
+            code = str(act.get("code", "")).strip()
+            if code:
+                out_actions.append({"type": "code", "code": code})
+            continue
+        if t in ("turn", "wait", "swing", "reverse", "reshape"):
+            out_actions.append(dict(act))
+            continue
+        out_actions.append(dict(act))
+    node["actions"] = out_actions
+    node["actions_out"] = list(out_actions)
+
+    pd = node.get("path_to_next")
+    if isinstance(pd, dict) and "edge_events" in pd and "edge_events" not in node:
+        if isinstance(pd.get("edge_events"), list):
+            node["edge_events"] = list(pd.get("edge_events"))
+
+    raw_events = node.get("edge_events", [])
+    if not isinstance(raw_events, list):
+        raw_events = []
+    norm_events = []
+    for ev in raw_events:
+        if not isinstance(ev, dict):
+            continue
+        try:
+            t_val = max(0.0, min(1.0, float(ev.get("t", 0.0))))
+        except Exception:
+            t_val = 0.0
+        enabled = bool(ev.get("enabled", True))
+        raw_marker_actions = ev.get("actions", [])
+        if not isinstance(raw_marker_actions, list):
+            raw_marker_actions = []
+        marker_actions = []
+        for ma in raw_marker_actions:
+            if not isinstance(ma, dict):
+                continue
+            kind = str(ma.get("kind", ma.get("type", ""))).strip().lower()
+            if kind == "preset":
+                preset = _norm_preset_like(ma)
+                if preset is None:
+                    continue
+                marker_actions.append({"kind": "preset", **preset})
+            elif kind == "code":
+                code = str(ma.get("code", "")).strip()
+                if code:
+                    marker_actions.append({"kind": "code", "code": code})
+        if marker_actions:
+            norm_events.append({
+                "t": t_val,
+                "enabled": enabled,
+                "actions": marker_actions,
+            })
+    if norm_events:
+        node["edge_events"] = norm_events
+    elif "edge_events" in node:
+        node.pop("edge_events", None)
 
 def _mech_presets():
+    """Handle mech presets."""
     raw = CFG.get("codegen", {}).get("mech_presets", [])
     if not isinstance(raw, list):
         return []
+    def _normalize_cases(items):
+        """Handle normalize cases."""
+        out_cases = []
+        if isinstance(items, dict):
+            items = [{"key": k, "template": v} for k, v in items.items()]
+        if not isinstance(items, list):
+            return out_cases
+        for it in items:
+            if isinstance(it, dict):
+                key = str(it.get("key", "")).strip()
+                tpl = str(it.get("template", "")).strip()
+            elif isinstance(it, (list, tuple)) and len(it) >= 2:
+                key = str(it[0]).strip()
+                tpl = str(it[1]).strip()
+            else:
+                continue
+            if not key:
+                continue
+            out_cases.append({"key": key, "template": tpl})
+        return out_cases
     out = []
     for p in raw:
         if not isinstance(p, dict):
@@ -1336,7 +1916,7 @@ def _mech_presets():
         if not name:
             continue
         mode = str(p.get("mode", "action")).strip().lower()
-        if mode not in ("action", "toggle"):
+        if mode not in ("action", "toggle", "cases"):
             mode = "action"
         out.append({
             "name": name,
@@ -1345,10 +1925,13 @@ def _mech_presets():
             "on": str(p.get("on", "")),
             "off": str(p.get("off", "")),
             "default": bool(p.get("default", False)),
+            "cases": _normalize_cases(p.get("cases", [])),
+            "case_default": str(p.get("case_default", "") or ""),
         })
     return out
 
 def _preset_value_text(act):
+    """Handle preset value text."""
     value_raw = act.get("value", None)
     if value_raw is not None:
         return str(value_raw).strip()
@@ -1363,6 +1946,7 @@ def _preset_value_text(act):
     return ""
 
 def _marker_actions_to_text(actions):
+    """Handle marker actions to text."""
     parts = []
     if not isinstance(actions, list):
         return ""
@@ -1394,6 +1978,7 @@ def _marker_actions_to_text(actions):
     return ", ".join(parts)
 
 def _marker_apply_reshape(actions, current_state):
+    """Handle marker apply reshape."""
     state = bool(current_state)
     if not isinstance(actions, list):
         return state
@@ -1415,6 +2000,7 @@ def _marker_apply_reshape(actions, current_state):
     return state
 
 def _marker_hover_text(actions):
+    """Handle marker hover text."""
     if not isinstance(actions, list):
         return ""
     items = []
@@ -1456,11 +2042,13 @@ def _marker_hover_text(actions):
     return ", ".join(out)
 
 def _draw_marker_hover(surface, text, mouse_pos, font_small):
+    """Draw marker hover."""
     if not text:
         return
     draw_label(surface, mouse_pos, [text], font_small)
 
 def _parse_marker_actions(text):
+    """Handle parse marker actions."""
     actions = []
     if not text:
         return actions
@@ -1471,7 +2059,7 @@ def _parse_marker_actions(text):
     reshape_alias = reshape_label.lower() if reshape_label else ""
     if reshape_alias == "reshape":
         reshape_alias = ""
-    for part in [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]:
+    for part in _split_command_parts(text):
         low = part.lower()
         if low.startswith("code "):
             actions.append({"kind": "code", "code": part[5:].strip()})
@@ -1504,11 +2092,13 @@ def _parse_marker_actions(text):
     return actions
 
 def _marker_prompt_text():
+    """Handle marker prompt text."""
     presets = _mech_presets()
     lines = [
         "Commands (comma/semicolon separated). Examples:",
         "  intake on, clamp toggle",
         "  lift 300",
+        "  trap open   (works with Cases preset keys like words/numbers)",
         "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})",
         "  clamp on 1 2 3     (toggle + values, {STATE} on/off)",
         "  code digitalWrite(PNEU, 1);",
@@ -1524,6 +2114,7 @@ def _marker_prompt_text():
     return "\n".join(lines)
 
 def _edit_edge_marker(seg_idx, event_idx=None, t=None):
+    """Handle edit edge marker."""
     if seg_idx < 0 or seg_idx >= len(display_nodes) - 1:
         return False
     node = display_nodes[seg_idx]
@@ -1561,12 +2152,12 @@ def _edit_edge_marker(seg_idx, event_idx=None, t=None):
         events.sort(key=lambda e: float(e.get("t", 0.0)))
     except Exception:
         pass
+    tutorial_state["flags"]["mech_marker"] = True
     return True
     if has_reverse_action:
         node["reverse"] = False
     _apply_profile_override_for_speed_overrides(node)
 
-# ---------------- heading realization prompt ----------------
 def _heading_realization_string(node: dict) -> str:
     """Build a user-facing heading realization string from node settings."""
     tm = node.get("turn_mode", "turn")
@@ -1588,7 +2179,6 @@ def _heading_realization_string(node: dict) -> str:
                 parts.append(f"movetopose {disp:.3f} {float(lead):g}")
             else:
                 parts.append(f"movetopose {disp:.3f}")
-    # Motion profile override (skip if segment is a path)
     pd = node.get("path_to_next", {})
     if not pd.get("use_path", False):
         prof = node.get("profile_override")
@@ -1750,6 +2340,7 @@ def _askstring_centered(title, prompt, initialvalue=None):
         btns.pack(fill="x")
 
         def _ok():
+            """Handle ok."""
             resp["value"] = entry_var.get()
             try:
                 top.destroy()
@@ -1757,6 +2348,7 @@ def _askstring_centered(title, prompt, initialvalue=None):
                 pass
 
         def _cancel():
+            """Handle cancel."""
             resp["value"] = None
             try:
                 top.destroy()
@@ -1785,11 +2377,11 @@ def prompt_heading_realization(node: dict, idx: int) -> bool:
     init = _heading_realization_string(node)
     resp = _askstring_centered(
         "Heading realization",
-        "turn/swing/settleswing + optional movetopose heading [+lead] (comma/semicolon separated).\n"
-        "Optional: profile precise|normal|fast|slam (non-path segments only).\n"
-        "Examples: 'turn auto;'; 'swing cw; movetopose 180 6'; 'settleswing cw'; 'movetopose off'; 'profile precise'.\n"
+        "turn/swing/settleswing [CW/CCW] + optional movetopose [heading] [lead const] (comma/semicolon separated).\n"
+        "Advanced vars/motion: profile precise|normal|fast|slam (non-path segments only).\n"
+        "Examples: 'turn auto;'; 'swing cw; movetopose 180 0.6'; 'settleswing cw'; 'movetopose off'; 'profile precise'.\n"
         "Omit movetopose (or use 'movetopose off') to disable enforcing final heading.\n"
-        "Angles use 0=left, 90=up.",
+        "Angles use 0=left (+Y), 90=up (+X).",
         initialvalue=init
     )
     if resp is None:
@@ -1806,7 +2398,6 @@ def open_settings_window():
     if ui.tk_settings_win is not None and ui.tk_settings_win.winfo_exists():
         return
     
-    # Reload config from disk
     try:
         CFG = reload_cfg()
         try:
@@ -1836,26 +2427,26 @@ def open_settings_window():
     notebook = ttk.Notebook(outer)
     notebook.pack(fill="both", expand=True)
     
-    # Create tabs
     tabs = {
         "controls": ttk.Frame(notebook),
         "general": ttk.Frame(notebook),
         "physics": ttk.Frame(notebook),
         "geometry": ttk.Frame(notebook),
-        "codegen": ttk.Frame(notebook)
+        "mcl": ttk.Frame(notebook),
+        "codegen": ttk.Frame(notebook),
     }
     
     notebook.add(tabs["controls"], text="Controls")
     notebook.add(tabs["general"], text="General")
     notebook.add(tabs["physics"], text="Physics")
     notebook.add(tabs["geometry"], text="Geometry")
+    notebook.add(tabs["mcl"], text="MCL")
     notebook.add(tabs["codegen"], text="Export")
     
-    for name in ("general", "geometry", "codegen"):
+    for name in ("general", "geometry", "mcl", "codegen"):
         for c in range(2):
             tabs[name].columnconfigure(c, weight=1)
     
-    # Controls tab (scrollable)
     tabs["controls"].rowconfigure(0, weight=1)
     tabs["controls"].columnconfigure(0, weight=1)
     
@@ -1869,11 +2460,13 @@ def open_settings_window():
     controls_canvas.create_window((0, 0), window=controls_frame, anchor="nw")
     
     def _on_controls_configure(event):
+        """Handle on controls configure."""
         controls_canvas.configure(scrollregion=controls_canvas.bbox("all"))
     
     controls_frame.bind("<Configure>", _on_controls_configure)
     
     def _on_mousewheel(event):
+        """Handle on mousewheel."""
         delta = 0
         if hasattr(event, "delta") and event.delta:
             delta = int(-event.delta / 40) if abs(event.delta) >= 40 else (-2 if event.delta > 0 else 2)
@@ -1896,7 +2489,6 @@ def open_settings_window():
             row=i, column=1, sticky="w", padx=(0, 8), pady=3
         )
     
-    # Dropdown mappings
     dist_labels = ["Inches", "Encoder degrees", "Encoder rotations", "Ticks"]
     dist_map = {dist_labels[0]: 0, dist_labels[1]: 1, dist_labels[2]: 2, dist_labels[3]: 3}
     dist_inv = {0: dist_labels[0], 1: dist_labels[1], 2: dist_labels[2], 3: dist_labels[3]}
@@ -1905,7 +2497,6 @@ def open_settings_window():
     ang_map = {ang_labels[0]: 0, ang_labels[1]: 1}
     ang_inv = {0: ang_labels[0], 1: ang_labels[1]}
     
-    # Initialize UI variables from CFG
     dist_value = int(CFG.get("distance_units", 0))
     dist_value = 0 if dist_value not in (0, 1, 2, 3) else dist_value
     ang_value = int(CFG.get("angle_units", 0))
@@ -1924,7 +2515,6 @@ def open_settings_window():
     reshape_label_var = tk.StringVar(value=str(CFG.get("reshape_label", "Reshape")))
     auto_heading_node1_var = tk.IntVar(value=0)
     
-    # Physics variables
     rp = CFG["robot_physics"]
     rpm_var = tk.StringVar(value=str(rp.get("rpm", 0)))
     diam_var = tk.StringVar(value=str(rp.get("diameter", 4)))
@@ -1935,12 +2525,10 @@ def open_settings_window():
     w_var = tk.StringVar(value=str(rp.get("weight", 20)))
     tb_var = tk.StringVar(value=str(rp.get("t_buffer", 0)))
     adv_motion_var = tk.IntVar(value=int(rp.get("advanced_motion", 0)))
-    # maxcmd removed from UI (fixed in config)
     gr_var = tk.StringVar(value=str(CFG.get("gear_ratio", 1.0)))
     dens_var = tk.StringVar(value=str(rp.get("point_density_per_in", 4.0)))
     curv_var = tk.DoubleVar(value=float(rp.get("curvature_gain", 0.05)))
     
-    # Dimensions variables
     bd = CFG["bot_dimensions"]
     dt_w = tk.StringVar(value=str(bd.get("dt_width", bd.get("width", 0))))
     dt_l = tk.StringVar(value=str(bd.get("dt_length", bd.get("length", 0))))
@@ -1953,13 +2541,193 @@ def open_settings_window():
     rs_off_x = tk.StringVar(value=str(bd.get("reshape_offset_x_in", 0)))
     rs_off_y = tk.StringVar(value=str(bd.get("reshape_offset_y_in", 0)))
     
-    # Offsets variables
     off = CFG["offsets"]
     off1 = tk.StringVar(value=str(off.get("offset_1_in", 0)))
     off2 = tk.StringVar(value=str(off.get("offset_2_in", 0)))
     pad = tk.StringVar(value=str(off.get("padding_in", 0)))
-    # Margin helpers (side margin = edge to track, back margin = rear edge to axle)
+
+    mcl_cfg = CFG.get("mcl", {})
+    mcl_enabled_var = tk.IntVar(value=int(mcl_cfg.get("enabled", 0)))
+    mcl_motion_ms_var = tk.StringVar(value=str(mcl_cfg.get("motion_ms", 20)))
+    mcl_sensor_ms_var = tk.StringVar(value=str(mcl_cfg.get("sensor_ms", 50)))
+    parts_cfg = mcl_cfg.get("particles", {})
+    mcl_particles_n_var = tk.StringVar(value=str(parts_cfg.get("n", parts_cfg.get("n_min", 200))))
+    mcl_particles_min_var = tk.StringVar(value=str(parts_cfg.get("n_min", 200)))
+    mcl_particles_max_var = tk.StringVar(value=str(parts_cfg.get("n_max", 400)))
+    res_cfg = mcl_cfg.get("resample", {})
+    mcl_resample_method_var = tk.StringVar(value=str(res_cfg.get("method", "systematic")))
+    mcl_resample_thresh_var = tk.StringVar(value=str(res_cfg.get("threshold", 0.5)))
+    kld_cfg = mcl_cfg.get("kld", {})
+    mcl_kld_enabled_var = tk.IntVar(value=int(kld_cfg.get("enabled", 0)))
+    mcl_kld_eps_var = tk.StringVar(value=str(kld_cfg.get("epsilon", 0.05)))
+    mcl_kld_delta_var = tk.StringVar(value=str(kld_cfg.get("delta", 0.99)))
+    mcl_kld_bin_xy_var = tk.StringVar(value=str(kld_cfg.get("bin_xy_in", 2.0)))
+    mcl_kld_bin_theta_var = tk.StringVar(value=str(kld_cfg.get("bin_theta_deg", 10.0)))
+    aug_cfg = mcl_cfg.get("augmented", {})
+    mcl_aug_enabled_var = tk.IntVar(value=int(aug_cfg.get("enabled", 0)))
+    mcl_alpha_slow_var = tk.StringVar(value=str(aug_cfg.get("alpha_slow", 0.001)))
+    mcl_alpha_fast_var = tk.StringVar(value=str(aug_cfg.get("alpha_fast", 0.1)))
+    mcl_random_injection_var = tk.StringVar(value=str(mcl_cfg.get("random_injection", 0.01)))
+    motion_cfg = mcl_cfg.get("motion", {})
+    mcl_motion_enabled_var = tk.IntVar(value=int(motion_cfg.get("enabled", 1)))
+    mcl_motion_model_var = tk.StringVar(value=str(motion_cfg.get("motion_model", "drive")))
+    mcl_motion_source_var = tk.StringVar(value=str(motion_cfg.get("motion_source", "encoders")))
+    mcl_use_alpha_var = tk.IntVar(value=int(motion_cfg.get("use_alpha_model", 0)))
+    mcl_sigma_x_var = tk.StringVar(value=str(motion_cfg.get("sigma_x_in", 0.1275)))
+    mcl_sigma_y_var = tk.StringVar(value=str(motion_cfg.get("sigma_y_in", 0.1275)))
+    mcl_sigma_theta_var = tk.StringVar(value=str(motion_cfg.get("sigma_theta_deg", 1.0)))
+    mcl_alpha1_var = tk.StringVar(value=str(motion_cfg.get("alpha1", 0.05)))
+    mcl_alpha2_var = tk.StringVar(value=str(motion_cfg.get("alpha2", 0.05)))
+    mcl_alpha3_var = tk.StringVar(value=str(motion_cfg.get("alpha3", 0.05)))
+    mcl_alpha4_var = tk.StringVar(value=str(motion_cfg.get("alpha4", 0.05)))
+    mcl_set_pose_xy_var = tk.StringVar(value=str(mcl_cfg.get("set_pose_sigma_xy_in", 0.2)))
+    mcl_set_pose_theta_var = tk.StringVar(value=str(mcl_cfg.get("set_pose_sigma_theta_deg", 2.0)))
+    sensors_cfg = mcl_cfg.get("sensors", {})
+    dist_cfg = sensors_cfg.get("distance", {})
+    imu_cfg = sensors_cfg.get("imu", {})
+    vision_cfg = sensors_cfg.get("vision", {})
+    mcl_dist_enabled_var = tk.IntVar(value=int(dist_cfg.get("enabled", 1)))
+    mcl_dist_model_var = tk.StringVar(value=str(dist_cfg.get("model", "likelihood_field")))
+    mcl_dist_sigma_var = tk.StringVar(value=str(dist_cfg.get("sigma_hit_mm", 8.5)))
+    mcl_dist_w_hit_var = tk.StringVar(value=str(dist_cfg.get("w_hit", 0.9)))
+    mcl_dist_w_rand_var = tk.StringVar(value=str(dist_cfg.get("w_rand", 0.1)))
+    mcl_dist_w_short_var = tk.StringVar(value=str(dist_cfg.get("w_short", 0.0)))
+    mcl_dist_w_max_var = tk.StringVar(value=str(dist_cfg.get("w_max", 0.0)))
+    mcl_dist_lambda_short_var = tk.StringVar(value=str(dist_cfg.get("lambda_short", 0.1)))
+    mcl_dist_max_range_var = tk.StringVar(value=str(dist_cfg.get("max_range_mm", 2000.0)))
+    mcl_dist_min_range_var = tk.StringVar(value=str(dist_cfg.get("min_range_mm", 0.0)))
+    mcl_dist_conf_min_var = tk.StringVar(value=str(dist_cfg.get("confidence_min", 0.0)))
+    mcl_dist_obj_size_min_var = tk.StringVar(value=str(dist_cfg.get("object_size_min", 0.0)))
+    mcl_dist_obj_size_max_var = tk.StringVar(value=str(dist_cfg.get("object_size_max", 0.0)))
+    mcl_dist_innov_gate_var = tk.StringVar(value=str(dist_cfg.get("innovation_gate_mm", 0.0)))
+    mcl_dist_median_window_var = tk.StringVar(value=str(dist_cfg.get("median_window", 3)))
+    mcl_dist_ignore_max_var = tk.IntVar(value=int(dist_cfg.get("lf_ignore_max", 0)))
+    mcl_dist_gate_var = tk.StringVar(value=str(dist_cfg.get("gate_mm", 150.0)))
+    mcl_dist_gate_mode_var = tk.StringVar(value=str(dist_cfg.get("gate_mode", "hard")))
+    mcl_dist_gate_penalty_var = tk.StringVar(value=str(dist_cfg.get("gate_penalty", 0.05)))
+    mcl_dist_gate_reject_var = tk.StringVar(value=str(dist_cfg.get("gate_reject_ratio", 0.9)))
+    lf_cfg = dist_cfg.get("likelihood_field", {})
+    mcl_dist_lf_res_var = tk.StringVar(value=str(lf_cfg.get("resolution_in", 2.0)))
+    mcl_imu_enabled_var = tk.IntVar(value=int(imu_cfg.get("enabled", 1)))
+    mcl_imu_sigma_var = tk.StringVar(value=str(imu_cfg.get("sigma_deg", 1.0)))
+    mcl_vision_enabled_var = tk.IntVar(value=int(vision_cfg.get("enabled", 0)))
+    mcl_vision_sigma_var = tk.StringVar(value=str(vision_cfg.get("sigma_xy_in", 2.0)))
+    mcl_vision_theta_sigma_var = tk.StringVar(value=str(vision_cfg.get("sigma_theta_deg", 5.0)))
+    mcl_vision_conf_min_var = tk.StringVar(value=str(vision_cfg.get("confidence_min", 0.0)))
+    geom_cfg = mcl_cfg.get("sensor_geometry", {})
+    geom_sensors = geom_cfg.get("distance_sensors", [])
+    if not isinstance(geom_sensors, list) or not geom_sensors:
+        geom_sensors = mcl_mod.get_distance_sensors(CFG)
+    mcl_sensor_vars = []
+    for idx in range(4):
+        entry = geom_sensors[idx] if idx < len(geom_sensors) else {}
+        has_entry = isinstance(entry, dict) and bool(entry)
+        enabled_default = int(entry.get("enabled", 1)) if has_entry else 0
+        mcl_sensor_vars.append({
+            "name": tk.StringVar(value=str(entry.get("name", ""))),
+            "x_in": tk.StringVar(value=str(entry.get("x_in", 0.0))),
+            "y_in": tk.StringVar(value=str(entry.get("y_in", 0.0))),
+            "angle_deg": tk.StringVar(value=str(entry.get("angle_deg", 0.0))),
+            "enabled": tk.IntVar(value=enabled_default),
+            "bias_mm": tk.StringVar(value=str(entry.get("bias_mm", 0.0))),
+            "angle_offset_deg": tk.StringVar(value=str(entry.get("angle_offset_deg", 0.0))),
+            "min_range_mm": tk.StringVar(value=str(entry.get("min_range_mm", dist_cfg.get("min_range_mm", 0.0)))),
+            "max_range_mm": tk.StringVar(value=str(entry.get("max_range_mm", dist_cfg.get("max_range_mm", 0.0)))),
+            "min_confidence": tk.StringVar(value=str(entry.get("min_confidence", dist_cfg.get("confidence_min", 0.0)))),
+            "min_object_size": tk.StringVar(value=str(entry.get("min_object_size", dist_cfg.get("object_size_min", 0.0)))),
+            "max_object_size": tk.StringVar(value=str(entry.get("max_object_size", dist_cfg.get("object_size_max", 0.0)))),
+            "innovation_gate_mm": tk.StringVar(value=str(entry.get("innovation_gate_mm", dist_cfg.get("innovation_gate_mm", 0.0)))),
+            "map_mode": tk.StringVar(value=str(entry.get("map_mode", "both"))),
+        })
+    map_cfg = mcl_cfg.get("map_objects", {})
+    mcl_map_perimeter_var = tk.IntVar(value=int(map_cfg.get("perimeter", 1)))
+    mcl_map_long_goals_var = tk.IntVar(value=int(map_cfg.get("long_goals", 1)))
+    mcl_map_long_goal_braces_var = tk.IntVar(value=int(map_cfg.get("long_goal_braces", 1)))
+    mcl_map_center_goals_var = tk.IntVar(value=int(map_cfg.get("center_goals", 1)))
+    mcl_map_matchloaders_var = tk.IntVar(value=int(map_cfg.get("matchloaders", 1)))
+    mcl_map_park_zones_var = tk.IntVar(value=int(map_cfg.get("park_zones", 0)))
+    mcl_object_vars = {}
+    mcl_object_entries = []
+    sensor_obj_vis_cfg = mcl_cfg.get("sensor_object_visibility", {})
+    if not isinstance(sensor_obj_vis_cfg, dict):
+        sensor_obj_vis_cfg = {}
+    for entry in get_field_object_entries(CFG):
+        obj_id = entry.get("id")
+        if not obj_id:
+            continue
+        obj_label = str(entry.get("label", obj_id) or obj_id)
+        default_on = 1 if mcl_mod._entry_default_enabled(CFG, entry) else 0
+        sel = mcl_cfg.get("object_selection", {})
+        mcl_object_vars[obj_id] = tk.IntVar(value=int(sel.get(obj_id, default_on)))
+        mcl_object_entries.append((obj_id, obj_label))
+    mcl_sensor_object_vars = {}
+    for idx, sensor_vars in enumerate(mcl_sensor_vars):
+        raw_name = str(sensor_vars["name"].get() or "").strip()
+        sensor_name = raw_name if raw_name else f"sensor_{idx + 1}"
+        vis_raw = sensor_obj_vis_cfg.get(str(idx), sensor_obj_vis_cfg.get(sensor_name, sensor_obj_vis_cfg.get(f"sensor_{idx + 1}", {})))
+        if not isinstance(vis_raw, dict):
+            vis_raw = {}
+        per_sensor = {}
+        for obj_id, _obj_label in mcl_object_entries:
+            global_default = int(mcl_object_vars.get(obj_id).get()) if obj_id in mcl_object_vars else 1
+            try:
+                vis_default = int(vis_raw.get(obj_id, global_default))
+            except Exception:
+                vis_default = global_default
+            per_sensor[obj_id] = tk.IntVar(value=1 if vis_default else 0)
+        mcl_sensor_object_vars[idx] = per_sensor
+    region_cfg = mcl_cfg.get("region", {})
+    mcl_region_enabled_var = tk.IntVar(value=int(region_cfg.get("enabled", 1)))
+    mcl_region_mode_var = tk.StringVar(value=str(region_cfg.get("mode", "hard")))
+    mcl_region_type_var = tk.StringVar(value=str(region_cfg.get("type", "segment_path")))
+    mcl_region_update_var = tk.StringVar(value=str(region_cfg.get("update_mode", "segment_path")))
+    mcl_region_penalty_var = tk.StringVar(value=str(region_cfg.get("penalty", 0.2)))
+    mcl_region_perim_var = tk.IntVar(value=int(region_cfg.get("perimeter_gate", 1)))
+    _obj_mode_raw = region_cfg.get("object_mode", None)
+    if _obj_mode_raw is None:
+        _obj_mode_raw = 2 if int(region_cfg.get("object_gate", 0)) == 1 else 0
+    try:
+        _obj_mode_raw = int(_obj_mode_raw)
+    except Exception:
+        _obj_mode_raw = 0
+    _obj_mode_label = "soft" if _obj_mode_raw == 1 else ("hard" if _obj_mode_raw == 2 else "off")
+    mcl_region_obj_var = tk.StringVar(value=_obj_mode_label)
+    mcl_region_grid_type_var = tk.StringVar(value=str(region_cfg.get("grid_type", "quadrant")))
+    mcl_region_grid_x_var = tk.StringVar(value=str(region_cfg.get("grid_x", 2)))
+    mcl_region_grid_y_var = tk.StringVar(value=str(region_cfg.get("grid_y", 2)))
+    mcl_region_x_min_var = tk.StringVar(value=str(region_cfg.get("x_min_in", 0.0)))
+    mcl_region_x_max_var = tk.StringVar(value=str(region_cfg.get("x_max_in", 144.0)))
+    mcl_region_y_min_var = tk.StringVar(value=str(region_cfg.get("y_min_in", 0.0)))
+    mcl_region_y_max_var = tk.StringVar(value=str(region_cfg.get("y_max_in", 144.0)))
+    mcl_region_radius_var = tk.StringVar(value=str(region_cfg.get("radius_in", 12.0)))
+    mcl_region_slope_var = tk.IntVar(value=int(region_cfg.get("slope_enabled", 0)))
+    mcl_region_slope_sigma_var = tk.StringVar(value=str(region_cfg.get("slope_sigma_deg", 20.0)))
+    mcl_region_current_var = tk.StringVar(value=str(region_cfg.get("current_region", "")))
+    conf_cfg = mcl_cfg.get("confidence", {})
+    mcl_conf_thresh_var = tk.StringVar(value=str(conf_cfg.get("threshold", 0.0)))
+    mcl_conf_auto_var = tk.IntVar(value=int(conf_cfg.get("auto_reinit", 0)))
+    mcl_conf_mode_var = tk.StringVar(value=str(conf_cfg.get("reinit_mode", "global")))
+    corr_cfg = mcl_cfg.get("correction", {})
+    mcl_corr_enabled_var = tk.IntVar(value=int(corr_cfg.get("enabled", 1)))
+    mcl_corr_min_conf_var = tk.StringVar(value=str(corr_cfg.get("min_confidence", 0.6)))
+    mcl_corr_max_trans_var = tk.StringVar(value=str(corr_cfg.get("max_trans_jump_in", 8.0)))
+    mcl_corr_max_theta_var = tk.StringVar(value=str(corr_cfg.get("max_theta_jump_deg", 15.0)))
+    mcl_corr_alpha_min_var = tk.StringVar(value=str(corr_cfg.get("alpha_min", 0.05)))
+    mcl_corr_alpha_max_var = tk.StringVar(value=str(corr_cfg.get("alpha_max", 0.25)))
+    mcl_ui_cfg = mcl_cfg.get("ui", {})
+    mcl_show_particles_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_particles", 1)))
+    mcl_show_estimate_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_estimate", 1)))
+    mcl_show_cov_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_covariance", 1)))
+    mcl_show_rays_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_rays", 1)))
+    mcl_show_region_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_region", 1)))
+    mcl_show_gating_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_gating", 1)))
+    mcl_max_draw_var = tk.StringVar(value=str(mcl_ui_cfg.get("max_particles_draw", 500)))
+    mcl_tuning_cfg = mcl_cfg.get("tuning", {})
+    mcl_tuning_enabled_var = tk.IntVar(value=int(mcl_tuning_cfg.get("enabled", 0)))
+    mcl_tuning_log_rate_var = tk.StringVar(value=str(mcl_tuning_cfg.get("log_rate_hz", 20)))
+    mcl_tuning_subsample_var = tk.StringVar(value=str(mcl_tuning_cfg.get("particle_subsample", 0)))
     def _init_margins():
+        """Handle init margins."""
         try:
             _dw = float(dt_w.get()); _dl = float(dt_l.get())
             _wf = float(w_full.get()); _lf = float(l_full.get())
@@ -1995,6 +2763,30 @@ def open_settings_window():
         ui.add_tooltip(lbl, tip)
         ui.add_tooltip(widget, tip)
         ui.track_live_widget(widget)
+        return lbl, widget
+
+    def _track_widgets(*widgets):
+        """Handle track widgets."""
+        for w in widgets:
+            try:
+                ui.track_live_widget(w)
+            except Exception:
+                continue
+
+    def _set_row_visible(row, visible: bool) -> None:
+        """Set row visible."""
+        if not row:
+            return
+        lbl, widget = row
+        try:
+            if visible:
+                lbl.grid()
+                widget.grid()
+            else:
+                lbl.grid_remove()
+                widget.grid_remove()
+        except Exception:
+            pass
     
     geometry_win = {"win": None}
     def open_geometry_visualizer():
@@ -2005,6 +2797,7 @@ def open_settings_window():
             return
         
         def _num(var, default=0.0):
+            """Handle num."""
             try:
                 return float(var.get())
             except Exception:
@@ -2038,7 +2831,6 @@ def open_settings_window():
         
         info_var = tk.StringVar(value="")
         ttk.Label(sidebar, textvariable=info_var, foreground="#555555", wraplength=180, justify="left").grid(row=3, column=0, sticky="w", pady=(0, 6))
-        # Margin entry rows (asymmetric)
         lbl_left = ttk.Label(sidebar, text="Left margin (edge→track):"); lbl_left.grid(row=4, column=0, sticky="w")
         m_left_entry = ttk.Entry(sidebar, textvariable=margin_left_var, width=10); m_left_entry.grid(row=5, column=0, sticky="w", pady=(0, 4))
         lbl_right = ttk.Label(sidebar, text="Right margin (edge→track):"); lbl_right.grid(row=6, column=0, sticky="w")
@@ -2056,6 +2848,7 @@ def open_settings_window():
         def _apply_margins():
             """Apply margin inputs to dimensions (asymmetric, center derived)."""
             def _parse(var, default=0.0):
+                """Handle parse."""
                 try:
                     return float(var.get())
                 except Exception:
@@ -2070,7 +2863,6 @@ def open_settings_window():
                 changed = None
                 if last_margin.get("mode") == mode_tag and last_margin.get("name") in (name_first, name_second):
                     changed = last_margin["name"]
-                # Default to first if unknown
                 if changed == name_second:
                     new_second = min(second, avail)
                     new_first = max(0.0, avail - new_second)
@@ -2084,22 +2876,18 @@ def open_settings_window():
                 rw = float(rs_w.get()); rl = float(rs_l.get())
             except Exception:
                 dw = dl = ow = ol = rw = rl = 0.0
-            # Adjust normal margins to occupy available space; favor last changed counterpart
             avail_w = max(0.0, ow - dw)
             ml, mr = adjust_pair(avail_w, ml, mr, "left", "right", "normal")
             avail_l = max(0.0, ol - dl)
             mb, mf = adjust_pair(avail_l, mb, mf, "back", "front", "normal")
-            # Adjust reshape margins
             avail_w_r = max(0.0, rw - dw)
             mlr, mrr = adjust_pair(avail_w_r, mlr, mrr, "left_r", "right_r", "reshape")
             avail_l_r = max(0.0, rl - dl)
             mbr, mfr = adjust_pair(avail_l_r, mbr, mfr, "back_r", "front_r", "reshape")
-            # Normal geometry from asymmetric margins
             w_full.set(f"{max(MIN_SIZE, dw + ml + mr):.3f}")
             l_full.set(f"{max(MIN_SIZE, dl + mb + mf):.3f}")
             full_off_y.set(f"{((ml - mr) / 2.0):.3f}")
             full_off_x.set(f"{((mf - mb) / 2.0):.3f}")
-            # Reshape geometry from asymmetric margins
             rs_w.set(f"{max(MIN_SIZE, dw + mlr + mrr):.3f}")
             rs_l.set(f"{max(MIN_SIZE, dl + mbr + mfr):.3f}")
             rs_off_y.set(f"{((mlr - mrr) / 2.0):.3f}")
@@ -2109,8 +2897,8 @@ def open_settings_window():
             margin_left_r_var.set(f"{mlr:.3f}"); margin_right_r_var.set(f"{mrr:.3f}")
             margin_back_r_var.set(f"{mbr:.3f}"); margin_front_r_var.set(f"{mfr:.3f}")
             draw()
-        # Track last-edited margin to decide counterpart compensation
         def _mark_margin(name, mode_tag):
+            """Handle mark margin."""
             _apply_margins._last = {"mode": mode_tag, "name": name}
         _apply_margins._last = {"mode": None, "name": None}
         ttk.Button(sidebar, text="Apply margins", command=_apply_margins).grid(row=18, column=0, sticky="w", pady=(0, 10))
@@ -2121,6 +2909,7 @@ def open_settings_window():
         reshape_grid = {w: w.grid_info() for w in reshape_margin_widgets}
         
         def _current_margins(mode):
+            """Handle current margins."""
             ow, ol, ox, oy = _outer_vals(mode)
             dw, dl = _dt_vals()
             ml = max(0.0, ow / 2.0 + oy - dw / 2.0)
@@ -2130,6 +2919,7 @@ def open_settings_window():
             return ml, mr, mb, mf
         
         def _sync_margin_vars(mode):
+            """Handle sync margin vars."""
             ml, mr, mb, mf = _current_margins(mode)
             if mode == "reshape":
                 margin_left_r_var.set(f"{ml:.3f}")
@@ -2143,6 +2933,7 @@ def open_settings_window():
                 margin_front_var.set(f"{mf:.3f}")
         
         def _set_margin_mode():
+            """Set margin mode."""
             mode = mode_var.get()
             for w in normal_margin_widgets:
                 try:
@@ -2162,7 +2953,6 @@ def open_settings_window():
                     pass
             _sync_margin_vars(mode)
         
-        # Place dimension entries below editor to shorten sidebar
         dim_sections = [
             ("Drivetrain", [(dt_w, "Width (in)"), (dt_l, "Length (in)")]),
             ("Full", [(w_full, "Width (in)"), (l_full, "Length (in)")]),
@@ -2178,6 +2968,7 @@ def open_settings_window():
             section.columnconfigure(0, weight=1)
         
         def _bind_redraw(widget):
+            """Handle bind redraw."""
             widget.bind("<FocusOut>", lambda _e: draw())
             widget.bind("<Return>", lambda _e: draw())
         
@@ -2216,12 +3007,14 @@ def open_settings_window():
         STEP_IN = 1.0  # inch grid step
         
         def _outer_vals(active_mode=None):
+            """Handle outer vals."""
             m = active_mode or mode_var.get()
             if m == "reshape":
                 return (_num(rs_w, 0), _num(rs_l, 0), _num(rs_off_x, 0), _num(rs_off_y, 0))
             return (_num(w_full, 0), _num(l_full, 0), _num(full_off_x, 0), _num(full_off_y, 0))
         
         def _set_outer(w=None, l=None, offx=None, offy=None, active_mode=None):
+            """Set outer."""
             m = active_mode or mode_var.get()
             tgt_w, tgt_l, tgt_ox, tgt_oy = _outer_vals(m)
             tgt_w = w if w is not None else tgt_w
@@ -2256,9 +3049,11 @@ def open_settings_window():
                     pass
         
         def _dt_vals():
+            """Handle dt vals."""
             return (_num(dt_w, 0), _num(dt_l, 0))
         
         def _set_dt(w=None, l=None):
+            """Set dt."""
             cur_w, cur_l = _dt_vals()
             cur_w = w if w is not None else cur_w
             cur_l = l if l is not None else cur_l
@@ -2273,22 +3068,24 @@ def open_settings_window():
                 pass
         
         def _extents():
+            """Handle extents."""
             ow, ol, ox, oy = _outer_vals("normal")
             rw, rl, r_ox, r_oy = _outer_vals("reshape")
             dw, dl = _dt_vals()
             def span(w, l, offx, offy):
+                """Handle span."""
                 return (abs(offy) + w * 0.5, abs(offx) + l * 0.5)
             sx = max(span(ow, ol, ox, oy)[0], span(rw, rl, r_ox, r_oy)[0], dw * 0.5)
             sy = max(span(ow, ol, ox, oy)[1], span(rw, rl, r_ox, r_oy)[1], dl * 0.5)
             return sx, sy
         
         def draw():
+            """Handle draw."""
             canvas.delete("all")
             handles.clear()
             base_cx = base_cy = canvas_size / 2
             vis_state["base_c"] = (base_cx, base_cy)
             sx, sy = _extents()
-            # Constrain view to a fixed 36x36 in window (matches field scale)
             view_in = 36.0
             scale = (canvas_size * 0.90) / view_in if view_in > 0 else 10.0
             vis_state["scale"] = scale
@@ -2301,7 +3098,6 @@ def open_settings_window():
             outer_cy = base_cy - ox * scale
             vis_state["outer_c"] = (outer_cx, outer_cy)
             
-            # Grid background (1 in spacing), 36x36 in region centered on canvas
             spacing = max(2, int(round(scale)))
             start = int(base_cx - (view_in/2.0)*scale)
             end = int(base_cx + (view_in/2.0)*scale)
@@ -2314,7 +3110,6 @@ def open_settings_window():
             canvas.create_rectangle(start, start, end, end, outline="#cccccc")
             canvas.create_oval(base_cx-4, base_cy-4, base_cx+4, base_cy+4, fill="#555555", outline="#222222")
             
-            # Outer box
             x0 = outer_cx - (ow * 0.5 * scale)
             x1 = outer_cx + (ow * 0.5 * scale)
             y0 = outer_cy - (ol * 0.5 * scale)
@@ -2323,7 +3118,6 @@ def open_settings_window():
             canvas.create_text((x0 + x1) / 2, y0 - 12, text=f"W: {ow:.2f} in", fill="#1f4b8f")
             canvas.create_text(x1 + 50, (y0 + y1) / 2, text=f"L: {ol:.2f} in", angle=90, fill="#1f4b8f")
             
-            # Drivetrain box (always at base center)
             dx0 = base_cx - (dw * 0.5 * scale)
             dx1 = base_cx + (dw * 0.5 * scale)
             dy0 = base_cy - (dl * 0.5 * scale)
@@ -2331,7 +3125,6 @@ def open_settings_window():
             canvas.create_rectangle(dx0, dy0, dx1, dy1, outline="#666666", width=2, dash=(4,2), fill="")
             canvas.create_text(dx0 - 40, (dy0 + dy1) / 2, text=f"Track {dw:.2f}", angle=90, fill="#444444")
             
-            # Handles for outer
             handle_color = "#2b5fad"
             for (hx, hy, kind) in [
                 (x0, outer_cy, "outer_left"),
@@ -2342,7 +3135,6 @@ def open_settings_window():
                 handles.append((hx, hy, kind))
                 canvas.create_oval(hx-6, hy-6, hx+6, hy+6, fill=handle_color, outline="#0f305f")
             
-            # Handles for drivetrain
             d_color = "#444444"
             for (hx, hy, kind) in [
                 (dx0, base_cy, "drive_left"),
@@ -2353,7 +3145,6 @@ def open_settings_window():
                 handles.append((hx, hy, kind))
                 canvas.create_rectangle(hx-5, hy-5, hx+5, hy+5, outline=d_color, fill="#e6e6e6")
             
-            # Info label
             margin_left = max(0.0, ow / 2.0 + oy - dw / 2.0)
             margin_right = max(0.0, ow / 2.0 - oy - dw / 2.0)
             margin_back = max(0.0, ol / 2.0 - ox - dl / 2.0)
@@ -2362,6 +3153,7 @@ def open_settings_window():
             info_var.set(f"Margins L/R: {margin_left:.3f} / {margin_right:.3f} in | Front/Back: {margin_front:.3f} / {margin_back:.3f} in")
         
         def _nearest_handle(x, y):
+            """Handle nearest handle."""
             if not handles:
                 return None
             best = None
@@ -2376,6 +3168,7 @@ def open_settings_window():
             return None
         
         def _apply_drag(kind, event):
+            """Handle apply drag."""
             scale = vis_state["scale"]
             base_cx, base_cy = vis_state["base_c"]
             ocx, ocy = vis_state["outer_c"]
@@ -2421,14 +3214,17 @@ def open_settings_window():
             draw()
         
         def on_press(event):
+            """Handle on press."""
             hit = _nearest_handle(event.x, event.y)
             drag_state["target"] = hit[2] if hit else None
         
         def on_motion(event):
+            """Handle on motion."""
             if drag_state.get("target"):
                 _apply_drag(drag_state["target"], event)
         
         def on_release(_event):
+            """Handle on release."""
             drag_state["target"] = None
         
         canvas.bind("<Button-1>", on_press)
@@ -2438,8 +3234,8 @@ def open_settings_window():
         win.protocol("WM_DELETE_WINDOW", lambda: win.destroy())
         _set_margin_mode()
         draw()
-        # Ensure latest values persisted when closing
         def _close_and_apply():
+            """Handle close and apply."""
             try:
                 _apply_margins()
             except Exception:
@@ -2503,6 +3299,7 @@ def open_settings_window():
         node_pos_px = [canvas_size/2, canvas_size/2]
         
         def _dims(mode):
+            """Handle dims."""
             try:
                 dw = float(dt_w.get()); dl = float(dt_l.get())
             except Exception:
@@ -2522,6 +3319,7 @@ def open_settings_window():
             return dw, dl, ow, ol, ox, oy
         
         def _current_offset():
+            """Handle current offset."""
             sel = offset_sel.get()
             try:
                 if sel == "1":
@@ -2533,6 +3331,7 @@ def open_settings_window():
                 return 0.0
         
         def _set_offset(val):
+            """Set offset."""
             sel = offset_sel.get()
             if sel == "1":
                 off1.set(f"{val:.3f}")
@@ -2543,11 +3342,11 @@ def open_settings_window():
             val_label.config(text=f"Offset: {val:.3f} in")
         
         def draw():
+            """Handle draw."""
             canvas.delete("all")
             mode = mode_var.get()
             dw, dl, ow, ol, ox, oy = _dims(mode)
             rev = bool(reverse_var.get())
-            # ensure visible defaults if inputs are empty/zero (match geometry editor)
             try:
                 bd = CFG.get("bot_dimensions", {})
             except Exception:
@@ -2560,13 +3359,11 @@ def open_settings_window():
                 ow = max(dw + 1.0, float(bd.get("width", dw + 2.0)) or (dw + 2.0))
             if ol <= 0.0:
                 ol = max(dl + 1.0, float(bd.get("length", dl + 2.0)) or (dl + 2.0))
-            # Clamp offsets to keep robot visible in 36x36 view
             max_off_y = max(0.0, (view_in / 2.0) - (ow / 2.0))
             max_off_x = max(0.0, (view_in / 2.0) - (ol / 2.0))
             oy = max(-max_off_y, min(max_off_y, oy))
             ox = max(-max_off_x, min(max_off_x, ox))
             base_cx = base_cy = canvas_size / 2
-            # grid
             spacing = max(2, int(round(scale)))
             start = max(0, int(base_cx - (view_in/2.0)*scale))
             end = min(canvas_size, int(base_cx + (view_in/2.0)*scale))
@@ -2582,13 +3379,11 @@ def open_settings_window():
             outer_cy = base_cy - ox * scale
             if rev:
                 outer_cy = base_cy + ox * scale
-            # outer
             x0 = outer_cx - (ow * 0.5 * scale)
             x1 = outer_cx + (ow * 0.5 * scale)
             y0 = outer_cy - (ol * 0.5 * scale)
             y1 = outer_cy + (ol * 0.5 * scale)
             canvas.create_rectangle(x0, y0, x1, y1, outline="#3c6cc9", width=2, fill="#e6eefb")
-            # drivetrain
             dx0 = base_cx - (dw * 0.5 * scale)
             dx1 = base_cx + (dw * 0.5 * scale)
             dy0 = base_cy - (dl * 0.5 * scale)
@@ -2596,11 +3391,9 @@ def open_settings_window():
             if rev:
                 dy0, dy1 = base_cy - (dl * 0.5 * scale), base_cy + (dl * 0.5 * scale)
             canvas.create_rectangle(dx0, dy0, dx1, dy1, outline="#444444", dash=(4,2), fill="#f7f7f7")
-            # node pos (offset always along drivetrain centerline; node not mirrored)
             val = _current_offset()
             node_pos_px[0] = base_cx
             node_pos_px[1] = base_cy - val * scale
-            # clamp to view bounds
             node_pos_px[1] = min(end, max(start, node_pos_px[1]))
             canvas.create_line(base_cx, start, base_cx, end, fill="#bbbbbb", dash=(3,3))
             canvas.create_oval(node_pos_px[0]-7, node_pos_px[1]-7, node_pos_px[0]+7, node_pos_px[1]+7, fill="#2b5fad", outline="#0f305f")
@@ -2613,9 +3406,9 @@ def open_settings_window():
         custom_btn.config(command=draw)
         
         def _on_drag(event):
+            """Handle on drag."""
             base_cy = canvas_size / 2
             val = (base_cy - event.y) / scale
-            # clamp to visible window
             max_abs = view_in / 2.0
             val = max(-max_abs, min(max_abs, val))
             _set_offset(val)
@@ -2626,6 +3419,7 @@ def open_settings_window():
         custom_offset_var.trace_add("write", lambda *_: draw())
         
         def _close_offset():
+            """Handle close offset."""
             try:
                 on_update()
             except Exception:
@@ -2645,14 +3439,14 @@ def open_settings_window():
         path_pts = None
         pose_hdg = None
 
-        # Prefer live-edited control points when editing the 0->1 segment
         if path_edit_mode and path_edit_segment_idx == 0 and path_control_points:
             cps = list(path_control_points)
             if len(cps) >= 2:
                 cps[0] = p0
                 cps[-1] = p1
                 try:
-                    path_pts = generate_bezier_path(cps, num_samples=50)
+                    spline_type = _path_spline_type(display_nodes[0].get("path_to_next", {}))
+                    path_pts = generate_bezier_path(cps, num_samples=50, spline_type=spline_type)
                 except Exception:
                     path_pts = cps
         else:
@@ -2674,7 +3468,8 @@ def open_settings_window():
                         cps[0] = p0
                         cps[-1] = p1
                         try:
-                            path_pts = generate_bezier_path(cps, num_samples=50)
+                            spline_type = _path_spline_type(pd)
+                            path_pts = generate_bezier_path(cps, num_samples=50, spline_type=spline_type)
                         except Exception:
                             path_pts = cps
             elif display_nodes[0].get("move_to_pose"):
@@ -2731,7 +3526,6 @@ def open_settings_window():
         for node in display_nodes:
             x, y = node["pos"]
             node["pos"] = (2 * cx - x, y)
-            # Mirror any path control points originating from this node
             pd = node.get("path_to_next", {})
             cps = pd.get("control_points")
             if cps:
@@ -2787,12 +3581,12 @@ def open_settings_window():
         reshape_live = False
         total_estimate_s = compute_total_estimate_s()
         
-    # Heading entry with Node 1 helper
     heading_frame = ttk.Frame(tabs["general"])
     heading_entry = ttk.Entry(heading_frame, textvariable=init_head, width=10)
     heading_entry.pack(side="left", fill="x", expand=True)
     
     def _heading_to_node1():
+        """Handle heading to node1."""
         auto_heading_node1_var.set(1)
         try:
             hdg = _heading_for_node0_to1()
@@ -2805,8 +3599,830 @@ def open_settings_window():
     
     heading_node1_btn = ttk.Button(heading_frame, text="→ Node 1", command=_heading_to_node1)
     heading_node1_btn.pack(side="left", padx=(6, 0))
+
+    def _tutorial_reset_state():
+        """Handle tutorial reset state."""
+        tutorial_state["flags"] = dict(TUTORIAL_FLAG_DEFAULTS)
+        tutorial_state["tabs_seen"].clear()
+
+    def _select_tab(tab_key: str):
+        """Handle select tab."""
+        frame = tabs.get(tab_key)
+        if frame is None:
+            return
+        try:
+            notebook.select(frame)
+            tutorial_state["tabs_seen"].add(tab_key)
+        except Exception:
+            pass
+
+    def _note_active_tab():
+        """Handle note active tab."""
+        try:
+            current = notebook.select()
+        except Exception:
+            return
+        for name, frame in tabs.items():
+            if str(frame) == current:
+                tutorial_state["tabs_seen"].add(name)
+                return
+
+    def _has_offset():
+        """Check whether has offset."""
+        for i, node in enumerate(display_nodes):
+            if i == 0:
+                continue
+            if int(node.get("offset", 0)) != 0 or node.get("offset_custom_in") is not None:
+                return True
+        return False
+
+    def _has_reverse():
+        """Check whether has reverse."""
+        for node in display_nodes:
+            if node.get("reverse", False):
+                return True
+            for act in node.get("actions", []):
+                if act.get("type") == "reverse":
+                    return True
+        return False
+
+    def _has_swing():
+        """Check whether has swing."""
+        for node in display_nodes:
+            if str(node.get("turn_mode", "")).lower() == "swing":
+                return True
+            for act in node.get("actions", []):
+                if act.get("type") == "swing":
+                    return True
+        return False
+
+    def _has_pose():
+        """Check whether has pose."""
+        return any(bool(node.get("move_to_pose")) for node in display_nodes)
+
+    def _has_markers():
+        """Check whether has markers."""
+        for node in display_nodes:
+            events = node.get("edge_events", [])
+            if isinstance(events, list) and events:
+                return True
+        return False
+
+    def _open_tutorial_window():
+        """Handle open tutorial window."""
+        if tutorial_state["win"] is not None and tutorial_state["win"].winfo_exists():
+            tutorial_state["win"].lift()
+            tutorial_state["win"].focus_force()
+            return
+        _tutorial_reset_state()
+        win = tk.Toplevel(top)
+        tutorial_state["win"] = win
+        tutorial_state["active"] = True
+        win.title("Terminal Interactive Tutorial")
+        win.geometry("820x610")
+        win.minsize(700, 520)
+
+        palette = {
+            "bg": "#f5f7fb",
+            "card": "#ffffff",
+            "muted": "#5b6270",
+            "ok": "#11845b",
+            "warn": "#a35f00",
+            "line": "#d8dfeb",
+        }
+        win.configure(bg=palette["bg"])
+
+        outer = tk.Frame(win, bg=palette["bg"], padx=14, pady=14)
+        outer.pack(fill="both", expand=True)
+
+        top_card = tk.Frame(outer, bg=palette["card"], highlightbackground=palette["line"], highlightthickness=1)
+        top_card.pack(fill="x")
+        tk.Label(
+            top_card,
+            text="Interactive Terminal Tutorial",
+            bg=palette["card"],
+            fg="#111827",
+            font=("Segoe UI", 16, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(12, 2))
+        tk.Label(
+            top_card,
+            text=(
+                "Follow the guided order from route creation to export and MCL tuning. "
+                "Each step has live completion checks."
+            ),
+            bg=palette["card"],
+            fg=palette["muted"],
+            justify="left",
+            anchor="w",
+            wraplength=620,
+        ).pack(fill="x", padx=14, pady=(0, 10))
+        progress_var = tk.StringVar(value="0/0 complete")
+        tk.Label(top_card, textvariable=progress_var, bg=palette["card"], fg=palette["muted"], anchor="w").pack(fill="x", padx=14)
+        progress_bar = ttk.Progressbar(top_card, mode="determinate")
+        progress_bar.pack(fill="x", padx=14, pady=(4, 12))
+
+        body = tk.Frame(outer, bg=palette["bg"])
+        body.pack(fill="both", expand=True, pady=(12, 0))
+
+        nav_card = tk.Frame(body, bg=palette["card"], highlightbackground=palette["line"], highlightthickness=1)
+        nav_card.pack(side="left", fill="y")
+        tk.Label(
+            nav_card,
+            text="Roadmap",
+            bg=palette["card"],
+            fg="#111827",
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(10, 4))
+        roadmap_list = tk.Listbox(
+            nav_card,
+            activestyle="none",
+            exportselection=False,
+            width=24,
+            height=24,
+            borderwidth=0,
+            highlightthickness=0,
+            selectborderwidth=0,
+            font=("Segoe UI", 10),
+        )
+        roadmap_list.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        content = tk.Frame(body, bg=palette["card"], highlightbackground=palette["line"], highlightthickness=1)
+        content.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        step_title_var = tk.StringVar(value="")
+        step_status_var = tk.StringVar(value="")
+        summary_var = tk.StringVar(value="")
+        body_var = tk.StringVar(value="")
+
+        title_row = tk.Frame(content, bg=palette["card"])
+        title_row.pack(fill="x", padx=14, pady=(12, 8))
+        tk.Label(
+            title_row,
+            textvariable=step_title_var,
+            bg=palette["card"],
+            fg="#111827",
+            font=("Segoe UI", 14, "bold"),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        status_chip = tk.Label(
+            title_row,
+            textvariable=step_status_var,
+            bg="#fff2d6",
+            fg=palette["warn"],
+            padx=8,
+            pady=4,
+            font=("Segoe UI", 9, "bold"),
+        )
+        status_chip.pack(side="right")
+
+        summary_msg = tk.Message(
+            content,
+            textvariable=summary_var,
+            bg=palette["card"],
+            fg="#1f2937",
+            justify="left",
+            anchor="w",
+            width=500,
+            font=("Segoe UI", 10),
+        )
+        summary_msg.pack(fill="x", padx=14)
+        body_msg = tk.Message(
+            content,
+            textvariable=body_var,
+            bg=palette["card"],
+            fg=palette["muted"],
+            justify="left",
+            anchor="w",
+            width=500,
+            font=("Segoe UI", 10),
+        )
+        body_msg.pack(fill="x", padx=14, pady=(8, 0))
+
+        tk.Label(content, text="Live completion checks", bg=palette["card"], fg="#111827", font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x", padx=14, pady=(10, 2))
+        checks_holder = tk.Frame(content, bg=palette["card"])
+        checks_holder.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+        action_row = tk.Frame(content, bg=palette["card"])
+        action_row.pack(fill="x", padx=14, pady=(2, 8))
+        focus_tab_btn = ttk.Button(action_row, text="Focus tab", width=12)
+        focus_tab_btn.pack(side="left")
+        action_btn = ttk.Button(action_row, text="Do this now")
+        action_btn.pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+        nav_row = tk.Frame(content, bg=palette["card"])
+        nav_row.pack(fill="x", padx=14, pady=(0, 12))
+        back_btn = ttk.Button(nav_row, text="Back", width=10)
+        next_btn = ttk.Button(nav_row, text="Next")
+        back_btn.pack(side="left")
+        next_btn.pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+        initial_heading = init_head.get()
+        step_flags = {
+            "heading_used": False,
+            "opened_geometry_visualizer": False,
+            "opened_offset_visualizer": False,
+            "reviewed_mcl_tools": False,
+            "reviewed_shortcuts": False,
+        }
+
+        def _step_heading():
+            """Handle step heading."""
+            step_flags["heading_used"] = True
+            try:
+                _heading_to_node1()
+            except Exception:
+                pass
+
+        def _open_tutorial_reference():
+            """Handle open tutorial reference."""
+            return
+            ref = tk.Toplevel(win)
+            ref.title("Terminal Reference (VEX)")
+            ref.geometry("860x620")
+            ref.minsize(760, 520)
+
+            shell = ttk.Frame(ref, padding=10)
+            shell.pack(fill="both", expand=True)
+            nb = ttk.Notebook(shell)
+            nb.pack(fill="both", expand=True)
+
+            pages = {
+                "hotkeys": ttk.Frame(nb, padding=10),
+                "rightclick": ttk.Frame(nb, padding=10),
+                "commands": ttk.Frame(nb, padding=10),
+                "windows": ttk.Frame(nb, padding=10),
+                "systems": ttk.Frame(nb, padding=10),
+                "workflow": ttk.Frame(nb, padding=10),
+            }
+            nb.add(pages["hotkeys"], text="Hotkeys")
+            nb.add(pages["rightclick"], text="Right-click")
+            nb.add(pages["commands"], text="Commands + Params")
+            nb.add(pages["windows"], text="Windows")
+            nb.add(pages["systems"], text="VEX Systems")
+            nb.add(pages["workflow"], text="Full Workflow")
+
+            def _make_readonly_text(parent, content: str):
+                """Handle make readonly text."""
+                holder = ttk.Frame(parent)
+                holder.pack(fill="both", expand=True)
+                w = tk.Text(holder, wrap="word")
+                s = ttk.Scrollbar(holder, orient="vertical", command=w.yview)
+                w.configure(yscrollcommand=s.set)
+                w.pack(side="left", fill="both", expand=True)
+                s.pack(side="left", fill="y")
+                w.insert("1.0", content)
+                w.configure(state="disabled")
+
+            hotkeys_lines = ["All major controls:\n"]
+            for key, desc in CONTROLS:
+                hotkeys_lines.append(f"- {key}: {desc.replace(chr(10), ' ')}")
+            hotkeys_lines.append("\nTip: open Settings -> Controls tab for the same list in-table.")
+            _make_readonly_text(pages["hotkeys"], "\n".join(hotkeys_lines))
+
+            right_click_text = (
+                "Right-click functions are context-sensitive.\n\n"
+                "Node actions prompt:\n"
+                "- turn <deg>\n"
+                "- wait <seconds>\n"
+                "- swing <heading> [cw|ccw|auto]\n"
+                "- settleswing <heading> [cw|ccw|auto]\n"
+                "- offset <inches>\n"
+                "- reshape\n"
+                "- reverse [on|off]\n"
+                "- latspeed <0-127>\n"
+                "- turnspeed <deg/s>\n"
+                "- chain [0-1|off]\n"
+                "- mechanism preset commands like lift/clamp (template placeholders)\n\n"
+                "Path-start right-click (curved segment):\n"
+                "- set min/max path command speed\n"
+                "- optional lookahead override\n\n"
+                "Path edit mode right-click:\n"
+                "- add control points\n\n"
+                "Segment right-click (not on node):\n"
+                "- add/edit mechanism markers along the segment timeline"
+            )
+            _make_readonly_text(pages["rightclick"], right_click_text)
+
+            command_text = (
+                "VEX-first command examples and parameters:\n\n"
+                "1) turn <deg|auto>\n"
+                "   - Purpose: re-orient robot before the next move.\n"
+                "   - Example: turn 90\n\n"
+                "2) swing <heading_deg> [cw|ccw|auto]\n"
+                "   - Purpose: one-side swing turn (fast when space is tight).\n"
+                "   - Example: swing 135 cw\n\n"
+                "3) settleswing <heading_deg> [cw|ccw|auto]\n"
+                "   - Purpose: swing with extra settle behavior for repeatability.\n"
+                "   - Example: settleswing 180 ccw\n\n"
+                "4) movetopose <heading_deg> [lead_in] / movetopose off\n"
+                "   - Purpose: hold a target heading while driving into the node.\n"
+                "   - lead_in is a unitless curvature-weight constant for boomerang shaping (not inches).\n"
+                "   - Example: movetopose 180 0.6\n\n"
+                "5) offset <inches>\n"
+                "   - Purpose: shift endpoint along drivetrain centerline (clear goals/triballs/robots).\n"
+                "   - Example: offset 6.5\n\n"
+                "6) reverse [on|off], latspeed <0-127>, turnspeed <deg/s>, chain [0-1|off]\n"
+                "   - Purpose: practical control over direction, command intensity, and chaining behavior.\n\n"
+                "7) mechanism presets (template-defined)\n"
+                "   - Purpose: emit team-specific commands like clamp/intake/lift at exact points.\n"
+                "   - Example: clamp close, intake on, lift high\n\n"
+                "Tip: keep commands simple and deterministic for skills/auton reliability."
+            )
+            _make_readonly_text(pages["commands"], command_text)
+
+            windows_text = (
+                "Main windows and tabs:\n\n"
+                "- Field canvas (main): nodes, path edit, sim playback.\n"
+                "- Output panel (O): generated compile/log output.\n"
+                "- Settings window tabs:\n"
+                "  * Controls: hotkey table.\n"
+                "  * General: units, heading, labels, tutorial.\n"
+                "  * Physics: speed/accel and sim behavior.\n"
+                "  * Geometry: bot geometry visualizer + offset visualizer.\n"
+                "  * MCL: MCL/EKF config, tuning tools, export.\n"
+                "  * Export: template system, style, path-file options.\n\n"
+                "Popup tools:\n"
+                "- Template Builder\n"
+                "- Geometry Visual Editor\n"
+                "- Offset Visual Editor\n"
+                "- MCL tuning import/report dialogs"
+            )
+            _make_readonly_text(pages["windows"], windows_text)
+
+            systems_text = (
+                "How this maps to practical VEX systems:\n\n"
+                "- Geometry tab:\n"
+                "  Set robot footprint and offset behavior so path points match real bot clearances.\n\n"
+                "- Physics tab:\n"
+                "  Tune speed/accel behavior for realistic timing before localization tuning.\n\n"
+                "- Export/templates:\n"
+                "  Connect node commands to your library calls (LemLib, custom chassis APIs, subsystem wrappers).\n\n"
+                "- MCL tab:\n"
+                "  Configure MCL+EKF for drift correction/recovery; import tuning logs from microSD wizard sessions.\n\n"
+                "- Mechanism markers:\n"
+                "  Trigger intake/lift/clamp/etc at timeline points without hardcoded delays.\n\n"
+                "Rule of thumb:\n"
+                "  1) Drive/PID stable first, 2) path behavior second, 3) localization correction third."
+            )
+            _make_readonly_text(pages["systems"], systems_text)
+
+            workflow_text = (
+                "Recommended full terminal workflow:\n\n"
+                "1) Build route: place/drag/insert nodes.\n"
+                "2) Add node actions and mechanism markers.\n"
+                "3) Path edit mode: control points + spline type.\n"
+                "4) Tune path speeds/lookahead and run sim.\n"
+                "5) Open Geometry tools and verify clearances/offsets.\n"
+                "6) Enable MCL and start with minimal runtime integration.\n"
+                "7) Run microSD MCL tuning wizard, import .mcllog, apply recs.\n"
+                "8) Open Export tab and confirm template style.\n"
+                "9) Re-export and validate on robot.\n\n"
+                "Rule: PID and base drive consistency come before localization tuning."
+            )
+            _make_readonly_text(pages["workflow"], workflow_text)
+
+        def _step_controls_tab():
+            """Handle step controls tab."""
+            _select_tab("controls")
+
+        def _step_general_tab():
+            """Handle step general tab."""
+            _select_tab("general")
+
+        def _step_physics_tab():
+            """Handle step physics tab."""
+            _select_tab("physics")
+
+        def _step_geometry_tab():
+            """Handle step geometry tab."""
+            _select_tab("geometry")
+
+        def _step_templates():
+            """Handle step templates."""
+            _select_tab("codegen")
+            try:
+                _open_template_builder()
+            except Exception:
+                pass
+
+        def _step_geometry_visualizer():
+            """Handle step geometry visualizer."""
+            _select_tab("geometry")
+            try:
+                open_geometry_visualizer()
+                step_flags["opened_geometry_visualizer"] = True
+            except Exception:
+                pass
+
+        def _step_offset_visualizer():
+            """Handle step offset visualizer."""
+            _select_tab("geometry")
+            try:
+                open_offset_visualizer()
+                step_flags["opened_offset_visualizer"] = True
+            except Exception:
+                pass
+
+        def _step_mcl_tools_overview():
+            """Handle step mcl tools overview."""
+            _select_tab("mcl")
+            step_flags["reviewed_mcl_tools"] = True
+            try:
+                messagebox.showinfo(
+                    "MCL Tuning Flow",
+                    "Use this order: export with tuning mode ON -> run robot tuning session -> import .mcllog -> apply recommendations -> re-export."
+                )
+            except Exception:
+                pass
+
+        def _step_shortcuts_reviewed():
+            """Handle step shortcuts reviewed."""
+            step_flags["reviewed_shortcuts"] = True
+
+        def _templates_done():
+            """Handle templates done."""
+            style_norm = str(codegen_style_var.get()).strip().lower()
+            if style_norm in ("action list", "actionlist", "list"):
+                return "codegen" in tutorial_state["tabs_seen"]
+            return tutorial_state["flags"]["opened_template_editor"]
+
+        steps = [
+            {
+                "title": "Controls tab",
+                "summary": "Open Controls so your team is using the exact key map in this build.",
+                "body": "Press the button or click Settings -> Controls. In VEX practice, verify Space, Ctrl+Space, P, M, S, L, C, O first.",
+                "action_label": "Open Controls tab",
+                "action": _step_controls_tab,
+                "focus_tab": "controls",
+                "checks": [("Controls tab visited", lambda: "controls" in tutorial_state["tabs_seen"])],
+            },
+            {
+                "title": "Place first node",
+                "summary": "Left-click to place Node 1 (Node 0 is your start).",
+                "body": "Place at least one new node.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [("At least one node added", lambda: len(display_nodes) > 1)],
+            },
+            {
+                "title": "Set heading",
+                "summary": "Set a deliberate start heading before route tuning.",
+                "body": "Use the helper button or type heading manually. This should match how your robot is placed on the field tile.",
+                "action_label": "Face Node 1",
+                "action": _step_heading,
+                "focus_tab": "general",
+                "checks": [("Heading changed or helper used", lambda: step_flags["heading_used"] or init_head.get() != initial_heading)],
+            },
+            {
+                "title": "Drag and lock",
+                "summary": "Practice drag edits and Ctrl axis lock for quick clean geometry.",
+                "body": "Drag once, then do at least one Ctrl-locked drag.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [
+                    ("Node dragged", lambda: tutorial_state["flags"]["dragged_node"]),
+                    ("Axis lock used", lambda: tutorial_state["flags"]["axis_lock_used"]),
+                ],
+            },
+            {
+                "title": "Shift insert",
+                "summary": "Insert a node in an existing segment without rebuilding.",
+                "body": "Hold Shift and click a segment.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [("Shift insert used", lambda: tutorial_state["flags"]["shift_insert"])],
+            },
+            {
+                "title": "Node right-click actions",
+                "summary": "Right-click node prompts are where turn/wait/swing/offset/reverse commands live.",
+                "body": "Open any node prompt and enter a command. Example: 'turn 90; wait 0.2' or 'swing 135 cw'.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [("Node prompt used", lambda: tutorial_state["flags"]["right_click_prompt"])],
+            },
+            {
+                "title": "Offsets and reverse",
+                "summary": "Configure practical spacing and direction behavior for match tasks.",
+                "body": "Set at least one offset and one reverse value. Offsets are useful when you want the bot to stop or align at a specific distance from its center, which makes matchloading, scoring, and approach setup much easier. Example: 'offset 6' then 'reverse on'.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [("Offset configured", _has_offset), ("Reverse configured", _has_reverse)],
+            },
+            {
+                "title": "Swing and move-to-pose",
+                "summary": "Cover both heading realization modes used in real auton routines.",
+                "body": "Add at least one swing and one move-to-pose. Example: 'swing 180 ccw' then 'movetopose 180 0.6' to approach while holding heading.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [("Swing present", _has_swing), ("Move-to-pose present", _has_pose)],
+            },
+            {
+                "title": "Mechanism markers",
+                "summary": "Markers time subsystem actions directly on segment travel.",
+                "body": "Add at least one marker with M or segment right-click. Use markers for intake/clamp/lift timing instead of fixed delays.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [("Marker added", lambda: _has_markers() or tutorial_state["flags"]["mech_marker"])],
+            },
+            {
+                "title": "Path edit and spline",
+                "summary": "Shape curved travel and compare spline behavior.",
+                "body": "Enter path edit mode (P) and toggle spline type (U).",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [
+                    ("Path edit used", lambda: tutorial_state["flags"]["entered_path_edit"]),
+                    ("Spline toggled", lambda: tutorial_state["flags"]["spline_toggled"]),
+                ],
+            },
+            {
+                "title": "Path speed and sim",
+                "summary": "Tune per-segment speed and validate with simulation.",
+                "body": "Use path speed prompt and run simulation once. Example start values: min 45, max 95, then adjust for consistency before match.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [
+                    ("Path speed prompt used", lambda: tutorial_state["flags"]["path_speed_prompt"]),
+                    ("Simulation started", lambda: tutorial_state["flags"]["ran_sim"]),
+                ],
+            },
+            {
+                "title": "General tab",
+                "summary": "Review units, heading, labels, and core routine settings.",
+                "body": "Visit General tab.",
+                "action_label": "Open General tab",
+                "action": _step_general_tab,
+                "focus_tab": "general",
+                "checks": [("General tab visited", lambda: "general" in tutorial_state["tabs_seen"])],
+            },
+            {
+                "title": "Physics tab",
+                "summary": "Review simulation speed and behavior settings.",
+                "body": "Visit Physics tab. Keep this aligned to your real drivetrain so ETA and settle behavior stay realistic.",
+                "action_label": "Open Physics tab",
+                "action": _step_physics_tab,
+                "focus_tab": "physics",
+                "checks": [("Physics tab visited", lambda: "physics" in tutorial_state["tabs_seen"])],
+            },
+            {
+                "title": "Geometry tab",
+                "summary": "Open geometry tools for practical drivetrain clearances.",
+                "body": "Visit Geometry tab. Robot width/length and wheelbase assumptions directly affect practical path safety margins.",
+                "action_label": "Open Geometry tab",
+                "action": _step_geometry_tab,
+                "focus_tab": "geometry",
+                "checks": [("Geometry tab visited", lambda: "geometry" in tutorial_state["tabs_seen"])],
+            },
+            {
+                "title": "Geometry visualizer",
+                "summary": "Verify robot footprint behavior in the geometry visual editor.",
+                "body": "Launch geometry visualizer from Geometry tab. This is where reshape geometry belongs: use it when a mechanism changes the robot hitbox (for example, an intake or matchloader deployed beyond the frame). If a change is rare and not likely to contact anything, you can usually skip modeling it and instead using a mechanism node (M/RClick Segment)",
+                "action_label": "Open geometry visualizer",
+                "action": _step_geometry_visualizer,
+                "focus_tab": "geometry",
+                "checks": [("Geometry visualizer opened", lambda: step_flags["opened_geometry_visualizer"])],
+            },
+            {
+                "title": "Offset visualizer",
+                "summary": "Set and validate practical offset presets for autonomous spacing.",
+                "body": "Launch offset visualizer from Geometry tab.",
+                "action_label": "Open offset visualizer",
+                "action": _step_offset_visualizer,
+                "focus_tab": "geometry",
+                "checks": [("Offset visualizer opened", lambda: step_flags["opened_offset_visualizer"])],
+            },
+            {
+                "title": "MCL tuning flow",
+                "summary": "Review the practical MCL tuning order directly in-app.",
+                "body": "Visit MCL tab and run the tuning flow helper. Sequence is export with tuning mode, run robot session, import .mcllog, apply recs, re-export.",
+                "action_label": "Show tuning flow helper",
+                "action": _step_mcl_tools_overview,
+                "focus_tab": "mcl",
+                "checks": [
+                    ("MCL tab visited", lambda: "mcl" in tutorial_state["tabs_seen"]),
+                    ("MCL tuning helper opened", lambda: step_flags["reviewed_mcl_tools"]),
+                ],
+            },
+            {
+                "title": "Export and templates",
+                "summary": "Confirm export style and open template builder when needed.",
+                "body": "Open Export tab and template editor.",
+                "action_label": "Open template editor",
+                "action": _step_templates,
+                "focus_tab": "codegen",
+                "checks": [("Export workflow visited", _templates_done)],
+            },
+            {
+                "title": "Save/load and output",
+                "summary": "Practice the repeatable team loop before you finish.",
+                "body": "Use S and L once, press C once to compile, then acknowledge output/export hotkeys.",
+                "action_label": "Acknowledge shortcut checklist",
+                "action": _step_shortcuts_reviewed,
+                "focus_tab": "controls",
+                "checks": [
+                    ("Save/load used", lambda: tutorial_state["flags"]["save_load_used"]),
+                    ("Compiled once with C", lambda: tutorial_state["flags"]["compiled_once"]),
+                    ("Output/export checklist acknowledged", lambda: step_flags["reviewed_shortcuts"]),
+                ],
+            },
+            {
+                "title": "Finish",
+                "summary": "You covered full terminal usage from route creation to MCL tuning and export.",
+                "body": "Press Finish to close. Reopen any time from General tab.",
+                "action_label": None,
+                "action": None,
+                "focus_tab": None,
+                "checks": [("Ready", lambda: True)],
+            },
+        ]
+
+        state = {"idx": 0}
+        roadmap_guard = {"busy": False}
+
+        def _safe_check(fn):
+            """Handle safe check."""
+            try:
+                return bool(fn())
+            except Exception:
+                return False
+
+        def _check_rows(step):
+            """Handle check rows."""
+            return [(label, _safe_check(fn)) for label, fn in step.get("checks", [])]
+
+        def _is_step_done(step):
+            """Check whether is step done."""
+            rows = _check_rows(step)
+            return bool(rows) and all(ok for _, ok in rows)
+
+        def _completion_frontier():
+            """Handle completion frontier."""
+            frontier = 0
+            for i, step in enumerate(steps):
+                if _is_step_done(step):
+                    frontier = i + 1
+                else:
+                    break
+            if frontier >= len(steps):
+                return len(steps) - 1
+            return frontier
+
+        def _refresh_roadmap():
+            """Handle refresh roadmap."""
+            selected = state["idx"]
+            frontier = _completion_frontier()
+            roadmap_guard["busy"] = True
+            roadmap_list.delete(0, "end")
+            for i, step in enumerate(steps):
+                done = _is_step_done(step)
+                if i == selected:
+                    prefix = ">"
+                elif done:
+                    prefix = "[x]"
+                elif i <= frontier:
+                    prefix = "[ ]"
+                else:
+                    prefix = "-"
+                roadmap_list.insert("end", f"{prefix} {i + 1:02d}. {step['title']}")
+                try:
+                    if done:
+                        roadmap_list.itemconfig(i, fg=palette["ok"])
+                    elif i <= frontier:
+                        roadmap_list.itemconfig(i, fg="#111827")
+                    else:
+                        roadmap_list.itemconfig(i, fg="#97a0b3")
+                except Exception:
+                    pass
+            roadmap_list.selection_clear(0, "end")
+            roadmap_list.selection_set(selected)
+            roadmap_list.activate(selected)
+            roadmap_guard["busy"] = False
+
+        def _render_checks(step):
+            """Handle render checks."""
+            for child in checks_holder.winfo_children():
+                child.destroy()
+            for label, ok in _check_rows(step):
+                row = tk.Frame(checks_holder, bg=palette["card"])
+                row.pack(fill="x", pady=1)
+                icon = "[x]" if ok else "[ ]"
+                color = palette["ok"] if ok else palette["warn"]
+                tk.Label(row, text=icon, bg=palette["card"], fg=color, font=("Segoe UI", 10, "bold")).pack(side="left")
+                tk.Label(row, text=label, bg=palette["card"], fg="#1f2937", anchor="w").pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        def _apply_step(idx: int):
+            """Handle apply step."""
+            idx = max(0, min(idx, len(steps) - 1))
+            state["idx"] = idx
+            step = steps[idx]
+            step_title_var.set(step["title"])
+            summary_var.set(step.get("summary", ""))
+            body_var.set(step.get("body", ""))
+
+            done = _is_step_done(step)
+            if done:
+                step_status_var.set("Complete")
+                status_chip.configure(bg="#ddf7eb", fg=palette["ok"])
+            else:
+                step_status_var.set("In progress")
+                status_chip.configure(bg="#fff2d6", fg=palette["warn"])
+
+            if step["action"] is None:
+                action_btn.configure(state="disabled", text="No action for this step", command=lambda: None)
+            else:
+                action_btn.configure(text=step["action_label"], state="normal", command=step["action"])
+
+            focus_tab = step.get("focus_tab")
+            if focus_tab:
+                focus_tab_btn.configure(state="normal", command=lambda key=focus_tab: _select_tab(key))
+            else:
+                focus_tab_btn.configure(state="disabled", command=lambda: None)
+
+            back_btn.configure(state=("normal" if idx > 0 else "disabled"))
+            next_btn.configure(text=("Finish" if idx == len(steps) - 1 else "Next"))
+            _render_checks(step)
+            _refresh_roadmap()
+
+        def _refresh_state():
+            """Handle refresh state."""
+            if not win.winfo_exists():
+                return
+            _note_active_tab()
+
+            total = len(steps)
+            completed = sum(1 for step in steps if _is_step_done(step))
+            progress_var.set(f"{completed}/{total} complete")
+            progress_bar.configure(value=(100.0 * completed / max(1, total)))
+
+            step = steps[state["idx"]]
+            next_btn.configure(state=("normal" if _is_step_done(step) else "disabled"))
+            _apply_step(state["idx"])
+            win.after(220, _refresh_state)
+
+        def _back():
+            """Handle back."""
+            _apply_step(state["idx"] - 1)
+
+        def _next():
+            """Handle next."""
+            if state["idx"] >= len(steps) - 1:
+                _close()
+                return
+            _apply_step(state["idx"] + 1)
+
+        def _on_roadmap_select(_event=None):
+            """Handle on roadmap select."""
+            if roadmap_guard["busy"]:
+                return
+            sel = roadmap_list.curselection()
+            if not sel:
+                return
+            target = int(sel[0])
+            if target <= _completion_frontier():
+                _apply_step(target)
+            else:
+                _refresh_roadmap()
+
+        def _on_resize(_event=None):
+            """Handle on resize."""
+            width = max(340, content.winfo_width() - 42)
+            summary_msg.configure(width=width)
+            body_msg.configure(width=width)
+
+        def _close():
+            """Handle close."""
+            tutorial_state["active"] = False
+            tutorial_state["win"] = None
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        roadmap_list.bind("<<ListboxSelect>>", _on_roadmap_select)
+        content.bind("<Configure>", _on_resize)
+        back_btn.configure(command=_back)
+        next_btn.configure(command=_next)
+        win.protocol("WM_DELETE_WINDOW", _close)
+        _apply_step(0)
+        _on_resize()
+        win.update_idletasks()
+        req_w = max(700, min(930, win.winfo_reqwidth() + 10))
+        req_h = max(540, min(700, win.winfo_reqheight() + 10))
+        win.geometry(f"{req_w}x{req_h}")
+        _refresh_state()
+
+    tutorial_btn = ttk.Button(tabs["general"], text="Open tutorial", command=_open_tutorial_window)
     
-    # General tab rows
     _row(tabs["general"], 0, "Distance Units:", ttk.Combobox(tabs["general"], textvariable=dist_var, values=dist_labels, state="readonly"), "Output units")
     _row(tabs["general"], 1, "Angle Units:", ttk.Combobox(tabs["general"], textvariable=ang_var, values=ang_labels, state="readonly"), "Angle units")
     _row(tabs["general"], 2, "Initial heading (deg):", heading_frame, "Robot start heading")
@@ -2819,6 +4435,7 @@ def open_settings_window():
     hitbox_conflicts_chk.pack(side="left")
     _row(tabs["general"], 3, "Show node hitboxes:", hitbox_row, "Toggle geometry boxes")
     def _refresh_hitbox_conflicts_state(*_):
+        """Handle refresh hitbox conflicts state."""
         enabled = bool(show_hitboxes_var.get())
         state = "normal" if enabled else "disabled"
         try:
@@ -2847,8 +4464,8 @@ def open_settings_window():
     _row(tabs["general"], 4, "Show field objects:", field_obj_row, "Draw field objects / toggle node labels")
     _row(tabs["general"], 5, "Reshape label:", ttk.Entry(tabs["general"], textvariable=reshape_label_var), "Custom label used anywhere reshape appears")
     _row(tabs["general"], 6, "Flip routine:", ttk.Button(tabs["general"], text="Flip", command=_flip_routine_horizontal), "Mirror horizontally")
+    _row(tabs["general"], 7, "Tutorial:", tutorial_btn, "Open the guided terminal tutorial.")
     
-    # Physics tab scrollable container
     physics_tab = tabs["physics"]
     physics_canvas = tk.Canvas(physics_tab, borderwidth=0, highlightthickness=0)
     physics_scroll = ttk.Scrollbar(physics_tab, orient="vertical", command=physics_canvas.yview)
@@ -2864,9 +4481,11 @@ def open_settings_window():
     physics_scroll.grid(row=0, column=1, sticky="ns")
 
     def _physics_scroll_active():
+        """Handle physics scroll active."""
         return bool(adv_motion_var.get())
 
     def _refresh_physics_scrollbar():
+        """Handle refresh physics scrollbar."""
         try:
             needs = _physics_scroll_active()
             bbox = physics_canvas.bbox("all")
@@ -2881,6 +4500,7 @@ def open_settings_window():
             pass
 
     def _physics_on_configure(_evt=None):
+        """Handle physics on configure."""
         try:
             physics_canvas.configure(scrollregion=physics_canvas.bbox("all"))
             physics_canvas.itemconfigure(physics_win, width=physics_canvas.winfo_width())
@@ -2889,6 +4509,7 @@ def open_settings_window():
         _refresh_physics_scrollbar()
 
     def _physics_mousewheel(event):
+        """Handle physics mousewheel."""
         if not _physics_scroll_active():
             return
         delta = 0
@@ -2911,8 +4532,7 @@ def open_settings_window():
         w.bind("<Button-4>", _physics_mousewheel)
         w.bind("<Button-5>", _physics_mousewheel)
 
-    # Physics tab rows
-    _row(physics_body, 0, "Drive RPM:", ttk.Entry(physics_body, textvariable=rpm_var), "Affects vmax and accel")
+    _row(physics_body, 0, "Wheel RPM:", ttk.Entry(physics_body, textvariable=rpm_var), "Affects vmax and accel")
     _row(physics_body, 1, "Wheel diameter (in):", ttk.Entry(physics_body, textvariable=diam_var), "Wheel size")
     _row(physics_body, 2, "Robot weight (lb):", ttk.Entry(physics_body, textvariable=w_var), "Robot mass")
     _row(physics_body, 3, "Buffer Time (s):", ttk.Entry(physics_body, textvariable=tb_var), "Pause per node")
@@ -2920,6 +4540,7 @@ def open_settings_window():
     _row(physics_body, 5, "Point density (/in):", ttk.Entry(physics_body, textvariable=dens_var), "Uniform resample density for curved paths")
     curv_disp = tk.StringVar(value=f"{curv_var.get():.3f}")
     def _curv_live(_=None):
+        """Handle curv live."""
         try:
             val = float(curv_var.get())
             CFG["robot_physics"]["curvature_gain"] = val
@@ -2936,6 +4557,7 @@ def open_settings_window():
     constants_win = {"win": None}
 
     def _phys_const_defaults():
+        """Handle phys const defaults."""
         defaults = DEFAULT_CONFIG.get("physics_constants", {})
         out = {}
         for key, val in defaults.items():
@@ -2953,6 +4575,7 @@ def open_settings_window():
     ]
 
     def _derive_cal_constants_from_dynamics(dyn: dict) -> dict:
+        """Handle derive cal constants from dynamics."""
         if not isinstance(dyn, dict) or not dyn:
             return {}
         rp = CFG.get("robot_physics", {})
@@ -3024,6 +4647,7 @@ def open_settings_window():
         return constants
 
     def _open_physics_constants_editor():
+        """Handle open physics constants editor."""
         if constants_win["win"] is not None and constants_win["win"].winfo_exists():
             constants_win["win"].lift()
             constants_win["win"].focus_force()
@@ -3093,6 +4717,7 @@ def open_settings_window():
             ui.add_tooltip(entry, desc)
 
         def _load_const_values(source, fallback=None):
+            """Handle load const values."""
             src = source if isinstance(source, dict) else {}
             fb = fallback if isinstance(fallback, dict) else {}
             for key, var in const_vars.items():
@@ -3116,6 +4741,7 @@ def open_settings_window():
         ttk.Button(btns, text="Close", command=win.destroy).pack(side="right", padx=(0, 6))
 
         def _refresh_dyn_labels():
+            """Handle refresh dyn labels."""
             cal = CFG.get("codegen", {}).get("calibration", {})
             dyn = cal.get("dynamics", {}) if isinstance(cal, dict) else {}
             use_estimate = False
@@ -3141,6 +4767,7 @@ def open_settings_window():
             }
 
             def _to_float(raw):
+                """Handle to float."""
                 if isinstance(raw, dict):
                     raw = raw.get("value", None)
                 try:
@@ -3149,6 +4776,7 @@ def open_settings_window():
                     return None
 
             def _get_dyn_val(key):
+                """Return dyn val."""
                 for alias in alias_map.get(key, [key]):
                     if alias in dyn:
                         val = _to_float(dyn.get(alias))
@@ -3166,6 +4794,7 @@ def open_settings_window():
                     dyn_vars[key].set(f"{val:.3f}")
 
         def _refresh_constants_lock(*_):
+            """Handle refresh constants lock."""
             locked = bool(cal_enabled_var.get())
             for entry in const_entries.values():
                 entry.configure(state="disabled" if locked else "normal")
@@ -3191,11 +4820,13 @@ def open_settings_window():
         constants_win["refresh"] = _refresh_constants_lock
 
         def _reset_defaults():
+            """Handle reset defaults."""
             defaults = _phys_const_defaults()
             for key, var in const_vars.items():
                 var.set(str(defaults.get(key, 0.0)))
 
         def _apply_constants():
+            """Handle apply constants."""
             if cal_enabled_var.get():
                 return
             updated = {}
@@ -3229,6 +4860,7 @@ def open_settings_window():
 
     motion_profile_win = {"win": None}
     def _motion_profile_defaults():
+        """Handle motion profile defaults."""
         return {
             "voltage_shapes": copy.deepcopy(VOLTAGE_SHAPES),
             "settle_base": copy.deepcopy(SETTLE_BASE),
@@ -3240,6 +4872,7 @@ def open_settings_window():
         }
 
     def _open_motion_profile_editor():
+        """Handle open motion profile editor."""
         if motion_profile_win["win"] is not None and motion_profile_win["win"].winfo_exists():
             motion_profile_win["win"].lift()
             motion_profile_win["win"].focus_force()
@@ -3263,6 +4896,7 @@ def open_settings_window():
         body.columnconfigure(0, weight=1)
 
         def _profile_on_configure(_evt=None):
+            """Handle profile on configure."""
             try:
                 profile_canvas.configure(scrollregion=profile_canvas.bbox("all"))
                 profile_canvas.itemconfigure(body_id, width=profile_canvas.winfo_width())
@@ -3270,6 +4904,7 @@ def open_settings_window():
                 pass
 
         def _profile_mousewheel(event):
+            """Handle profile mousewheel."""
             delta = 0
             if hasattr(event, "delta") and event.delta:
                 delta = int(-event.delta / 40) if abs(event.delta) >= 40 else (-2 if event.delta > 0 else 2)
@@ -3321,6 +4956,7 @@ def open_settings_window():
         guide_body.rowconfigure(0, weight=1)
 
         def _toggle_guide():
+            """Handle toggle guide."""
             if guide_visible.get():
                 guide_box.pack_forget()
                 guide_visible.set(False)
@@ -3331,6 +4967,7 @@ def open_settings_window():
                 guide_toggle_btn.configure(text="×")
 
         def _guide_mousewheel(event):
+            """Handle guide mousewheel."""
             if not guide_visible.get():
                 return
             delta = 0
@@ -3390,6 +5027,7 @@ def open_settings_window():
         ui.add_tooltip(cap_lock_chk, "Lock each profile to one voltage cap for all sizes.")
 
         def _make_json_box(parent, title):
+            """Handle make json box."""
             box = ttk.LabelFrame(parent, text=title)
             box.pack(fill="both", expand=True, pady=(0, 8))
             inner = ttk.Frame(box)
@@ -3408,6 +5046,7 @@ def open_settings_window():
         rules_box, rules_text = _make_json_box(frame, "Profile rules (when each profile applies)")
 
         def _pick_single_cap(value):
+            """Handle pick single cap."""
             if isinstance(value, dict):
                 for key in ("v_mid", "mid", "v_small", "small", "v_large", "large"):
                     if key in value:
@@ -3435,6 +5074,7 @@ def open_settings_window():
                 return None
 
         def _coerce_single_caps(voltage_data):
+            """Handle coerce single caps."""
             if not isinstance(voltage_data, dict):
                 raise ValueError("Voltage caps must be a JSON object.")
             for move_type, profiles in voltage_data.items():
@@ -3451,6 +5091,7 @@ def open_settings_window():
             return voltage_data
 
         def _caps_are_single(voltage_data):
+            """Handle caps are single."""
             if not isinstance(voltage_data, dict):
                 return False
             for profiles in voltage_data.values():
@@ -3473,6 +5114,7 @@ def open_settings_window():
             return True
 
         def _on_single_cap_toggle():
+            """Handle on single cap toggle."""
             if not single_cap_var.get():
                 return
             try:
@@ -3497,6 +5139,7 @@ def open_settings_window():
         cap_lock_chk.configure(command=_on_single_cap_toggle)
 
         def _load_values(data):
+            """Handle load values."""
             voltage_text.delete("1.0", "end")
             settle_text.delete("1.0", "end")
             rules_text.delete("1.0", "end")
@@ -3520,9 +5163,11 @@ def open_settings_window():
         btns.pack(fill="x", pady=(4, 0))
 
         def _reset_defaults():
+            """Handle reset defaults."""
             _load_values(_motion_profile_defaults())
 
         def _apply_profiles():
+            """Handle apply profiles."""
             try:
                 voltage_data = json.loads(voltage_text.get("1.0", "end").strip() or "{}")
             except Exception as exc:
@@ -3574,12 +5219,13 @@ def open_settings_window():
     ui.add_tooltip(adv_profiles_btn, "Edit advanced motion profile rules, caps, and settle defaults.")
     ui.track_live_widget(adv_chk)
     ui.track_live_widget(adv_profiles_btn)
-    _row(physics_body, 8, "Advanced motion vars:", adv_frame, "Enable JAR-style voltage/settle placeholders and profile hover info")
+    _row(physics_body, 8, "Advanced motion vars (EXPERIMENTAL):", adv_frame, "Enable JAR-style voltage/settle placeholders and profile hover info")
 
     cal_frame = None
     cal_export_btn = None
 
     def _refresh_adv_visibility():
+        """Handle refresh adv visibility."""
         show_advanced = bool(adv_motion_var.get())
         try:
             if cal_frame is not None:
@@ -3594,25 +5240,876 @@ def open_settings_window():
     adv_motion_var.trace_add("write", lambda *_: _refresh_adv_visibility())
     _refresh_adv_visibility()
 
-    # Dimensions tab rows
+    sensor_vis_win = {"win": None}
     _row(tabs["geometry"], 0, "Bot Geometry Visualizer:", ttk.Button(tabs["geometry"], text="Open visual editor", command=open_geometry_visualizer), "Drag-to-edit drivetrain and robot geometry, including reshape.")
     _row(tabs["geometry"], 1, "Offset 1 (in):", ttk.Entry(tabs["geometry"], textvariable=off1), "First preset")
     _row(tabs["geometry"], 2, "Offset 2 (in):", ttk.Entry(tabs["geometry"], textvariable=off2), "Second preset")
     _row(tabs["geometry"], 3, "Wall padding (in):", ttk.Entry(tabs["geometry"], textvariable=pad), "Boundary margin")
     _row(tabs["geometry"], 4, "Offset Visualizer:", ttk.Button(tabs["geometry"], text="Open offset editor", command=open_offset_visualizer), "Drag node along centerline to set offsets.")
-    
-    # Codegen tab (simplified - full implementation available if needed)
-    # Replace the codegen tab section (around line 1100-1150) with this:
 
-    # --- Export tab with template customization ---
+    tabs["mcl"].rowconfigure(0, weight=1)
+    tabs["mcl"].columnconfigure(0, weight=1)
+    mcl_canvas = tk.Canvas(tabs["mcl"], borderwidth=0, highlightthickness=0)
+    mcl_body = ttk.Frame(mcl_canvas)
+    mcl_body.columnconfigure(0, weight=1)
+    mcl_body.columnconfigure(1, weight=1)
+    mcl_scroll = ttk.Scrollbar(tabs["mcl"], orient="vertical", command=mcl_canvas.yview)
+    mcl_canvas.configure(yscrollcommand=mcl_scroll.set)
+    mcl_canvas.grid(row=0, column=0, sticky="nsew")
+    mcl_scroll.grid(row=0, column=1, sticky="ns")
+    mcl_win = mcl_canvas.create_window((0, 0), window=mcl_body, anchor="nw")
+
+    def _mcl_on_configure(_evt=None):
+        """Handle mcl on configure."""
+        mcl_canvas.configure(scrollregion=mcl_canvas.bbox("all"))
+        mcl_canvas.itemconfigure(mcl_win, width=mcl_canvas.winfo_width())
+
+    def _mcl_mousewheel(event):
+        """Handle mcl mousewheel."""
+        try:
+            if hasattr(event, "delta") and event.delta:
+                delta = int(-event.delta / 120)
+            elif getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+            else:
+                delta = 0
+            if delta:
+                mcl_canvas.yview_scroll(delta, "units")
+        except Exception:
+            pass
+
+    mcl_body.bind("<Configure>", _mcl_on_configure)
+    mcl_canvas.bind("<Configure>", _mcl_on_configure)
+    for w in (mcl_canvas, mcl_body):
+        w.bind("<MouseWheel>", _mcl_mousewheel)
+        w.bind("<Button-4>", _mcl_mousewheel)
+        w.bind("<Button-5>", _mcl_mousewheel)
+
+    core_frame = ttk.LabelFrame(mcl_body, text="Core")
+    core_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(4, 8))
+    core_frame.columnconfigure(1, weight=1)
+    r = 0
+    _row(core_frame, r, "Enable MCL:", ttk.Checkbutton(core_frame, variable=mcl_enabled_var),
+         "Enable or disable MCL processing in simulation."); r += 1
+    _row(core_frame, r, "Motion update ms:", ttk.Entry(core_frame, textvariable=mcl_motion_ms_var),
+         "Prediction update interval (ms)."); r += 1
+    _row(core_frame, r, "Sensor update ms:", ttk.Entry(core_frame, textvariable=mcl_sensor_ms_var),
+         "Correction update interval (ms)."); r += 1
+    _row(core_frame, r, "Particles (N):", ttk.Entry(core_frame, textvariable=mcl_particles_n_var),
+         "Fixed particle count if KLD is disabled."); r += 1
+    mcl_row_particles_min = _row(core_frame, r, "Particles min:", ttk.Entry(core_frame, textvariable=mcl_particles_min_var),
+         "Minimum particles for adaptive/KLD."); r += 1
+    mcl_row_particles_max = _row(core_frame, r, "Particles max:", ttk.Entry(core_frame, textvariable=mcl_particles_max_var),
+         "Maximum particles for adaptive/KLD."); r += 1
+    _row(core_frame, r, "Resample method:", ttk.Combobox(core_frame, values=["systematic", "stratified", "multinomial"],
+         textvariable=mcl_resample_method_var, state="readonly"), "Resampling algorithm."); r += 1
+    _row(core_frame, r, "Resample threshold:", ttk.Entry(core_frame, textvariable=mcl_resample_thresh_var),
+         "Resample when N_eff/N drops below this ratio."); r += 1
+    mcl_row_random_injection = _row(core_frame, r, "Random injection:", ttk.Entry(core_frame, textvariable=mcl_random_injection_var),
+         "Fraction of particles respawned randomly each resample."); r += 1
+    kld_frame = ttk.Frame(core_frame)
+    kld_check = ttk.Checkbutton(kld_frame, variable=mcl_kld_enabled_var)
+    kld_check.pack(side="left")
+    ttk.Label(kld_frame, text="Enable KLD adaptive").pack(side="left", padx=(4, 0))
+    _track_widgets(kld_check)
+    _row(core_frame, r, "KLD adaptive:", kld_frame, "Adaptive particle count via KLD sampling."); r += 1
+    mcl_row_kld_eps = _row(core_frame, r, "KLD epsilon:", ttk.Entry(core_frame, textvariable=mcl_kld_eps_var),
+         "KLD epsilon parameter."); r += 1
+    mcl_row_kld_delta = _row(core_frame, r, "KLD delta:", ttk.Entry(core_frame, textvariable=mcl_kld_delta_var),
+         "KLD delta parameter."); r += 1
+    mcl_row_kld_bin_xy = _row(core_frame, r, "KLD bin xy (in):", ttk.Entry(core_frame, textvariable=mcl_kld_bin_xy_var),
+         "KLD bin size for x/y."); r += 1
+    mcl_row_kld_bin_theta = _row(core_frame, r, "KLD bin theta:", ttk.Entry(core_frame, textvariable=mcl_kld_bin_theta_var),
+         "KLD bin size for heading (deg)."); r += 1
+    aug_frame = ttk.Frame(core_frame)
+    aug_check = ttk.Checkbutton(aug_frame, variable=mcl_aug_enabled_var)
+    aug_check.pack(side="left")
+    ttk.Label(aug_frame, text="Enable augmented MCL").pack(side="left", padx=(4, 0))
+    _track_widgets(aug_check)
+    _row(core_frame, r, "Augmented:", aug_frame, "Enable w_slow/w_fast adaptive injection."); r += 1
+    mcl_row_alpha_slow = _row(core_frame, r, "Alpha slow:", ttk.Entry(core_frame, textvariable=mcl_alpha_slow_var),
+         "Augmented MCL slow update rate."); r += 1
+    mcl_row_alpha_fast = _row(core_frame, r, "Alpha fast:", ttk.Entry(core_frame, textvariable=mcl_alpha_fast_var),
+         "Augmented MCL fast update rate."); r += 1
+
+    motion_frame = ttk.LabelFrame(mcl_body, text="Motion Model")
+    motion_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    motion_frame.columnconfigure(1, weight=1)
+    r = 0
+    _row(motion_frame, r, "Enable motion:", ttk.Checkbutton(motion_frame, variable=mcl_motion_enabled_var),
+         "Enable the motion model in MCL."); r += 1
+    mcl_row_motion_model = _row(motion_frame, r, "Model:", ttk.Combobox(motion_frame, values=["drive", "tracking", "holonomic"],
+         textvariable=mcl_motion_model_var, state="readonly"), "Motion model type."); r += 1
+    mcl_row_motion_source = _row(motion_frame, r, "Source:", ttk.Combobox(motion_frame, values=["encoders", "tracking_wheels"],
+         textvariable=mcl_motion_source_var, state="readonly"), "Odometry data source."); r += 1
+    mcl_row_sigma_x = _row(motion_frame, r, "Sigma X (in):", ttk.Entry(motion_frame, textvariable=mcl_sigma_x_var),
+         "Translational noise in X (in)."); r += 1
+    mcl_row_sigma_y = _row(motion_frame, r, "Sigma Y (in):", ttk.Entry(motion_frame, textvariable=mcl_sigma_y_var),
+         "Translational noise in Y (in)."); r += 1
+    mcl_row_sigma_theta = _row(motion_frame, r, "Sigma theta (deg):", ttk.Entry(motion_frame, textvariable=mcl_sigma_theta_var),
+         "Rotational noise (deg)."); r += 1
+    _row(motion_frame, r, "Use alpha model:", ttk.Checkbutton(motion_frame, variable=mcl_use_alpha_var),
+         "Use alpha1..alpha4 motion noise model."); r += 1
+    mcl_row_alpha1 = _row(motion_frame, r, "Alpha1:", ttk.Entry(motion_frame, textvariable=mcl_alpha1_var),
+         "Alpha1 for motion noise."); r += 1
+    mcl_row_alpha2 = _row(motion_frame, r, "Alpha2:", ttk.Entry(motion_frame, textvariable=mcl_alpha2_var),
+         "Alpha2 for motion noise."); r += 1
+    mcl_row_alpha3 = _row(motion_frame, r, "Alpha3:", ttk.Entry(motion_frame, textvariable=mcl_alpha3_var),
+         "Alpha3 for motion noise."); r += 1
+    mcl_row_alpha4 = _row(motion_frame, r, "Alpha4:", ttk.Entry(motion_frame, textvariable=mcl_alpha4_var),
+         "Alpha4 for motion noise."); r += 1
+    _row(motion_frame, r, "Set pose sigma XY:", ttk.Entry(motion_frame, textvariable=mcl_set_pose_xy_var),
+         "Sigma (in) when initializing around a pose."); r += 1
+    _row(motion_frame, r, "Set pose sigma theta:", ttk.Entry(motion_frame, textvariable=mcl_set_pose_theta_var),
+         "Sigma (deg) when initializing around a pose."); r += 1
+
+    sensors_frame = ttk.LabelFrame(mcl_body, text="Sensors")
+    sensors_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    sensors_frame.columnconfigure(1, weight=1)
+    r = 0
+    _row(sensors_frame, r, "Distance enabled:", ttk.Checkbutton(sensors_frame, variable=mcl_dist_enabled_var),
+         "Enable distance sensor weighting."); r += 1
+    mcl_row_dist_model = _row(sensors_frame, r, "Distance model:", ttk.Combobox(sensors_frame, values=["likelihood_field", "beam"],
+         textvariable=mcl_dist_model_var, state="readonly"), "Distance sensor model."); r += 1
+    mcl_row_dist_sigma = _row(sensors_frame, r, "Sigma hit (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_sigma_var),
+         "Distance sensor noise (mm)."); r += 1
+    mcl_row_dist_w_hit = _row(sensors_frame, r, "W_hit:", ttk.Entry(sensors_frame, textvariable=mcl_dist_w_hit_var),
+         "Mixture weight for hit component."); r += 1
+    mcl_row_dist_w_rand = _row(sensors_frame, r, "W_rand:", ttk.Entry(sensors_frame, textvariable=mcl_dist_w_rand_var),
+         "Mixture weight for random component."); r += 1
+    mcl_row_dist_w_short = _row(sensors_frame, r, "W_short:", ttk.Entry(sensors_frame, textvariable=mcl_dist_w_short_var),
+         "Mixture weight for short readings."); r += 1
+    mcl_row_dist_w_max = _row(sensors_frame, r, "W_max:", ttk.Entry(sensors_frame, textvariable=mcl_dist_w_max_var),
+         "Mixture weight for max range."); r += 1
+    mcl_row_dist_lambda_short = _row(sensors_frame, r, "Lambda short:", ttk.Entry(sensors_frame, textvariable=mcl_dist_lambda_short_var),
+         "Short reading exponential rate."); r += 1
+    mcl_row_dist_max_range = _row(sensors_frame, r, "Max range (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_max_range_var),
+         "Distance sensor max range (mm)."); r += 1
+    mcl_row_dist_min_range = _row(sensors_frame, r, "Min range (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_min_range_var),
+         "Ignore readings below this range (mm)."); r += 1
+    mcl_row_dist_conf_min = _row(sensors_frame, r, "Min confidence (0-63):", ttk.Entry(sensors_frame, textvariable=mcl_dist_conf_min_var),
+         "Minimum distance confidence to accept readings (PROS: 0–63; 0 disables)."); r += 1
+    mcl_row_dist_obj_min = _row(sensors_frame, r, "Min object size:", ttk.Entry(sensors_frame, textvariable=mcl_dist_obj_size_min_var),
+         "Minimum object size to accept readings (0 disables)."); r += 1
+    mcl_row_dist_obj_max = _row(sensors_frame, r, "Max object size:", ttk.Entry(sensors_frame, textvariable=mcl_dist_obj_size_max_var),
+         "Maximum object size to accept readings (0 disables)."); r += 1
+    mcl_row_dist_innov = _row(sensors_frame, r, "Innovation gate (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_innov_gate_var),
+         "Reject a sensor if |meas - expected@estimate| exceeds this (0 disables)."); r += 1
+    mcl_row_dist_median = _row(sensors_frame, r, "Median window:", ttk.Entry(sensors_frame, textvariable=mcl_dist_median_window_var),
+         "Median filter window for distance sensors (1 disables)."); r += 1
+    mcl_row_dist_ignore_max = _row(sensors_frame, r, "LF ignore max:", ttk.Checkbutton(sensors_frame, variable=mcl_dist_ignore_max_var),
+         "Ignore max-range readings in likelihood field mode."); r += 1
+    mcl_row_dist_gate = _row(sensors_frame, r, "Gate (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_gate_var),
+         "Distance gating threshold (mm)."); r += 1
+    mcl_row_dist_gate_mode = _row(sensors_frame, r, "Gate mode:", ttk.Combobox(sensors_frame, values=["hard", "soft"],
+         textvariable=mcl_dist_gate_mode_var, state="readonly"), "Hard or soft gating."); r += 1
+    mcl_row_dist_gate_penalty = _row(sensors_frame, r, "Gate penalty:", ttk.Entry(sensors_frame, textvariable=mcl_dist_gate_penalty_var),
+         "Soft gating penalty multiplier."); r += 1
+    mcl_row_dist_gate_reject = _row(sensors_frame, r, "Gate reject ratio:", ttk.Entry(sensors_frame, textvariable=mcl_dist_gate_reject_var),
+         "Ignore a reading if this fraction of particles reject it."); r += 1
+    mcl_row_dist_lf_res = _row(sensors_frame, r, "LF resolution (in):", ttk.Entry(sensors_frame, textvariable=mcl_dist_lf_res_var),
+         "Likelihood field resolution (in)."); r += 1
+    _row(sensors_frame, r, "IMU enabled:", ttk.Checkbutton(sensors_frame, variable=mcl_imu_enabled_var),
+         "Enable IMU heading weighting."); r += 1
+    mcl_row_imu_sigma = _row(sensors_frame, r, "IMU sigma (deg):", ttk.Entry(sensors_frame, textvariable=mcl_imu_sigma_var),
+         "IMU heading noise (deg)."); r += 1
+    _row(sensors_frame, r, "Vision enabled:", ttk.Checkbutton(sensors_frame, variable=mcl_vision_enabled_var),
+         "Enable vision position weighting."); r += 1
+    mcl_row_vision_sigma = _row(sensors_frame, r, "Vision sigma XY (in):", ttk.Entry(sensors_frame, textvariable=mcl_vision_sigma_var),
+         "Vision position noise (in)."); r += 1
+    mcl_row_vision_theta = _row(sensors_frame, r, "Vision sigma theta:", ttk.Entry(sensors_frame, textvariable=mcl_vision_theta_sigma_var),
+         "Vision heading noise (deg)."); r += 1
+    mcl_row_vision_conf = _row(sensors_frame, r, "Vision confidence min:", ttk.Entry(sensors_frame, textvariable=mcl_vision_conf_min_var),
+         "Minimum vision confidence required."); r += 1
+
+    def _mcl_sensor_value(var, default=0.0):
+        """Handle mcl sensor value."""
+        try:
+            return float(var.get())
+        except Exception:
+            try:
+                return float(default)
+            except Exception:
+                return 0.0
+
+    def _mcl_sensor_map_mode(var):
+        """Handle mcl sensor map mode."""
+        mode = str(var.get() or "both").strip().lower()
+        return mode if mode in ("both", "perimeter", "objects") else "both"
+
+    def _open_mcl_sensor_config(idx: int):
+        """Handle open mcl sensor config."""
+        sv = mcl_sensor_vars[idx]
+        win = tk.Toplevel(top)
+        win.title(f"Distance Sensor {idx + 1} Settings")
+        win.resizable(False, False)
+        body = ttk.Frame(win)
+        body.pack(fill="both", expand=True, padx=8, pady=8)
+        r = 0
+        _row(body, r, "Bias (mm):", ttk.Entry(body, textvariable=sv["bias_mm"]),
+             "Bias subtracted from the raw distance measurement."); r += 1
+        _row(body, r, "Angle offset (deg):", ttk.Entry(body, textvariable=sv["angle_offset_deg"]),
+             "Additional angle offset for this sensor."); r += 1
+        _row(body, r, "Min range (mm):", ttk.Entry(body, textvariable=sv["min_range_mm"]),
+             "Override minimum valid range for this sensor."); r += 1
+        _row(body, r, "Max range (mm):", ttk.Entry(body, textvariable=sv["max_range_mm"]),
+             "Override maximum valid range for this sensor."); r += 1
+        _row(body, r, "Min confidence (0-63):", ttk.Entry(body, textvariable=sv["min_confidence"]),
+             "Override minimum confidence for this sensor."); r += 1
+        _row(body, r, "Min object size:", ttk.Entry(body, textvariable=sv["min_object_size"]),
+             "Override minimum object size for this sensor."); r += 1
+        _row(body, r, "Max object size:", ttk.Entry(body, textvariable=sv["max_object_size"]),
+             "Override maximum object size for this sensor."); r += 1
+        _row(body, r, "Innovation gate (mm):", ttk.Entry(body, textvariable=sv["innovation_gate_mm"]),
+             "Per-sensor innovation gate (mm)."); r += 1
+        _row(body, r, "Map mode:", ttk.Combobox(body, values=["both", "perimeter", "objects"],
+             textvariable=sv["map_mode"], state="readonly"),
+             "Choose map geometry this sensor should see; for object mode, use Sensor object view in Map Objects to pick object ids."); r += 1
+
+        def _calibrate_bias():
+            """Handle calibrate bias."""
+            global robot_pos, robot_heading, mcl_state
+            name = str(sv["name"].get() or f"sensor {idx + 1}")
+            meas = simpledialog.askfloat("Calibrate bias",
+                                         f"Enter measured distance (mm) for {name}:",
+                                         parent=win)
+            if meas is None:
+                return
+            try:
+                mcl_mod.update_map_segments(mcl_state, CFG)
+            except Exception:
+                pass
+            sensor_cfg = {
+                "x_in": _mcl_sensor_value(sv["x_in"], 0.0),
+                "y_in": _mcl_sensor_value(sv["y_in"], 0.0),
+                "angle_deg": _mcl_sensor_value(sv["angle_deg"], 0.0),
+                "angle_offset_deg": _mcl_sensor_value(sv["angle_offset_deg"], 0.0),
+                "map_mode": _mcl_sensor_map_mode(sv["map_mode"]),
+            }
+            try:
+                mcl_heading = _mcl_heading_from_internal(robot_heading)
+                origin, heading = mcl_mod._sensor_world_pose(robot_pos[0], robot_pos[1], mcl_heading, sensor_cfg)
+                segs = mcl_mod._sensor_segments(mcl_state, sensor_cfg)
+                max_range = _mcl_sensor_value(sv["max_range_mm"], _mcl_sensor_value(mcl_dist_max_range_var, 2000.0))
+                if max_range <= 0.0:
+                    max_range = _mcl_sensor_value(mcl_dist_max_range_var, 2000.0)
+                max_range_px = max_range / mcl_mod.MM_PER_IN * mcl_mod.PPI
+                pred_px = mcl_mod.raycast_distance(segs, origin, heading, max_range_px)
+                if pred_px is None:
+                    messagebox.showerror("Calibrate bias",
+                                         "No map intersection found for this sensor from the current pose.")
+                    return
+                expected_mm = mcl_mod.px_to_in(pred_px) * mcl_mod.MM_PER_IN
+                bias = meas - expected_mm
+                sv["bias_mm"].set(f"{bias:.3f}")
+            except Exception as exc:
+                messagebox.showerror("Calibrate bias", f"Calibration failed:\n{exc}")
+
+        btn_frame = ttk.Frame(body)
+        btn_frame.pack(fill="x", pady=(6, 0))
+        ttk.Button(btn_frame, text="Calibrate bias from pose", command=_calibrate_bias).pack(side="left")
+        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side="right")
+
+    geom_frame = ttk.LabelFrame(mcl_body, text="Distance Sensor Geometry")
+    geom_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    geom_frame.columnconfigure(1, weight=1)
+    header = ttk.Frame(geom_frame)
+    header.grid(row=0, column=1, sticky="w", padx=6)
+    ttk.Label(header, text="Name").grid(row=0, column=0, padx=2)
+    ttk.Label(header, text="X (in)").grid(row=0, column=1, padx=2)
+    ttk.Label(header, text="Y (in)").grid(row=0, column=2, padx=2)
+    ttk.Label(header, text="Angle (deg)").grid(row=0, column=3, padx=2)
+    ttk.Label(header, text="On").grid(row=0, column=4, padx=2)
+    ttk.Label(header, text="Cfg").grid(row=0, column=5, padx=2)
+    mcl_geom_header = header
+    mcl_geom_rows = []
+    for i, sensor_vars in enumerate(mcl_sensor_vars):
+        row_frame = ttk.Frame(geom_frame)
+        name_entry = ttk.Entry(row_frame, textvariable=sensor_vars["name"], width=8)
+        name_entry.grid(row=0, column=0, padx=2)
+        x_entry = ttk.Entry(row_frame, textvariable=sensor_vars["x_in"], width=6)
+        x_entry.grid(row=0, column=1, padx=2)
+        y_entry = ttk.Entry(row_frame, textvariable=sensor_vars["y_in"], width=6)
+        y_entry.grid(row=0, column=2, padx=2)
+        ang_entry = ttk.Entry(row_frame, textvariable=sensor_vars["angle_deg"], width=8)
+        ang_entry.grid(row=0, column=3, padx=2)
+        en_check = ttk.Checkbutton(row_frame, variable=sensor_vars["enabled"])
+        en_check.grid(row=0, column=4, padx=2)
+        cfg_btn = ttk.Button(row_frame, text="Edit", command=lambda i=i: _open_mcl_sensor_config(i))
+        cfg_btn.grid(row=0, column=5, padx=2)
+        _track_widgets(name_entry, x_entry, y_entry, ang_entry, en_check, cfg_btn)
+        mcl_geom_rows.append(_row(
+            geom_frame,
+            1 + i,
+            f"Sensor {i+1}:",
+            row_frame,
+            "Distance sensor geometry. Angle uses heading convention: 0=left, 90=forward (clockwise)."
+        ))
+
+    map_frame = ttk.LabelFrame(mcl_body, text="Map Objects")
+    map_frame.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    map_frame.columnconfigure(1, weight=1)
+    cat_frame = ttk.Frame(map_frame)
+    map_perim_check = ttk.Checkbutton(cat_frame, text="Perimeter", variable=mcl_map_perimeter_var)
+    map_perim_check.grid(row=0, column=0, sticky="w", padx=4)
+    map_long_check = ttk.Checkbutton(cat_frame, text="Long goals", variable=mcl_map_long_goals_var)
+    map_long_check.grid(row=0, column=1, sticky="w", padx=4)
+    map_long_braces_check = ttk.Checkbutton(cat_frame, text="Long goal braces", variable=mcl_map_long_goal_braces_var)
+    map_long_braces_check.grid(row=0, column=2, sticky="w", padx=4)
+    map_center_check = ttk.Checkbutton(cat_frame, text="Center goals", variable=mcl_map_center_goals_var)
+    map_center_check.grid(row=1, column=0, sticky="w", padx=4)
+    map_match_check = ttk.Checkbutton(cat_frame, text="Matchloaders", variable=mcl_map_matchloaders_var)
+    map_match_check.grid(row=1, column=1, sticky="w", padx=4)
+    map_park_check = ttk.Checkbutton(cat_frame, text="Park zones", variable=mcl_map_park_zones_var)
+    map_park_check.grid(row=2, column=0, sticky="w", padx=4)
+    _track_widgets(map_perim_check, map_long_check, map_long_braces_check, map_center_check, map_match_check, map_park_check)
+    mcl_row_map_categories = _row(map_frame, 0, "Categories:", cat_frame, "Map object categories to include in raycasting.")
+    sensor_sel_var = tk.StringVar(value="Global map objects")
+    sensor_sel_frame = ttk.Frame(map_frame)
+    sensor_sel_combo = ttk.Combobox(sensor_sel_frame, textvariable=sensor_sel_var, state="readonly")
+    sensor_sel_combo.pack(side="left", fill="x", expand=True, padx=(0, 4))
+    _track_widgets(sensor_sel_combo)
+    mcl_row_map_sensor_view = _row(
+        map_frame,
+        1,
+        "Sensor object view:",
+        sensor_sel_frame,
+        "Select Global map objects or an enabled sensor to edit which objects that sensor can raycast."
+    )
+    obj_frame = ttk.Frame(map_frame)
+    obj_frame.columnconfigure(0, weight=1)
+    mcl_row_map_objects = _row(map_frame, 2, "Individual objects:", obj_frame, "Override specific objects (by id).")
+
+    sensor_sel_map = {}
+
+    def _sensor_selector_values():
+        """Handle sensor selector values."""
+        values = ["Global map objects"]
+        for idx, sensor_vars in enumerate(mcl_sensor_vars):
+            try:
+                enabled = int(sensor_vars["enabled"].get()) == 1
+            except Exception:
+                enabled = False
+            if not enabled:
+                continue
+            name = str(sensor_vars["name"].get() or "").strip() or f"sensor_{idx + 1}"
+            label = f"Sensor {idx + 1}: {name}"
+            values.append(label)
+            sensor_sel_map[label] = idx
+        return values
+
+    def _selected_sensor_idx():
+        """Handle selected sensor idx."""
+        return sensor_sel_map.get(str(sensor_sel_var.get() or "").strip())
+
+    def _rebuild_object_checks():
+        """Handle rebuild object checks."""
+        for child in list(obj_frame.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        sensor_idx = _selected_sensor_idx()
+        for row, (obj_id, obj_label) in enumerate(mcl_object_entries):
+            if sensor_idx is None:
+                var = mcl_object_vars.get(obj_id)
+            else:
+                var = mcl_sensor_object_vars.get(sensor_idx, {}).get(obj_id)
+            if var is None:
+                continue
+            obj_text = f"{obj_label} ({obj_id})"
+            obj_check = tk.Checkbutton(
+                obj_frame,
+                text=obj_text,
+                variable=var,
+                anchor="w",
+                justify="left",
+                wraplength=420,
+            )
+            obj_check.grid(row=row, column=0, sticky="ew", padx=4, pady=1)
+            _track_widgets(obj_check)
+            ui.add_tooltip(obj_check, f"Object id: {obj_id}")
+
+    def _refresh_sensor_selector(*_):
+        """Handle refresh sensor selector."""
+        sensor_sel_map.clear()
+        vals = _sensor_selector_values()
+        sensor_sel_combo.configure(values=vals)
+        cur = str(sensor_sel_var.get() or "").strip()
+        if cur not in vals:
+            sensor_sel_var.set(vals[0] if vals else "Global map objects")
+        _rebuild_object_checks()
+
+    sensor_sel_combo.bind("<<ComboboxSelected>>", lambda _e: _rebuild_object_checks())
+    for sensor_vars in mcl_sensor_vars:
+        try:
+            sensor_vars["enabled"].trace_add("write", _refresh_sensor_selector)
+            sensor_vars["name"].trace_add("write", _refresh_sensor_selector)
+        except Exception:
+            pass
+    _refresh_sensor_selector()
+
+    region_frame = ttk.LabelFrame(mcl_body, text="Region Constraints")
+    region_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    region_frame.columnconfigure(1, weight=1)
+    r = 0
+    _row(region_frame, r, "Enabled:", ttk.Checkbutton(region_frame, variable=mcl_region_enabled_var),
+         "Enable region constraints."); r += 1
+    mcl_row_region_mode = _row(region_frame, r, "Mode:", ttk.Combobox(region_frame, values=["hard", "soft"],
+         textvariable=mcl_region_mode_var, state="readonly"), "Hard or soft region gating."); r += 1
+    mcl_row_region_type = _row(region_frame, r, "Type:", ttk.Combobox(region_frame, values=["segment_path", "segment_band", "grid", "manual"],
+         textvariable=mcl_region_type_var, state="readonly"), "Region constraint type."); r += 1
+    mcl_row_region_update = _row(region_frame, r, "Update mode:", ttk.Combobox(region_frame, values=["segment_path", "manual"],
+         textvariable=mcl_region_update_var, state="readonly"), "Region update behavior."); r += 1
+    mcl_row_region_penalty = _row(region_frame, r, "Penalty:", ttk.Entry(region_frame, textvariable=mcl_region_penalty_var),
+         "Soft mode weight penalty."); r += 1
+    mcl_row_region_perim = _row(region_frame, r, "Perimeter gate:", ttk.Checkbutton(region_frame, variable=mcl_region_perim_var),
+         "Disallow particles outside the field."); r += 1
+    mcl_row_region_obj = _row(region_frame, r, "Object mode:", ttk.Combobox(region_frame, values=["off", "soft", "hard"],
+         textvariable=mcl_region_obj_var, state="readonly"),
+         "Off, soft clip penalty, or hard reject for obstacle overlap."); r += 1
+    mcl_row_region_radius = _row(region_frame, r, "Radius (in):", ttk.Entry(region_frame, textvariable=mcl_region_radius_var),
+         "Segment band radius (in)."); r += 1
+    mcl_row_region_grid_type = _row(region_frame, r, "Grid type:", ttk.Combobox(region_frame, values=["quadrant", "custom"],
+         textvariable=mcl_region_grid_type_var, state="readonly"), "Grid region type."); r += 1
+    mcl_row_region_grid_x = _row(region_frame, r, "Grid X:", ttk.Entry(region_frame, textvariable=mcl_region_grid_x_var),
+         "Grid columns."); r += 1
+    mcl_row_region_grid_y = _row(region_frame, r, "Grid Y:", ttk.Entry(region_frame, textvariable=mcl_region_grid_y_var),
+         "Grid rows."); r += 1
+    mcl_row_region_x_min = _row(region_frame, r, "X min (in):", ttk.Entry(region_frame, textvariable=mcl_region_x_min_var),
+         "Region X min in screen inches from the left edge."); r += 1
+    mcl_row_region_x_max = _row(region_frame, r, "X max (in):", ttk.Entry(region_frame, textvariable=mcl_region_x_max_var),
+         "Region X max in screen inches from the left edge."); r += 1
+    mcl_row_region_y_min = _row(region_frame, r, "Y min (in):", ttk.Entry(region_frame, textvariable=mcl_region_y_min_var),
+         "Region Y min in screen inches from the top edge."); r += 1
+    mcl_row_region_y_max = _row(region_frame, r, "Y max (in):", ttk.Entry(region_frame, textvariable=mcl_region_y_max_var),
+         "Region Y max in screen inches from the top edge."); r += 1
+    mcl_row_region_current = _row(region_frame, r, "Current region:", ttk.Entry(region_frame, textvariable=mcl_region_current_var),
+         "Grid region index or comma list."); r += 1
+    mcl_row_region_slope = _row(region_frame, r, "Slope field:", ttk.Checkbutton(region_frame, variable=mcl_region_slope_var),
+         "Enable heading slope field weighting."); r += 1
+    mcl_row_region_slope_sigma = _row(region_frame, r, "Slope sigma:", ttk.Entry(region_frame, textvariable=mcl_region_slope_sigma_var),
+         "Slope heading sigma (deg)."); r += 1
+
+    conf_frame = ttk.LabelFrame(mcl_body, text="Confidence")
+    conf_frame.grid(row=6, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    conf_frame.columnconfigure(1, weight=1)
+    r = 0
+    mcl_row_conf_thresh = _row(conf_frame, r, "Threshold:", ttk.Entry(conf_frame, textvariable=mcl_conf_thresh_var),
+         "Confidence threshold for relocalization."); r += 1
+    _row(conf_frame, r, "Auto reinit:", ttk.Checkbutton(conf_frame, variable=mcl_conf_auto_var),
+         "Automatically reinitialize when confidence is low."); r += 1
+    mcl_row_conf_mode = _row(conf_frame, r, "Reinit mode:", ttk.Combobox(conf_frame, values=["global", "estimate"],
+         textvariable=mcl_conf_mode_var, state="readonly"), "Reinitialize globally or around estimate."); r += 1
+
+    corr_frame = ttk.LabelFrame(mcl_body, text="Odom Correction")
+    corr_frame.grid(row=7, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    corr_frame.columnconfigure(1, weight=1)
+    r = 0
+    _row(corr_frame, r, "Enabled:", ttk.Checkbutton(corr_frame, variable=mcl_corr_enabled_var),
+         "Enable MCL->odom correction helper in exports."); r += 1
+    mcl_row_corr_min_conf = _row(corr_frame, r, "Min confidence:", ttk.Entry(corr_frame, textvariable=mcl_corr_min_conf_var),
+         "Minimum confidence to apply correction."); r += 1
+    mcl_row_corr_max_trans = _row(corr_frame, r, "Max trans jump (in):", ttk.Entry(corr_frame, textvariable=mcl_corr_max_trans_var),
+         "Reject correction if translation jump exceeds this."); r += 1
+    mcl_row_corr_max_theta = _row(corr_frame, r, "Max theta jump (deg):", ttk.Entry(corr_frame, textvariable=mcl_corr_max_theta_var),
+         "Reject correction if heading jump exceeds this."); r += 1
+    mcl_row_corr_alpha_min = _row(corr_frame, r, "Alpha min:", ttk.Entry(corr_frame, textvariable=mcl_corr_alpha_min_var),
+         "Minimum blend factor when applying correction."); r += 1
+    mcl_row_corr_alpha_max = _row(corr_frame, r, "Alpha max:", ttk.Entry(corr_frame, textvariable=mcl_corr_alpha_max_var),
+         "Maximum blend factor when applying correction."); r += 1
+
+    viz_frame = ttk.LabelFrame(mcl_body, text="Visualizer")
+    viz_frame.grid(row=8, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    viz_frame.columnconfigure(1, weight=1)
+    r = 0
+    _row(viz_frame, r, "Show particles:", ttk.Checkbutton(viz_frame, variable=mcl_show_particles_var),
+         "Show particle cloud."); r += 1
+    _row(viz_frame, r, "Show estimate:", ttk.Checkbutton(viz_frame, variable=mcl_show_estimate_var),
+         "Show estimated pose."); r += 1
+    _row(viz_frame, r, "Show covariance:", ttk.Checkbutton(viz_frame, variable=mcl_show_cov_var),
+         "Show covariance ellipse."); r += 1
+    _row(viz_frame, r, "Show rays:", ttk.Checkbutton(viz_frame, variable=mcl_show_rays_var),
+         "Show sensor rays and markers."); r += 1
+    _row(viz_frame, r, "Show region:", ttk.Checkbutton(viz_frame, variable=mcl_show_region_var),
+         "Show region overlays."); r += 1
+    _row(viz_frame, r, "Show gating:", ttk.Checkbutton(viz_frame, variable=mcl_show_gating_var),
+         "Highlight gated sensor readings."); r += 1
+    _row(viz_frame, r, "Max particles draw:", ttk.Entry(viz_frame, textvariable=mcl_max_draw_var),
+         "Limit particles drawn for performance."); r += 1
+
+    def _var_int(var, default=0):
+        """Handle var int."""
+        try:
+            return int(var.get())
+        except Exception:
+            try:
+                return int(float(var.get()))
+            except Exception:
+                return default
+
+    def _var_float(var, default=0.0):
+        """Handle var float."""
+        try:
+            return float(var.get())
+        except Exception:
+            return float(default)
+
+    def _sync_geom_defaults() -> None:
+        """Handle sync geom defaults."""
+        if any(str(sv["name"].get() or "").strip() for sv in mcl_sensor_vars):
+            return
+        defaults = mcl_mod.get_distance_sensors(CFG)
+        for idx, sv in enumerate(mcl_sensor_vars):
+            if idx >= len(defaults):
+                break
+            entry = defaults[idx]
+            sv["name"].set(str(entry.get("name", f"sensor_{idx + 1}")))
+            sv["x_in"].set(str(entry.get("x_in", 0.0)))
+            sv["y_in"].set(str(entry.get("y_in", 0.0)))
+            sv["angle_deg"].set(str(entry.get("angle_deg", 0.0)))
+            sv["enabled"].set(int(entry.get("enabled", 1)))
+
+    def _refresh_mcl_visibility(*_):
+        """Handle refresh mcl visibility."""
+        kld_on = _var_int(mcl_kld_enabled_var, 0) == 1
+        _set_row_visible(mcl_row_particles_min, kld_on)
+        _set_row_visible(mcl_row_particles_max, kld_on)
+        _set_row_visible(mcl_row_kld_eps, kld_on)
+        _set_row_visible(mcl_row_kld_delta, kld_on)
+        _set_row_visible(mcl_row_kld_bin_xy, kld_on)
+        _set_row_visible(mcl_row_kld_bin_theta, kld_on)
+
+        aug_on = _var_int(mcl_aug_enabled_var, 0) == 1
+        _set_row_visible(mcl_row_alpha_slow, aug_on)
+        _set_row_visible(mcl_row_alpha_fast, aug_on)
+        _set_row_visible(mcl_row_random_injection, True)
+
+        motion_on = _var_int(mcl_motion_enabled_var, 1) == 1
+        use_alpha = _var_int(mcl_use_alpha_var, 0) == 1
+        _set_row_visible(mcl_row_motion_model, False)
+        _set_row_visible(mcl_row_motion_source, False)
+        _set_row_visible(mcl_row_sigma_x, motion_on and not use_alpha)
+        _set_row_visible(mcl_row_sigma_y, motion_on and not use_alpha)
+        _set_row_visible(mcl_row_sigma_theta, motion_on and not use_alpha)
+        _set_row_visible(mcl_row_alpha1, motion_on and use_alpha)
+        _set_row_visible(mcl_row_alpha2, motion_on and use_alpha)
+        _set_row_visible(mcl_row_alpha3, motion_on and use_alpha)
+        _set_row_visible(mcl_row_alpha4, motion_on and use_alpha)
+
+        dist_on = _var_int(mcl_dist_enabled_var, 1) == 1
+        dist_model = str(mcl_dist_model_var.get() or "").strip().lower()
+        gate_mm = _var_float(mcl_dist_gate_var, 0.0)
+        gate_on = dist_on and gate_mm > 0.0
+        _set_row_visible(mcl_row_dist_model, dist_on)
+        _set_row_visible(mcl_row_dist_sigma, dist_on)
+        _set_row_visible(mcl_row_dist_w_hit, dist_on)
+        _set_row_visible(mcl_row_dist_w_rand, dist_on)
+        _set_row_visible(mcl_row_dist_w_short, dist_on)
+        _set_row_visible(mcl_row_dist_w_max, dist_on)
+        _set_row_visible(mcl_row_dist_lambda_short, dist_on)
+        _set_row_visible(mcl_row_dist_max_range, dist_on)
+        _set_row_visible(mcl_row_dist_min_range, dist_on)
+        _set_row_visible(mcl_row_dist_conf_min, dist_on)
+        _set_row_visible(mcl_row_dist_obj_min, dist_on)
+        _set_row_visible(mcl_row_dist_obj_max, dist_on)
+        _set_row_visible(mcl_row_dist_innov, dist_on)
+        _set_row_visible(mcl_row_dist_median, dist_on)
+        _set_row_visible(mcl_row_dist_ignore_max, dist_on and dist_model == "likelihood_field")
+        _set_row_visible(mcl_row_dist_gate, dist_on)
+        _set_row_visible(mcl_row_dist_gate_mode, gate_on)
+        _set_row_visible(mcl_row_dist_gate_penalty, gate_on)
+        _set_row_visible(mcl_row_dist_gate_reject, gate_on)
+        _set_row_visible(mcl_row_dist_lf_res, dist_on and dist_model == "likelihood_field")
+
+        imu_on = _var_int(mcl_imu_enabled_var, 1) == 1
+        _set_row_visible(mcl_row_imu_sigma, imu_on)
+        vis_on = _var_int(mcl_vision_enabled_var, 0) == 1
+        _set_row_visible(mcl_row_vision_sigma, vis_on)
+        _set_row_visible(mcl_row_vision_theta, vis_on)
+        _set_row_visible(mcl_row_vision_conf, vis_on)
+
+        if dist_on:
+            geom_frame.grid()
+            map_frame.grid()
+        else:
+            geom_frame.grid_remove()
+            map_frame.grid_remove()
+        try:
+            if dist_on:
+                mcl_geom_header.grid()
+            else:
+                mcl_geom_header.grid_remove()
+        except Exception:
+            pass
+        for row in mcl_geom_rows:
+            _set_row_visible(row, dist_on)
+        _set_row_visible(mcl_row_map_categories, dist_on)
+        _set_row_visible(mcl_row_map_sensor_view, dist_on)
+        _set_row_visible(mcl_row_map_objects, dist_on)
+
+        region_on = _var_int(mcl_region_enabled_var, 0) == 1
+        region_type = str(mcl_region_type_var.get() or "segment_path").strip().lower()
+        is_segment = region_type in ("segment_path", "segment_band", "segment", "band", "path")
+        is_grid = region_type == "grid"
+        is_manual = region_type in ("manual", "bounds", "rect", "rectangle")
+        _set_row_visible(mcl_row_region_mode, region_on)
+        _set_row_visible(mcl_row_region_type, region_on)
+        _set_row_visible(mcl_row_region_update, False)
+        _set_row_visible(mcl_row_region_penalty, region_on)
+        _set_row_visible(mcl_row_region_perim, region_on)
+        _set_row_visible(mcl_row_region_obj, region_on)
+        _set_row_visible(mcl_row_region_radius, region_on and is_segment)
+        _set_row_visible(mcl_row_region_grid_type, region_on and is_grid)
+        _set_row_visible(mcl_row_region_grid_x, region_on and is_grid)
+        _set_row_visible(mcl_row_region_grid_y, region_on and is_grid)
+        bounds_on = region_on and (is_grid or is_manual)
+        _set_row_visible(mcl_row_region_x_min, bounds_on)
+        _set_row_visible(mcl_row_region_x_max, bounds_on)
+        _set_row_visible(mcl_row_region_y_min, bounds_on)
+        _set_row_visible(mcl_row_region_y_max, bounds_on)
+        _set_row_visible(mcl_row_region_current, region_on and is_grid)
+        _set_row_visible(mcl_row_region_slope, region_on and is_segment)
+        _set_row_visible(mcl_row_region_slope_sigma, region_on and is_segment and _var_int(mcl_region_slope_var, 0) == 1)
+
+        auto_reinit = _var_int(mcl_conf_auto_var, 0) == 1
+        _set_row_visible(mcl_row_conf_thresh, auto_reinit)
+        _set_row_visible(mcl_row_conf_mode, auto_reinit)
+
+        corr_on = _var_int(mcl_corr_enabled_var, 1) == 1
+        _set_row_visible(mcl_row_corr_min_conf, corr_on)
+        _set_row_visible(mcl_row_corr_max_trans, corr_on)
+        _set_row_visible(mcl_row_corr_max_theta, corr_on)
+        _set_row_visible(mcl_row_corr_alpha_min, corr_on)
+        _set_row_visible(mcl_row_corr_alpha_max, corr_on)
+        try:
+            _mcl_on_configure()
+        except Exception:
+            pass
+
+    for var in (
+        mcl_kld_enabled_var, mcl_aug_enabled_var, mcl_motion_enabled_var,
+        mcl_use_alpha_var, mcl_dist_enabled_var, mcl_dist_model_var,
+        mcl_dist_gate_var, mcl_imu_enabled_var,
+        mcl_vision_enabled_var, mcl_region_enabled_var, mcl_region_type_var,
+        mcl_region_slope_var, mcl_conf_auto_var,
+        mcl_corr_enabled_var,
+    ):
+        try:
+            var.trace_add("write", _refresh_mcl_visibility)
+        except Exception:
+            pass
+    _sync_geom_defaults()
+    _refresh_mcl_visibility()
+
+    mcl_tune_state = {"analysis": None}
+    mcl_tune_status_var = tk.StringVar(value="No tuning session imported.")
+
+    def _current_mcl_hash32():
+        """Handle current mcl hash32."""
+        try:
+            hpp = mcl_codegen.build_mcl_config_hpp(CFG)
+            m = re.search(r"MCL_CONFIG_HASH32\\s*=\\s*0x([0-9a-fA-F]+)u;", hpp)
+            if m:
+                return int(m.group(1), 16)
+        except Exception:
+            pass
+        return None
+
+    def _import_mcl_tuning_session():
+        """Handle import mcl tuning session."""
+        try:
+            on_update()
+        except Exception:
+            pass
+        path = filedialog.askopenfilename(
+            parent=top,
+            title="Import MCL tuning session",
+            filetypes=[("MCL logs", "*.mcllog"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            expected_hash = _current_mcl_hash32()
+            analysis = mcl_tuning_mod.analyze_mcl_log(path, expected_config_hash32=expected_hash)
+        except Exception as e:
+            messagebox.showerror("MCL Tuning Import", f"Failed to import tuning session:\n{e}")
+            return
+        mcl_tune_state["analysis"] = analysis
+        summary = analysis.get("summary", {})
+        mcl_tune_status_var.set(
+            f"Loaded {os.path.basename(path)} | Score {summary.get('score', 0):.1f}/100 ({summary.get('grade', 'N/A')})"
+        )
+        messagebox.showinfo("MCL Tuning Session", mcl_tuning_mod.format_analysis_text(analysis))
+
+    def _apply_mcl_tuning_recommendations():
+        """Handle apply mcl tuning recommendations."""
+        analysis = mcl_tune_state.get("analysis")
+        if not isinstance(analysis, dict):
+            messagebox.showwarning("MCL Tuning", "Import a .mcllog session first.")
+            return
+        rec = analysis.get("recommendations", {})
+        try:
+            on_update()
+        except Exception:
+            pass
+        mcl_tuning_mod.apply_recommendations(CFG, rec)
+        mcl_imu_sigma_var.set(str(rec.get("imu_sigma_deg", mcl_imu_sigma_var.get())))
+        mcl_dist_sigma_var.set(str(rec.get("dist_sigma_hit_mm", mcl_dist_sigma_var.get())))
+        mcl_dist_w_hit_var.set(str(rec.get("dist_w_hit", mcl_dist_w_hit_var.get())))
+        mcl_dist_w_rand_var.set(str(rec.get("dist_w_rand", mcl_dist_w_rand_var.get())))
+        mcl_dist_gate_var.set(str(rec.get("dist_gate_mm", mcl_dist_gate_var.get())))
+        mcl_dist_innov_gate_var.set(str(rec.get("dist_innovation_gate_mm", mcl_dist_innov_gate_var.get())))
+        mcl_corr_min_conf_var.set(str(rec.get("corr_min_conf", mcl_corr_min_conf_var.get())))
+        mcl_corr_alpha_min_var.set(str(rec.get("corr_alpha_min", mcl_corr_alpha_min_var.get())))
+        mcl_corr_alpha_max_var.set(str(rec.get("corr_alpha_max", mcl_corr_alpha_max_var.get())))
+        mcl_tuning_enabled_var.set(int(rec.get("tuning_enabled", mcl_tuning_enabled_var.get())))
+        mcl_tuning_log_rate_var.set(str(rec.get("tuning_log_rate_hz", mcl_tuning_log_rate_var.get())))
+        mcl_tuning_subsample_var.set(str(rec.get("tuning_particle_subsample", mcl_tuning_subsample_var.get())))
+        try:
+            on_update()
+        except Exception as e:
+            messagebox.showerror("MCL Tuning", f"Failed to apply recommendations:\n{e}")
+            return
+        messagebox.showinfo("MCL Tuning", "Applied recommended tuning values to MCL/EKF config.")
+
+    def _export_mcl_tuning_report():
+        """Handle export mcl tuning report."""
+        analysis = mcl_tune_state.get("analysis")
+        if not isinstance(analysis, dict):
+            messagebox.showwarning("MCL Tuning", "Import a .mcllog session first.")
+            return
+        out = filedialog.asksaveasfilename(
+            parent=top,
+            title="Save tuning report",
+            defaultextension=".md",
+            filetypes=[("Markdown", "*.md"), ("All files", "*.*")],
+            initialfile="TUNING_REPORT.md",
+        )
+        if not out:
+            return
+        try:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(mcl_tuning_mod.build_tuning_report(analysis))
+        except Exception as e:
+            messagebox.showerror("MCL Tuning", f"Failed to save report:\n{e}")
+            return
+        messagebox.showinfo("MCL Tuning", f"Saved tuning report:\n{out}")
+
+    def _export_mcl_codegen():
+        """Handle export mcl codegen."""
+        try:
+            on_update()
+        except Exception:
+            pass
+        default_dir = os.path.join(os.getcwd(), "export", "mcl")
+        chosen = filedialog.askdirectory(
+            parent=top,
+            initialdir=default_dir if os.path.isdir(default_dir) else os.getcwd(),
+            title="Select MCL export directory"
+        )
+        if not chosen:
+            return
+        try:
+            mcl_codegen.write_mcl_files(CFG, chosen)
+        except Exception as e:
+            messagebox.showerror("Export MCL Code", f"Failed to export MCL code:\n{e}")
+            return
+        messagebox.showinfo(
+            "Export MCL Code",
+            "Generated mcl_config.hpp, mcl_localizer.h, mcl_localizer.cpp,\n"
+            "mcl_runtime.h, and mcl_runtime.cpp in:\n"
+            + chosen
+        )
+
+    export_frame = ttk.LabelFrame(mcl_body, text="MCL PROS Code Generation (EXPERIMENTAL)")
+    export_frame.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    export_frame.columnconfigure(1, weight=1)
+    _row(export_frame, 0, "Export:", ttk.Button(export_frame, text="Export MCL Code...", command=_export_mcl_codegen),
+         "Generate MCL core + runtime wrapper for PROS.")
+    mcl_tuning_info_lbl = ttk.Label(
+        export_frame,
+        text="Tuning mode enables .mcllog session logging for the microSD wizard. Turn ON when collecting tuning runs, OFF for normal competition exports.",
+        wraplength=420,
+        justify="left"
+    )
+    _row(export_frame, 1, "Info:", mcl_tuning_info_lbl,
+         "Quick guidance for when tuning mode should be enabled.")
+    _row(export_frame, 2, "Tuning mode:", ttk.Checkbutton(export_frame, variable=mcl_tuning_enabled_var),
+         "Enable .mcllog telemetry support in generated exports.")
+    _row(export_frame, 3, "Log rate (Hz):", ttk.Entry(export_frame, textvariable=mcl_tuning_log_rate_var),
+         "Tuning telemetry log sample rate for wizard sessions.")
+    _row(export_frame, 4, "Particle subsample:", ttk.Entry(export_frame, textvariable=mcl_tuning_subsample_var),
+         "Optional particle debug subsample (0 keeps disabled).")
+    tune_btns = ttk.Frame(export_frame)
+    tune_btns.columnconfigure(0, weight=1)
+    ttk.Button(tune_btns, text="Import .mcllog...", command=_import_mcl_tuning_session).grid(
+        row=0, column=0, sticky="ew", pady=(0, 4)
+    )
+    ttk.Button(tune_btns, text="Apply Recommended", command=_apply_mcl_tuning_recommendations).grid(
+        row=1, column=0, sticky="ew", pady=(0, 4)
+    )
+    ttk.Button(tune_btns, text="Save Report...", command=_export_mcl_tuning_report).grid(
+        row=2, column=0, sticky="ew"
+    )
+    _row(export_frame, 5, "Tuning tools:", tune_btns,
+         "Import a microSD tuning session, apply recommendations, and save a tuning report.")
+    mcl_tuning_status_lbl = ttk.Label(export_frame, textvariable=mcl_tune_status_var, wraplength=420, justify="left")
+    _row(export_frame, 6, "Session:", mcl_tuning_status_lbl,
+         "Status for the latest imported tuning session.")
+
+    def _refresh_mcl_export_wrap(_evt=None):
+        """Handle refresh mcl export wrap."""
+        try:
+            wrap_px = max(180, min(900, int(export_frame.winfo_width()) - 210))
+            mcl_tuning_info_lbl.configure(wraplength=wrap_px)
+            mcl_tuning_status_lbl.configure(wraplength=wrap_px)
+        except Exception:
+            pass
+
+    export_frame.bind("<Configure>", _refresh_mcl_export_wrap)
+    top.after(0, _refresh_mcl_export_wrap)
+
+    _stored_tpl_defaults = CFG.get("codegen", {}).get("templates", {})
+    _jar_advanced_defaults = {
+        "wait": "task::sleep({MS});",
+        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG},{DRIVE_MAX_V},{HEADING_MAX_V},{DRIVE_SETTLE_ERR},{DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
+        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
+        "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
+        "path_follow": 'followPath("{PATH_FILE}", {TIMEOUT_MS});',
+        "reshape_on": "matchload_state({STATE});",
+        "reshape_off": "matchload_state({STATE});",
+        "reshape": "matchload_state({STATE});",
+        "reverse_on": "// reverse handled inline",
+        "reverse_off": "// reverse handled inline",
+        "tbuffer": "task::sleep({MS});",
+        "marker_wait": "",
+        "marker_wait_done": "",
+        "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});"
+    }
+    _jar_current_defaults = dict(_jar_advanced_defaults)
+    if isinstance(_stored_tpl_defaults, dict):
+        _saved_jar = _stored_tpl_defaults.get("JAR", {})
+        if isinstance(_saved_jar, dict):
+            for _k, _v in _saved_jar.items():
+                if isinstance(_v, str):
+                    _jar_current_defaults[_k] = _v
+
     codegen_defaults = {
         "LemLib": {
             "wait": "pros::delay({MS});",
             "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
             "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
-            "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
             "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
-            "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
+            "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
+            "reshape_on": "matchloadPistons.set_value({STATE});",
+            "reshape_off": "matchloadPistons.set_value({STATE});",
             "reshape": "matchloadPistons.set_value({STATE});",
             "reverse_on": "// reverse handled per-command",
             "reverse_off": "// reverse handled per-command",
@@ -3622,22 +6119,8 @@ def open_settings_window():
             "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
             "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
-        "JAR": {
-            "wait": "task::sleep({MS});",
-            "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-            "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
-            "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
-            "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-            "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
-            "path_follow": 'followPath("{PATH_FILE}", {TIMEOUT_MS});',
-            "reshape": "matchload_state({STATE});",
-            "reverse_on": "// reverse handled inline",
-            "reverse_off": "// reverse handled inline",
-            "tbuffer": "task::sleep({MS});",
-            "marker_wait": "",
-            "marker_wait_done": "",
-            "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});"
-        },
+        "JAR": dict(_jar_current_defaults),
+        "JAR (advanced)": dict(_jar_advanced_defaults),
         "Custom": {
             "wait": "wait({S}, seconds);",
             "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {.drive_timeout = {TIMEOUT_MS}});",
@@ -3645,6 +6128,8 @@ def open_settings_window():
             "turn_local": "turn_relative({TURN_DELTA_DEG});",
             "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
             "swing": "swing_to_heading({HEADING_DEG}, {DIR});",
+            "reshape_on": "MLadapter({STATE});",
+            "reshape_off": "MLadapter({STATE});",
             "reshape": "MLadapter({STATE});",
             "reverse_on": "// reverse ON",
             "reverse_off": "// reverse OFF",
@@ -3655,15 +6140,27 @@ def open_settings_window():
             "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
         }
     }
-    # Ensure codegen structure exists in CFG
+    _stored_tpl_defaults = CFG.get("codegen", {}).get("templates", {})
+    if isinstance(_stored_tpl_defaults, dict):
+        for _style_name, _style_map in _stored_tpl_defaults.items():
+            if not isinstance(_style_map, dict):
+                continue
+            dst = codegen_defaults.setdefault(_style_name, {})
+            for _k, _v in _style_map.items():
+                if str(_k).startswith("__"):
+                    continue
+                if isinstance(_v, str):
+                    dst[_k] = _v
     CFG.setdefault("codegen", {
-        "style": "Action List",
+        "style": "JAR",
         "templates": {},
         "opts": {
             "ticks_per_rotation": 360,
             "pad_factor": 1.0,
             "min_timeout_s": 0.0,
-            "reshape_output": "1/2"
+            "reshape_output": "1/2",
+            "jar_pose_angle_overload": 0,
+            "omit_defaults": 1
         },
         "path_dir": "export/paths",
         "path_columns": "{X}, {Y}, {COMMAND}",
@@ -3691,37 +6188,69 @@ def open_settings_window():
             {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False}
         )
 
-    # Initialize defaults for each style if not present
+    def _default_optional_for_style(style_name: str):
+        """Handle default optional for style."""
+        base = ["setpose", "path_follow"]
+        if style_name != "LemLib":
+            base += ["pose", "swing"]
+        return base
+
     opt_cfg = CFG["codegen"].setdefault("opts", {})
     migrate_path_follow = not bool(opt_cfg.get("path_follow_optional_migrated", False))
+    migrate_reshape_split = not bool(opt_cfg.get("reshape_split_templates_migrated", False))
     for _style, _tpl in codegen_defaults.items():
         CFG["codegen"].setdefault("templates", {}).setdefault(_style, dict(_tpl))
-        CFG["codegen"]["templates"].setdefault(_style, {}).setdefault("__optional__", ["setpose", "path_follow"])
+        CFG["codegen"]["templates"].setdefault(_style, {}).setdefault("__optional__", _default_optional_for_style(_style))
         if migrate_path_follow:
             opt_list = CFG["codegen"]["templates"].get(_style, {}).get("__optional__", [])
             tpl_map = CFG["codegen"]["templates"].get(_style, {})
             if isinstance(opt_list, list) and "path_follow" not in opt_list and "path_follow" in tpl_map:
                 opt_list.append("path_follow")
+        if migrate_reshape_split:
+            tpl_map = CFG["codegen"]["templates"].get(_style, {})
+            if isinstance(tpl_map, dict):
+                legacy = tpl_map.get("reshape")
+                if legacy:
+                    if not tpl_map.get("reshape_on"):
+                        tpl_map["reshape_on"] = legacy
+                    if not tpl_map.get("reshape_off"):
+                        tpl_map["reshape_off"] = legacy
+                opt_list = tpl_map.get("__optional__", [])
+                if isinstance(opt_list, list) and "reshape" in opt_list:
+                    opt_list[:] = [k for k in opt_list if k != "reshape"]
+                    if "reshape_on" not in opt_list:
+                        opt_list.append("reshape_on")
+                    if "reshape_off" not in opt_list:
+                        opt_list.append("reshape_off")
     if migrate_path_follow:
         opt_cfg["path_follow_optional_migrated"] = True
+    if migrate_reshape_split:
+        opt_cfg["reshape_split_templates_migrated"] = True
 
     if str(CFG.get("codegen", {}).get("style", "")).strip().lower() == "pros":
         CFG.setdefault("codegen", {})["style"] = "Custom"
 
-    style_labels = ["Action List", "LemLib", "JAR", "Custom"]
-    codegen_style_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("style", "Action List")))
+    style_labels = ["Action List", "LemLib", "JAR", "JAR (advanced)", "Custom"]
+    style_raw = CFG.get("codegen", {}).get("style", "JAR")
+    if isinstance(style_raw, dict):
+        style_raw = style_raw.get("value", "JAR")
+    style_name = str(style_raw).strip() or "JAR"
+    if style_name not in style_labels:
+        style_name = "JAR"
+    codegen_style_var = tk.StringVar(value=style_name)
 
-    # Template variables for customizable tokens
-    base_tpl_keys = ["wait", "move", "turn_global", "turn_local", "pose", "path_follow", "tbuffer", "setpose", "swing", "marker_wait", "marker_wait_done"]
-    optional_pool = ["reverse_on", "reverse_off", "reshape", "setpose", "swing", "path_follow"]
+    base_tpl_keys = ["wait", "move", "turn_global", "turn_local", "pose", "pose_angle", "tbuffer"]
+    optional_pool = ["reverse_on", "reverse_off", "reshape_on", "reshape_off", "setpose", "swing", "path_follow", "marker_wait", "marker_wait_done"]
     tpl_keys = base_tpl_keys + optional_pool
     tpl_vars = {k: tk.StringVar() for k in tpl_keys}
     motion_mode_var = tk.StringVar(value="move")
     turn_mode_var = tk.StringVar(value="turn_global")
     template_tokens = [
         "MS", "S", "TIMEOUT_MS", "TIMEOUT_S",
-        "X_IN", "Y_IN", "DIST_IN", "HEADING_DEG", "TURN_DELTA_DEG",
-        "FORWARDS", "DIR", "SIDE", "LOOKAHEAD",
+        "X_IN", "Y_IN", "DIST_IN", "DIST_ROT", "DIST_DEG", "DIST_TICKS",
+        "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
+        "TARGET_X_IN", "TARGET_Y_IN",
+        "FORWARDS", "FORWARD_PARAM", "DIR", "SIDE", "LOCKED_SIDE", "LOOKAHEAD",
         "PATH_NAME", "PATH_FILE", "PATH_ASSET",
         "MOVE_SPEED", "TURN_SPEED", "PATH_MIN_SPEED", "PATH_MAX_SPEED",
         "DRIVE_MAX_V", "HEADING_MAX_V", "TURN_MAX_V", "SWING_MAX_V",
@@ -3730,15 +6259,15 @@ def open_settings_window():
         "SWING_SETTLE_ERR", "SWING_SETTLE_TIME",
         "DRIVE_MIN_SPEED", "TURN_MIN_SPEED", "SWING_MIN_SPEED",
         "DRIVE_EARLY_EXIT", "TURN_EARLY_EXIT", "SWING_EARLY_EXIT",
-        "LEAD_IN", "STATE", "NAME",
+        "LEAD_IN", "STATE", "NAME", "CASE_KEY", "VALUE", "VALUE1", "VALUE2", "VALUE3",
         "MARKER_DIST_IN", "MARKER_FRAC", "MARKER_INDEX"
     ]
 
-    # Options
     ticks_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("ticks_per_rotation", 360)))
     pad_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("pad_factor", 1.0)))
     min_s_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("min_timeout_s", 0.0)))
     reshape_output_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("reshape_output", "1/2")))
+    omit_defaults_var = tk.IntVar(value=int(CFG.get("codegen", {}).get("opts", {}).get("omit_defaults", 1)))
     path_dir_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("path_dir", "export/paths")))
     path_columns_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("path_columns", "{X}, {Y}, {COMMAND}")))
     cal_raw = CFG.get("codegen", {}).get("calibration", {})
@@ -3771,7 +6300,6 @@ def open_settings_window():
             path_dir_var.set(chosen)
             on_update()
 
-    # Layout: Basic options first
     style_widget = ttk.Combobox(tabs["codegen"], textvariable=codegen_style_var, values=style_labels, state="readonly")
     _row(tabs["codegen"], 0, "Output style:", style_widget, "Select export style. Action List keeps current log.")
     _row(tabs["codegen"], 1, "Timeout pad ×:", 
@@ -3780,11 +6308,14 @@ def open_settings_window():
     _row(tabs["codegen"], 2, "Min timeout (s):", 
         ttk.Entry(tabs["codegen"], textvariable=min_s_var), 
         "Minimum timeout in seconds.")
+    omit_defaults_chk = ttk.Checkbutton(tabs["codegen"], variable=omit_defaults_var)
+    _row(tabs["codegen"], 3, "Omit default params:", omit_defaults_chk,
+        "Remove default-valued named params from templates (disable to preserve full placeholder order).")
     
     ticks_label = ttk.Label(tabs["codegen"], text="Ticks per rotation:")
     ticks_entry = ttk.Entry(tabs["codegen"], textvariable=ticks_var)
-    ticks_label.grid(row=3, column=0, sticky="w", padx=6, pady=4)
-    ticks_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=4)
+    ticks_label.grid(row=4, column=0, sticky="w", padx=6, pady=4)
+    ticks_entry.grid(row=4, column=1, sticky="ew", padx=6, pady=4)
     ui.add_tooltip(ticks_label, "Encoder ticks per wheel rotation for distance conversion.")
     ui.add_tooltip(ticks_entry, "Encoder ticks per wheel rotation for distance conversion.")
     ui.track_live_widget(ticks_entry)
@@ -3804,12 +6335,13 @@ def open_settings_window():
             on_update()
     path_cols_btn = ttk.Button(path_dir_frame, text="Columns...", command=_edit_path_columns)
     path_cols_btn.pack(side="left", padx=4)
-    _row(tabs["codegen"], 4, "Path export dir:", path_dir_frame, "Directory to save generated path files.")
+    _row(tabs["codegen"], 5, "Path export dir:", path_dir_frame, "Directory to save generated path files.")
     ui.add_tooltip(path_dir_btn, "Directory to save generated path files.")
     ui.add_tooltip(path_cols_btn, "Set output columns for path files.")
     ui.track_live_widget(path_dir_entry)
 
     def _cal_is_float(val):
+        """Handle cal is float."""
         try:
             float(val)
             return True
@@ -3817,16 +6349,19 @@ def open_settings_window():
             return False
 
     def _cal_has_data(cal: dict) -> bool:
+        """Handle cal has data."""
         profiles = cal.get("profiles", {}) if isinstance(cal, dict) else {}
         if not isinstance(profiles, dict):
             return False
         return any(bool(profiles.get(mv)) for mv in ("drive", "turn", "swing"))
 
     def _cal_bucket_count(cal: dict) -> int:
+        """Handle cal bucket count."""
         profiles = cal.get("profiles", {}) if isinstance(cal, dict) else {}
         if not isinstance(profiles, dict):
             return 0
         def _walk(node):
+            """Handle walk."""
             if not isinstance(node, dict):
                 return 0
             if any(k in node for k in ("err_p90", "settle_ms_p90", "err", "settle_ms")):
@@ -3838,6 +6373,7 @@ def open_settings_window():
         return _walk(profiles)
 
     def _cal_status_text(cal: dict) -> str:
+        """Handle cal status text."""
         if not isinstance(cal, dict) or not _cal_has_data(cal):
             return "Calibration: Not configured (Run Wizard)"
         enabled = cal.get("enabled", 0)
@@ -3867,6 +6403,7 @@ def open_settings_window():
         return status
 
     def _cal_detail_text(cal: dict) -> str:
+        """Handle cal detail text."""
         profiles = cal.get("profiles", {}) if isinstance(cal, dict) else {}
         moves_present = []
         if isinstance(profiles, dict):
@@ -3880,6 +6417,7 @@ def open_settings_window():
         skip_keys = {"caps", "default", "small", "medium", "large", "err_p90", "settle_ms_p90", "err", "settle_ms"}
 
         def _walk(node):
+            """Handle walk."""
             if not isinstance(node, dict):
                 return
             for k, v in node.items():
@@ -3898,6 +6436,7 @@ def open_settings_window():
         return f"Moves: {moves_str} | Profiles: {prof_str} | Caps: {cap_str}"
 
     def _refresh_cal_summary():
+        """Handle refresh cal summary."""
         cal = CFG.get("codegen", {}).get("calibration", {})
         cal_status_var.set(_cal_status_text(cal))
         cal_detail_var.set(_cal_detail_text(cal))
@@ -3915,6 +6454,7 @@ def open_settings_window():
             pass
 
     def _sync_cal_vars_from_cfg():
+        """Handle sync cal vars from cfg."""
         cal = CFG.get("codegen", {}).get("calibration", {})
         cal = dict(cal) if isinstance(cal, dict) else {}
         enabled = cal.get("enabled", 0)
@@ -3932,6 +6472,7 @@ def open_settings_window():
         _refresh_cal_summary()
 
     def _import_calibration():
+        """Handle import calibration."""
         path = filedialog.askopenfilename(
             parent=top,
             title="Import calibration JSON",
@@ -3961,6 +6502,7 @@ def open_settings_window():
         on_update()
 
     def _export_calibration():
+        """Handle export calibration."""
         cal = CFG.get("codegen", {}).get("calibration", {})
         if not isinstance(cal, dict) or not _cal_has_data(cal):
             messagebox.showinfo("Export calibration", "No calibration data to export.")
@@ -3980,6 +6522,7 @@ def open_settings_window():
             messagebox.showerror("Export failed", f"Could not write JSON:\n{e}")
 
     def _clear_calibration():
+        """Handle clear calibration."""
         CFG.setdefault("codegen", {})["calibration"] = {
             "enabled": 0,
             "last_run": "",
@@ -3995,12 +6538,14 @@ def open_settings_window():
         on_update()
 
     def _reset_calibration_recommended():
+        """Handle reset calibration recommended."""
         cal_err_scale_var.set("1.2")
         cal_time_scale_var.set("1.2")
         cal_noise_mult_var.set("4.0")
         on_update()
 
     def _cal_bucket(move_type: str, magnitude: float):
+        """Handle cal bucket."""
         mag = abs(float(magnitude))
         if move_type == "drive":
             if mag < 12.0:
@@ -4015,6 +6560,7 @@ def open_settings_window():
         return "large"
 
     def _cal_p90(values):
+        """Handle cal p90."""
         vals = sorted(values)
         if not vals:
             return None
@@ -4023,6 +6569,7 @@ def open_settings_window():
         return vals[idx]
 
     def _analyze_calibration_logs(log_text: str):
+        """Handle analyze calibration logs."""
         buckets = {}
         noise_drive = None
         noise_turn = None
@@ -4226,6 +6773,7 @@ def open_settings_window():
                         turn_accel.append(a_est)
 
             def _median(vals):
+                """Handle median."""
                 vals = sorted(v for v in vals if v is not None)
                 if not vals:
                     return None
@@ -4260,6 +6808,7 @@ def open_settings_window():
         }
 
     def _run_calibration_wizard():
+        """Handle run calibration wizard."""
         win = tk.Toplevel(top)
         win.title("Calibration Wizard")
         win.geometry("760x640")
@@ -4278,6 +6827,7 @@ def open_settings_window():
         body.columnconfigure(0, weight=1)
 
         def _wizard_on_configure(_evt=None):
+            """Handle wizard on configure."""
             try:
                 wizard_canvas.configure(scrollregion=wizard_canvas.bbox("all"))
                 wizard_canvas.itemconfigure(body_id, width=wizard_canvas.winfo_width())
@@ -4285,6 +6835,7 @@ def open_settings_window():
                 pass
 
         def _wizard_mousewheel(event):
+            """Handle wizard mousewheel."""
             delta = 0
             if hasattr(event, "delta") and event.delta:
                 delta = int(-event.delta / 40) if abs(event.delta) >= 40 else (-2 if event.delta > 0 else 2)
@@ -4318,6 +6869,7 @@ def open_settings_window():
         plan_frame.columnconfigure(3, weight=1)
 
         def _safe_auton_ident(raw_name: str) -> str:
+            """Handle safe auton ident."""
             raw = str(raw_name or "").strip()
             cleaned = []
             last_us = False
@@ -4338,7 +6890,7 @@ def open_settings_window():
                 ident += "_auton"
             return ident
 
-        style_options = ["JAR", "LemLib", "Custom"]
+        style_options = ["JAR", "JAR (advanced)", "LemLib", "Custom"]
         style_default = codegen_style_var.get()
         if style_default not in style_options:
             style_default = "JAR"
@@ -4361,6 +6913,7 @@ def open_settings_window():
         auton_fn_var = tk.StringVar(value=_safe_auton_ident(auton_name_var.get()))
 
         def _refresh_auton_fn(*_):
+            """Handle refresh auton fn."""
             auton_fn_var.set(_safe_auton_ident(auton_name_var.get()))
 
         auton_name_var.trace_add("write", _refresh_auton_fn)
@@ -4493,6 +7046,7 @@ def open_settings_window():
         body.rowconfigure(3, weight=1)
 
         def _parse_list(raw, cast=float):
+            """Handle parse list."""
             items = []
             for part in str(raw).split(","):
                 part = part.strip()
@@ -4505,6 +7059,7 @@ def open_settings_window():
             return items
 
         def _parse_caps(raw, mode):
+            """Handle parse caps."""
             caps = _parse_list(raw, float)
             if not caps:
                 return []
@@ -4514,6 +7069,7 @@ def open_settings_window():
             return [max(0.1, min(1.2, v)) for v in caps]
 
         def _update_caps_interp(*_):
+            """Update caps interp."""
             caps = _parse_caps(caps_var.get(), caps_mode_var.get())
             if not caps:
                 caps_interp_var.set("")
@@ -4525,6 +7081,7 @@ def open_settings_window():
             )
 
         def _apply_preset(*_):
+            """Handle apply preset."""
             preset = preset_var.get()
             if "Quick" in preset:
                 caps_var.set("0.75, 1.0")
@@ -4550,6 +7107,7 @@ def open_settings_window():
             _update_caps_interp()
 
         def _refresh_drive_err_note(*_):
+            """Handle refresh drive err note."""
             if str(track_var.get()) == "0":
                 drive_err_source_var.set("Tape measure")
                 drive_err_note.configure(text="Drive settle error will be approximate unless you enter measured error.")
@@ -4559,6 +7117,7 @@ def open_settings_window():
                 drive_err_note.configure(text="")
 
         def _export_plan():
+            """Handle export plan."""
             profiles = [p for p in profile_order if profile_vars[p].get()]
             if not profiles:
                 profiles = ["precise", "normal", "fast"]
@@ -4600,11 +7159,14 @@ def open_settings_window():
                         json.dump({"calibration_plan": plan}, f, indent=2)
                 else:
                     def _plan_comment(pl):
+                        """Handle plan comment."""
                         raw = json.dumps(pl, indent=2)
                         return "\n".join(["// " + line for line in raw.splitlines()])
 
                     def _emit_code(pl):
+                        """Handle emit code."""
                         def _cpp_ident(raw_name: str) -> str:
+                            """Handle cpp ident."""
                             raw = str(raw_name or "").strip()
                             cleaned = []
                             last_us = False
@@ -4626,6 +7188,7 @@ def open_settings_window():
                             return ident
 
                         def _cpp_string(raw_name: str) -> str:
+                            """Handle cpp string."""
                             out = []
                             for ch in str(raw_name or ""):
                                 if ch == "\\":
@@ -4702,6 +7265,7 @@ def open_settings_window():
                             turn_key = "turn_global" if "turn_global" in tpls else ("turn_local" if "turn_local" in tpls else move_key)
 
                         def _normalize_tpl(val):
+                            """Handle normalize tpl."""
                             if isinstance(val, (list, tuple)):
                                 return [str(v) for v in val if str(v).strip()]
                             if isinstance(val, str):
@@ -4710,6 +7274,7 @@ def open_settings_window():
                             return []
 
                         def _escape_struct_braces(part: str) -> str:
+                            """Handle escape struct braces."""
                             out = []
                             in_field = False
                             in_struct = False
@@ -4753,6 +7318,7 @@ def open_settings_window():
                             return "".join(out)
 
                         def _format_tpl_lines(tpl_val, tokens: dict):
+                            """Handle format tpl lines."""
                             out_lines = []
                             for part in _normalize_tpl(tpl_val):
                                 try:
@@ -5018,12 +7584,14 @@ def open_settings_window():
                 messagebox.showerror("Calibration", f"Failed to export code:\n{e}")
 
         def _get_log_text():
+            """Return log text."""
             raw = text.get("1.0", "end-1c")
             if raw.strip() == placeholder:
                 return ""
             return raw
 
         def _update_key_status(raw_text: str):
+            """Update key status."""
             aliases = {
                 "cap_frac": ["cap_frac", "cap", "cap_v"],
                 "final_err": ["final_err", "error"],
@@ -5035,6 +7603,7 @@ def open_settings_window():
                 lbl.configure(foreground=("#1b7f3a" if present else "#999999"))
 
         def _on_text_modified(_evt=None):
+            """Handle on text modified."""
             text.edit_modified(False)
             raw_text = _get_log_text()
             _update_key_status(raw_text)
@@ -5047,6 +7616,7 @@ def open_settings_window():
                 analysis_summary_var.set("Logs changed. Analyze again to refresh results.")
 
         def _load_from_file():
+            """Handle load from file."""
             path = filedialog.askopenfilename(
                 parent=win,
                 title="Import log file",
@@ -5068,6 +7638,7 @@ def open_settings_window():
         analysis_state = {"data": None}
 
         def _analyze():
+            """Handle analyze."""
             raw = _get_log_text().strip()
             if not raw:
                 messagebox.showerror("Calibration", "No log data provided.")
@@ -5121,6 +7692,7 @@ def open_settings_window():
                 messagebox.showwarning("Calibration", "Some lines were skipped:\n" + msg)
             noise = result.get("noise", {})
             def _fmt_noise(val):
+                """Handle fmt noise."""
                 try:
                     return f"{float(val):.3f}"
                 except Exception:
@@ -5128,6 +7700,7 @@ def open_settings_window():
             drive_noise = _fmt_noise(noise.get("drive_in", None))
             turn_noise = _fmt_noise(noise.get("turn_deg", None))
             def _median(vals):
+                """Handle median."""
                 vals = sorted([v for v in vals if v is not None])
                 if not vals:
                     return None
@@ -5137,6 +7710,7 @@ def open_settings_window():
                 return 0.5 * (vals[mid - 1] + vals[mid])
 
             def _bucket_summary(move, prof):
+                """Handle bucket summary."""
                 profs = result.get("profiles", {}).get(move, {})
                 if not isinstance(profs, dict):
                     return {}
@@ -5220,6 +7794,7 @@ def open_settings_window():
             apply_btn.configure(state="normal")
 
         def _apply():
+            """Handle apply."""
             data = analysis_state.get("data")
             if not data:
                 messagebox.showerror("Calibration", "Analyze logs before applying.")
@@ -5256,6 +7831,7 @@ def open_settings_window():
             messagebox.showinfo("Calibration", "Calibration applied.")
 
         def _copy_example():
+            """Handle copy example."""
             try:
                 win.clipboard_clear()
                 win.clipboard_append(example_line)
@@ -5267,11 +7843,13 @@ def open_settings_window():
         text.configure(foreground="#888888")
 
         def _clear_placeholder(_evt=None):
+            """Handle clear placeholder."""
             if text.get("1.0", "end-1c") == placeholder:
                 text.delete("1.0", "end")
                 text.configure(foreground="#000000")
 
         def _restore_placeholder(_evt=None):
+            """Handle restore placeholder."""
             if not text.get("1.0", "end-1c").strip():
                 text.insert("1.0", placeholder)
                 text.configure(foreground="#888888")
@@ -5297,7 +7875,7 @@ def open_settings_window():
         _update_caps_interp()
 
     cal_frame = ttk.LabelFrame(physics_body, text="Calibration")
-    cal_frame.grid(row=11, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
+    cal_frame.grid(row=12, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
     cal_frame.columnconfigure(1, weight=1)
     cal_frame.columnconfigure(2, weight=1)
     cal_frame.columnconfigure(3, weight=0)
@@ -5369,6 +7947,7 @@ def open_settings_window():
         pass
 
     def _refresh_ticks_visibility(*_):
+        """Handle refresh ticks visibility."""
         show = dist_var.get() == dist_labels[3]
         for w in (ticks_label, ticks_entry):
             try:
@@ -5384,14 +7963,13 @@ def open_settings_window():
     except Exception:
         pass
     
-    # Scrollable template panel
-    tabs["codegen"].rowconfigure(5, weight=1)
+    tabs["codegen"].rowconfigure(6, weight=1)
     tabs["codegen"].columnconfigure(1, weight=1)
     tpl_container = ttk.Frame(tabs["codegen"])
-    tpl_container.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=6, pady=6)
+    tpl_container.grid(row=6, column=0, columnspan=2, sticky="nsew", padx=6, pady=6)
     tpl_container.rowconfigure(0, weight=1)
     tpl_container.columnconfigure(0, weight=1)
-    tabs["codegen"].rowconfigure(5, weight=1)
+    tabs["codegen"].rowconfigure(6, weight=1)
     tabs["codegen"].columnconfigure(0, weight=1)
 
     tpl_panel = ttk.Frame(tpl_container, style="TFrame")
@@ -5400,9 +7978,11 @@ def open_settings_window():
     tpl_win = None
 
     def _tpl_on_configure(event=None):
+        """Handle tpl on configure."""
         pass
 
     def _tpl_mousewheel(event):
+        """Handle tpl mousewheel."""
         pass
 
     def _bind_tpl_live_handlers():
@@ -5423,14 +8003,26 @@ def open_settings_window():
                 continue
 
     def _active_optional_for(style_name: str):
+        """Handle active optional for."""
         stored = CFG.get("codegen", {}).get("templates", {}).get(style_name, {})
-        return list(stored.get("__optional__", []))
+        active = stored.get("__optional__", [])
+        if isinstance(active, list):
+            return list(active)
+        fallback = ["marker_wait", "marker_wait_done"]
+        for key in optional_pool:
+            if key in fallback:
+                continue
+            if key in stored:
+                fallback.append(key)
+        return fallback
 
     def _set_active_optional(style_name: str, lst):
+        """Set active optional."""
         CFG.setdefault("codegen", {}).setdefault("templates", {}).setdefault(style_name, {})["__optional__"] = list(lst)
         return list(lst)
 
     def _add_optional(key):
+        """Handle add optional."""
         style = codegen_style_var.get()
         active = _active_optional_for(style)
         if key not in active:
@@ -5439,6 +8031,7 @@ def open_settings_window():
             _rebuild_tpl_panel()
 
     def _remove_optional(key):
+        """Handle remove optional."""
         style = codegen_style_var.get()
         active = _active_optional_for(style)
         if key in active:
@@ -5447,12 +8040,14 @@ def open_settings_window():
             _rebuild_tpl_panel()
 
     def _default_modes(style_name: str):
+        """Handle default modes."""
         return {
             "motion": "move",
             "turn": "turn_global" if style_name == "LemLib" else "turn_local"
         }
 
     def _current_modes(style_name: str):
+        """Handle current modes."""
         stored = CFG.get("codegen", {}).get("templates", {}).get(style_name, {})
         modes = _default_modes(style_name)
         m = stored.get("__modes__", {}) if isinstance(stored, dict) else {}
@@ -5465,6 +8060,7 @@ def open_settings_window():
         return modes
 
     def _set_modes(style_name: str, modes: dict):
+        """Set modes."""
         CFG.setdefault("codegen", {}).setdefault("templates", {}).setdefault(style_name, {})["__modes__"] = dict(modes)
         motion_mode_var.set(modes.get("motion", "move"))
         turn_mode_var.set(modes.get("turn", "turn_global" if style_name == "LemLib" else "turn_local"))
@@ -5499,6 +8095,7 @@ def open_settings_window():
         _set_modes(style_name, _current_modes(style_name))
 
     def _apply_mode_selection(style_name: str, motion_val=None, turn_val=None):
+        """Handle apply mode selection."""
         modes = _current_modes(style_name)
         if motion_val in ("move", "pose"):
             modes["motion"] = motion_val
@@ -5508,6 +8105,7 @@ def open_settings_window():
         return modes
 
     def _on_mode_change(_=None):
+        """Handle on mode change."""
         style = codegen_style_var.get()
         modes = _apply_mode_selection(style, motion_mode_var.get(), turn_mode_var.get())
         _set_modes(style, modes)
@@ -5517,6 +8115,7 @@ def open_settings_window():
     mech_preset_win = {"win": None}
 
     def _open_template_builder():
+        """Handle open template builder."""
         style = codegen_style_var.get()
         if style == "Action List":
             messagebox.showinfo("Edit templates", "Action List mode has no templates to edit.")
@@ -5529,6 +8128,7 @@ def open_settings_window():
 
         win = tk.Toplevel(top)
         template_builder_win["win"] = win
+        tutorial_state["flags"]["opened_template_editor"] = True
         win.title(f"Edit Command Templates ({style})")
         win.geometry("760x520")
 
@@ -5568,10 +8168,13 @@ def open_settings_window():
         opt_map = {
             "reverse_on": "Reverse on",
             "reverse_off": "Reverse off",
-            "reshape": "Reshape",
+            "reshape_on": "Reshape on",
+            "reshape_off": "Reshape off",
             "setpose": "Set pose",
             "swing": "Swing",
-            "path_follow": "Path follow"
+            "path_follow": "Path follow",
+            "marker_wait": "Marker wait",
+            "marker_wait_done": "Marker wait done"
         }
         active_optional = set(_active_optional_for(style))
         opt_vars = {}
@@ -5655,6 +8258,7 @@ def open_settings_window():
         current_cmd = {"name": None}
 
         def _render_parts():
+            """Handle render parts."""
             parts_list.delete(0, "end")
             for part in parts:
                 if part["kind"] == "token":
@@ -5669,6 +8273,7 @@ def open_settings_window():
             _refresh_preview()
 
         def _refresh_preview():
+            """Handle refresh preview."""
             preview = "".join(
                 f"{{{p['value']}}}" if p["kind"] == "token" else p["value"]
                 for p in parts
@@ -5679,6 +8284,7 @@ def open_settings_window():
             preview_text.configure(state="disabled")
 
         def _split_template(text):
+            """Handle split template."""
             out = []
             idx = 0
             for match in token_re.finditer(text):
@@ -5695,43 +8301,61 @@ def open_settings_window():
             return out
 
         def _allowed_tokens_for_cmd(cmd_name: str):
+            """Handle allowed tokens for cmd."""
             base = {
-                "wait": ["MS", "S"],
-                "tbuffer": ["MS", "S"],
-                "move": ["X_IN", "Y_IN", "DIST_IN", "TIMEOUT_MS", "TIMEOUT_S", "FORWARDS", "HEADING_DEG", "MOVE_SPEED"],
-                "pose": ["X_IN", "Y_IN", "HEADING_DEG", "TIMEOUT_MS", "TIMEOUT_S", "FORWARDS", "LEAD_IN"],
-                "turn_global": ["HEADING_DEG", "TIMEOUT_MS", "TIMEOUT_S", "TURN_SPEED"],
-                "turn_local": ["TURN_DELTA_DEG", "TIMEOUT_MS", "TIMEOUT_S", "TURN_SPEED"],
-                "swing": ["HEADING_DEG", "DIR", "SIDE", "TIMEOUT_MS", "TIMEOUT_S"],
-                "path_follow": ["PATH_NAME", "PATH_FILE", "PATH_ASSET", "LOOKAHEAD", "TIMEOUT_MS", "TIMEOUT_S", "FORWARDS", "PATH_MIN_SPEED", "PATH_MAX_SPEED"],
-                "setpose": ["X_IN", "Y_IN", "HEADING_DEG"],
-                "reshape": ["STATE"],
+                "wait": ["MS", "S", "TIMEOUT_MS", "TIMEOUT_S"],
+                "tbuffer": ["MS", "S", "TIMEOUT_MS", "TIMEOUT_S"],
+                "move": [
+                    "X_IN", "Y_IN", "DIST_IN", "DIST_ROT", "DIST_DEG", "DIST_TICKS",
+                    "HEADING_DEG", "HEADING_RAD", "FORWARDS", "FORWARD_PARAM", "MOVE_SPEED",
+                    "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
+                    "DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
+                    "DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT", "LEAD_IN"
+                ],
+                "pose": [
+                    "X_IN", "Y_IN", "DIST_IN", "DIST_ROT", "DIST_DEG", "DIST_TICKS",
+                    "HEADING_DEG", "HEADING_RAD", "FORWARDS", "FORWARD_PARAM", "LEAD_IN", "MOVE_SPEED",
+                    "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
+                    "DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
+                    "DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT"
+                ],
+                "turn_global": [
+                    "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
+                    "TARGET_X_IN", "TARGET_Y_IN", "TURN_SPEED",
+                    "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
+                    "TURN_MAX_V", "TURN_SETTLE_ERR", "TURN_SETTLE_TIME",
+                    "TURN_MIN_SPEED", "TURN_EARLY_EXIT"
+                ],
+                "turn_local": [
+                    "TURN_DELTA_DEG", "TURN_DELTA_RAD", "HEADING_DEG", "HEADING_RAD",
+                    "TARGET_X_IN", "TARGET_Y_IN", "TURN_SPEED",
+                    "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
+                    "TURN_MAX_V", "TURN_SETTLE_ERR", "TURN_SETTLE_TIME",
+                    "TURN_MIN_SPEED", "TURN_EARLY_EXIT"
+                ],
+                "swing": [
+                    "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
+                    "TARGET_X_IN", "TARGET_Y_IN", "DIR", "SIDE", "LOCKED_SIDE",
+                    "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
+                    "SWING_MAX_V", "SWING_SETTLE_ERR", "SWING_SETTLE_TIME",
+                    "SWING_MIN_SPEED", "SWING_EARLY_EXIT"
+                ],
+                "path_follow": [
+                    "PATH_NAME", "PATH_FILE", "PATH_ASSET", "LOOKAHEAD",
+                    "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
+                    "FORWARDS", "FORWARD_PARAM", "PATH_MIN_SPEED", "PATH_MAX_SPEED",
+                    "DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
+                    "DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT"
+                ],
+                "setpose": ["X_IN", "Y_IN", "HEADING_DEG", "HEADING_RAD", "NAME"],
+                "reshape_on": ["STATE", "NAME"],
+                "reshape_off": ["STATE", "NAME"],
                 "reverse_on": [],
                 "reverse_off": [],
-                "marker_wait": ["MARKER_DIST_IN", "MARKER_FRAC", "MARKER_INDEX"],
-                "marker_wait_done": []
+                "marker_wait": ["MARKER_DIST_IN", "MARKER_FRAC", "MARKER_INDEX", "NAME", "TIMEOUT_MS", "TIMEOUT_S"],
+                "marker_wait_done": ["NAME"]
             }
             tokens = list(base.get(cmd_name, []))
-            if (style == "JAR" and adv_motion_var.get()) or style == "Custom":
-                jar_tokens = {
-                    "move": ["DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME"],
-                    "pose": ["DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME"],
-                    "path_follow": ["DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME"],
-                    "turn_global": ["TURN_MAX_V", "TURN_SETTLE_ERR", "TURN_SETTLE_TIME"],
-                    "turn_local": ["TURN_MAX_V", "TURN_SETTLE_ERR", "TURN_SETTLE_TIME"],
-                    "swing": ["SWING_MAX_V", "SWING_SETTLE_ERR", "SWING_SETTLE_TIME"]
-                }
-                tokens.extend(jar_tokens.get(cmd_name, []))
-            if style in ("LemLib", "Custom"):
-                lemlib_tokens = {
-                    "move": ["DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT"],
-                    "pose": ["DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT"],
-                    "turn_global": ["TURN_MIN_SPEED", "TURN_EARLY_EXIT"],
-                    "turn_local": ["TURN_MIN_SPEED", "TURN_EARLY_EXIT"],
-                    "swing": ["SWING_MIN_SPEED", "SWING_EARLY_EXIT"]
-                }
-                tokens.extend(lemlib_tokens.get(cmd_name, []))
-            # Remove duplicates while preserving order
             seen = set()
             out = []
             for tok in tokens:
@@ -5741,6 +8365,7 @@ def open_settings_window():
             return out
 
         def _refresh_palette(cmd_name):
+            """Handle refresh palette."""
             palette_list.delete(0, "end")
             tokens = _allowed_tokens_for_cmd(cmd_name)
             if not tokens:
@@ -5749,6 +8374,7 @@ def open_settings_window():
                 palette_list.insert("end", f"{{{token}}}")
 
         def _load_command(name):
+            """Handle load command."""
             current_cmd["name"] = name
             tpl = tpl_vars.get(name).get()
             if not tpl:
@@ -5759,14 +8385,14 @@ def open_settings_window():
             _refresh_palette(name)
 
         def _active_cmds_for_builder():
+            """Handle active cmds for builder."""
             turn_key = turn_choice_var.get() or ("turn_global" if style == "LemLib" else "turn_local")
             base_cmds = ["wait", "move", "pose", turn_key, "tbuffer"]
-            if style in ("LemLib", "Custom"):
-                base_cmds += ["marker_wait", "marker_wait_done"]
             optional_cmds = [k for k in optional_pool if opt_vars.get(k) and opt_vars[k].get()]
             return base_cmds + optional_cmds
 
         def _refresh_cmd_list(select_name=None):
+            """Handle refresh cmd list."""
             cmd_list.delete(0, "end")
             active_cmds = _active_cmds_for_builder()
             for key in active_cmds:
@@ -5782,18 +8408,21 @@ def open_settings_window():
             _load_command(active_cmds[idx])
 
         def _update_optional():
+            """Update optional."""
             active = [k for k, var in opt_vars.items() if var.get()]
             _set_active_optional(style, active)
             _refresh_cmd_list(current_cmd["name"])
             on_update()
 
         def _update_turn_choice():
+            """Update turn choice."""
             modes = {"motion": motion_mode_var.get(), "turn": turn_choice_var.get()}
             _set_modes(style, modes)
             _refresh_cmd_list(current_cmd["name"])
             on_update()
 
         def _apply_current_command():
+            """Handle apply current command."""
             name = current_cmd["name"]
             if not name:
                 return
@@ -5807,10 +8436,12 @@ def open_settings_window():
             on_update()
 
         def _apply_and_close():
+            """Handle apply and close."""
             _apply_current_command()
             win.destroy()
 
         def _add_text_part():
+            """Handle add text part."""
             val = simpledialog.askstring("Add text", "Enter literal text to insert:", parent=win)
             if val is None:
                 return
@@ -5818,6 +8449,7 @@ def open_settings_window():
             _render_parts()
 
         def _edit_text_part():
+            """Handle edit text part."""
             idx = parts_list.curselection()
             if not idx and selected_part_idx.get("idx") is not None:
                 idx = (selected_part_idx["idx"],)
@@ -5842,6 +8474,7 @@ def open_settings_window():
             _render_parts()
 
         def _remove_part():
+            """Handle remove part."""
             idx = parts_list.curselection()
             if not idx and selected_part_idx.get("idx") is not None:
                 idx = (selected_part_idx["idx"],)
@@ -5860,10 +8493,12 @@ def open_settings_window():
             _render_parts()
 
         def _clear_parts():
+            """Handle clear parts."""
             parts.clear()
             _render_parts()
 
         def _reset_command():
+            """Handle reset command."""
             name = current_cmd["name"]
             if not name:
                 return
@@ -5880,6 +8515,7 @@ def open_settings_window():
         drag_state = {"source": None, "index": None, "token": None}
 
         def _start_drag_palette(event):
+            """Handle start drag palette."""
             idx = palette_list.nearest(event.y)
             if idx < 0:
                 return
@@ -5887,6 +8523,7 @@ def open_settings_window():
             drag_state.update({"source": "palette", "index": None, "token": val.strip("{}")})
 
         def _start_drag_parts(event):
+            """Handle start drag parts."""
             idx = parts_list.nearest(event.y)
             if idx < 0:
                 return
@@ -5896,6 +8533,7 @@ def open_settings_window():
             drag_state.update({"source": "parts", "index": idx, "token": None})
 
         def _drop_on_parts_at(y_root=None, y_local=None):
+            """Handle drop on parts at."""
             if not drag_state["source"]:
                 return
             if y_local is None:
@@ -5924,9 +8562,11 @@ def open_settings_window():
             drag_state.update({"source": None, "index": None, "token": None})
 
         def _cancel_drag(_event=None):
+            """Handle cancel drag."""
             drag_state.update({"source": None, "index": None, "token": None})
 
         def _insert_token_at_end(event):
+            """Handle insert token at end."""
             idx = palette_list.nearest(event.y)
             if idx < 0:
                 return
@@ -5936,6 +8576,7 @@ def open_settings_window():
             _render_parts()
 
         def _drop_anywhere(event):
+            """Handle drop anywhere."""
             if not drag_state["source"]:
                 return
             widget = win.winfo_containing(event.x_root, event.y_root)
@@ -5954,6 +8595,7 @@ def open_settings_window():
         win.bind("<ButtonRelease-1>", _drop_anywhere, add="+")
 
         def _on_select_cmd(_evt=None):
+            """Handle on select cmd."""
             sel = cmd_list.curselection()
             if not sel:
                 return
@@ -5964,6 +8606,7 @@ def open_settings_window():
         _refresh_cmd_list()
 
     def _open_mech_preset_editor():
+        """Handle open mech preset editor."""
         if mech_preset_win["win"] is not None and mech_preset_win["win"].winfo_exists():
             mech_preset_win["win"].lift()
             mech_preset_win["win"].focus_force()
@@ -5972,12 +8615,25 @@ def open_settings_window():
         if not isinstance(presets, list):
             presets = []
             CFG["codegen"]["mech_presets"] = presets
+        for p in presets:
+            if not isinstance(p, dict):
+                continue
+            if str(p.get("name", "")).strip().lower() != "reshape":
+                continue
+            p["name"] = "reshape"
+            p["mode"] = "toggle"
+            p["default"] = False
+            p["template"] = ""
+            p["on"] = ""
+            p["off"] = ""
+            p["cases"] = []
+            p["case_default"] = ""
 
         win = tk.Toplevel(top)
         mech_preset_win["win"] = win
         win.title("Mechanism presets")
-        win.geometry("720x420")
-        win.minsize(620, 360)
+        win.geometry("760x500")
+        win.minsize(660, 420)
 
         container = ttk.Frame(win, padding=8)
         container.pack(fill="both", expand=True)
@@ -5992,6 +8648,7 @@ def open_settings_window():
         right = ttk.Frame(container)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(1, weight=1)
+        right.rowconfigure(6, weight=1)
 
         preset_list = tk.Listbox(left, height=12, exportselection=False)
         preset_scroll = ttk.Scrollbar(left, orient="vertical", command=preset_list.yview)
@@ -6016,38 +8673,248 @@ def open_settings_window():
         name_entry.grid(row=0, column=1, sticky="ew", pady=(0, 4))
 
         ttk.Label(right, text="Type:").grid(row=1, column=0, sticky="w", pady=(0, 4))
-        mode_combo = ttk.Combobox(right, values=["Action", "Toggle"], state="readonly", textvariable=mode_var, width=12)
+        mode_combo = ttk.Combobox(right, values=["Action", "Toggle", "Cases"], state="readonly", textvariable=mode_var, width=12)
         mode_combo.grid(row=1, column=1, sticky="w", pady=(0, 4))
 
         default_chk = ttk.Checkbutton(right, text="Default ON", variable=default_var)
         default_chk.grid(row=2, column=1, sticky="w", pady=(0, 6))
 
-        ttk.Label(right, text="Action template:").grid(row=3, column=0, sticky="nw")
+        action_lbl = ttk.Label(right, text="Action template:")
+        action_lbl.grid(row=3, column=0, sticky="nw")
         action_text = tk.Text(right, height=4, wrap="word")
         action_text.grid(row=3, column=1, sticky="ew", pady=(0, 6))
 
-        ttk.Label(right, text="Toggle ON template:").grid(row=4, column=0, sticky="nw")
+        on_lbl = ttk.Label(right, text="Toggle ON template:")
+        on_lbl.grid(row=4, column=0, sticky="nw")
         on_text = tk.Text(right, height=3, wrap="word")
         on_text.grid(row=4, column=1, sticky="ew", pady=(0, 6))
 
-        ttk.Label(right, text="Toggle OFF template:").grid(row=5, column=0, sticky="nw")
+        off_lbl = ttk.Label(right, text="Toggle OFF template:")
+        off_lbl.grid(row=5, column=0, sticky="nw")
         off_text = tk.Text(right, height=3, wrap="word")
         off_text.grid(row=5, column=1, sticky="ew", pady=(0, 6))
 
-        ttk.Label(
+        cases_lbl = ttk.Label(right, text="Cases:")
+        cases_lbl.grid(row=6, column=0, sticky="nw")
+        cases_section = ttk.Frame(right)
+        cases_section.grid(row=6, column=1, sticky="nsew", pady=(0, 6))
+        cases_section.columnconfigure(0, weight=1)
+        cases_section.rowconfigure(1, weight=1)
+
+        cases_toolbar = ttk.Frame(cases_section)
+        cases_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        cases_toolbar.columnconfigure(0, weight=1)
+        cases_help_lbl = ttk.Label(
+            cases_toolbar,
+            text="Add as many as needed. Trigger token goes above output template."
+        )
+        cases_help_lbl.grid(row=0, column=0, sticky="w")
+        add_case_btn = ttk.Button(cases_toolbar, text="+ Add Case")
+        add_case_btn.grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        def _layout_cases_toolbar(_evt=None):
+            """Handle layout cases toolbar."""
+            try:
+                w = max(120, int(cases_toolbar.winfo_width()))
+            except Exception:
+                w = 120
+            wrap = max(120, w - 140)
+            try:
+                cases_help_lbl.configure(wraplength=wrap)
+            except Exception:
+                pass
+            if w < 340:
+                add_case_btn.grid_configure(row=1, column=0, sticky="e", padx=0, pady=(4, 0))
+            else:
+                add_case_btn.grid_configure(row=0, column=1, sticky="e", padx=(8, 0), pady=0)
+
+        cases_toolbar.bind("<Configure>", _layout_cases_toolbar)
+
+        cases_canvas = tk.Canvas(cases_section, height=170, highlightthickness=0)
+        cases_scroll = ttk.Scrollbar(cases_section, orient="vertical", command=cases_canvas.yview)
+        cases_canvas.configure(yscrollcommand=cases_scroll.set)
+        cases_canvas.grid(row=1, column=0, sticky="nsew")
+        cases_scroll.grid(row=1, column=1, sticky="ns")
+        cases_rows_frame = ttk.Frame(cases_canvas)
+        cases_rows_win = cases_canvas.create_window((0, 0), window=cases_rows_frame, anchor="nw")
+
+        case_rows = []
+
+        def _on_cases_frame_config(_evt=None):
+            """Handle on cases frame config."""
+            try:
+                cases_canvas.configure(scrollregion=cases_canvas.bbox("all"))
+                cases_canvas.itemconfigure(cases_rows_win, width=max(10, cases_canvas.winfo_width()))
+            except Exception:
+                pass
+
+        cases_rows_frame.bind("<Configure>", _on_cases_frame_config)
+        cases_canvas.bind("<Configure>", _on_cases_frame_config)
+
+        def _cases_mousewheel(event):
+            """Handle cases mousewheel."""
+            try:
+                if getattr(event, "delta", 0):
+                    step = -1 if event.delta > 0 else 1
+                elif getattr(event, "num", None) == 4:
+                    step = -1
+                elif getattr(event, "num", None) == 5:
+                    step = 1
+                else:
+                    return
+                cases_canvas.yview_scroll(step, "units")
+            except Exception:
+                pass
+
+        def _bind_case_wheel(widget):
+            """Handle bind case wheel."""
+            try:
+                widget.bind("<MouseWheel>", _cases_mousewheel, add="+")
+                widget.bind("<Button-4>", _cases_mousewheel, add="+")
+                widget.bind("<Button-5>", _cases_mousewheel, add="+")
+            except Exception:
+                pass
+
+        _bind_case_wheel(cases_canvas)
+        _bind_case_wheel(cases_rows_frame)
+
+        def _clear_case_rows():
+            """Handle clear case rows."""
+            for row in case_rows:
+                try:
+                    row["frame"].destroy()
+                except Exception:
+                    pass
+            case_rows.clear()
+            _on_cases_frame_config()
+
+        def _set_case_rows_enabled(enabled: bool):
+            """Set case rows enabled."""
+            st = "normal" if enabled else "disabled"
+            try:
+                add_case_btn.configure(state=st)
+            except Exception:
+                pass
+            for row in case_rows:
+                try:
+                    row["trigger_entry"].configure(state=st)
+                    row["template_text"].configure(state=st)
+                    row["remove_btn"].configure(state=st)
+                except Exception:
+                    pass
+
+        def _collect_case_rows():
+            """Handle collect case rows."""
+            out = []
+            for row in case_rows:
+                key = row["trigger_var"].get().strip()
+                tpl = row["template_text"].get("1.0", "end-1c").strip()
+                if not key:
+                    continue
+                out.append({"key": key, "template": tpl})
+            return out
+
+        def _add_case_row(trigger="", template="", auto_save=True):
+            """Handle add case row."""
+            row_idx = len(case_rows)
+            row_frame = ttk.Frame(cases_rows_frame, padding=(0, 0, 0, 6))
+            row_frame.grid(row=row_idx, column=0, sticky="ew")
+            row_frame.columnconfigure(0, weight=1)
+
+            top_line = ttk.Frame(row_frame)
+            top_line.grid(row=0, column=0, sticky="ew", pady=(0, 3))
+            top_line.columnconfigure(1, weight=1)
+            trigger_lbl = ttk.Label(top_line, text="Trigger:")
+            trigger_lbl.grid(row=0, column=0, sticky="w", padx=(0, 6))
+            trig_var = tk.StringVar(value=str(trigger or ""))
+            trig_entry = ttk.Entry(top_line, textvariable=trig_var)
+            trig_entry.grid(row=0, column=1, sticky="ew")
+
+            ttk.Label(row_frame, text="Output template:").grid(row=1, column=0, sticky="w")
+            out_text = tk.Text(row_frame, height=3, wrap="word")
+            out_text.grid(row=2, column=0, sticky="ew")
+            out_text.insert("1.0", str(template or ""))
+            remove_btn_case = ttk.Button(row_frame, text="Remove")
+            remove_btn_case.grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+            row_data = {
+                "frame": row_frame,
+                "trigger_var": trig_var,
+                "trigger_entry": trig_entry,
+                "template_text": out_text,
+                "remove_btn": remove_btn_case,
+            }
+            case_rows.append(row_data)
+
+            def _remove_this():
+                """Handle remove this."""
+                if row_data not in case_rows:
+                    return
+                case_rows.remove(row_data)
+                try:
+                    row_frame.destroy()
+                except Exception:
+                    pass
+                for idx2, rw in enumerate(case_rows):
+                    rw["frame"].grid_configure(row=idx2)
+                _on_cases_frame_config()
+                _save_current()
+
+            remove_btn_case.configure(command=_remove_this)
+            trig_entry.bind("<FocusOut>", lambda _e: _save_current())
+            trig_entry.bind("<KeyRelease>", lambda _e: _save_current())
+            out_text.bind("<FocusOut>", lambda _e: _save_current())
+            out_text.bind("<KeyRelease>", lambda _e: _save_current())
+            _bind_case_wheel(trig_entry)
+            _bind_case_wheel(out_text)
+            _bind_case_wheel(row_frame)
+
+            _on_cases_frame_config()
+            if auto_save:
+                _save_current()
+
+        def _load_case_rows(cases):
+            """Handle load case rows."""
+            _clear_case_rows()
+            loaded_any = False
+            if isinstance(cases, list):
+                for item in cases:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("key", "")).strip()
+                    tpl = str(item.get("template", "") or "")
+                    if not key:
+                        continue
+                    _add_case_row(key, tpl, auto_save=False)
+                    loaded_any = True
+            if not loaded_any:
+                _add_case_row("", "", auto_save=False)
+            _on_cases_frame_config()
+
+        add_case_btn.configure(command=lambda: _add_case_row("", ""))
+
+        cases_default_lbl = ttk.Label(right, text="Cases default template:")
+        cases_default_lbl.grid(row=7, column=0, sticky="nw")
+        cases_default_text = tk.Text(right, height=3, wrap="word")
+        cases_default_text.grid(row=7, column=1, sticky="ew", pady=(0, 6))
+
+        hint_lbl = ttk.Label(
             right,
             text="Hint: {VALUE} = all values after the preset name; {VALUE1}/{VALUE2}/{VALUE3} = first three.\n"
-                 "Toggle templates also get {STATE} (on/off) and the same values."
-        ).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(4, 0)
+                 "Toggle templates also get {STATE} (on/off). Cases use Trigger + Output rows.\n"
+                 "Use \\n in template text to force a line break in exported output.\n"
+                 "Reshape is locked here; edit reshape_on/reshape_off in Template Editor."
         )
+        hint_lbl.grid(row=8, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         def _preset_label(preset):
+            """Handle preset label."""
             name = str(preset.get("name", "")).strip() or "(unnamed)"
             mode = str(preset.get("mode", "action")).strip().lower()
             return f"{name} ({mode})"
 
         def _refresh_list(select_idx=None):
+            """Handle refresh list."""
             preset_list.delete(0, "end")
             for p in presets:
                 preset_list.insert("end", _preset_label(p))
@@ -6057,23 +8924,41 @@ def open_settings_window():
                 preset_list.see(idx)
                 _load_selected(idx)
 
+        def _refresh_list_row(idx):
+            """Handle refresh list row."""
+            if idx is None or idx < 0 or idx >= len(presets):
+                return
+            try:
+                preset_list.delete(idx)
+                preset_list.insert(idx, _preset_label(presets[idx]))
+                preset_list.selection_clear(0, "end")
+                preset_list.selection_set(idx)
+                preset_list.see(idx)
+            except Exception:
+                pass
+
         def _set_text(widget, text_val):
+            """Set text."""
             widget.configure(state="normal")
             widget.delete("1.0", "end")
             widget.insert("1.0", text_val)
 
         def _get_text(widget):
+            """Return text."""
             return widget.get("1.0", "end-1c").strip()
 
         def _is_locked():
+            """Check whether is locked."""
             idx = current_idx.get("idx")
             if idx is None or idx >= len(presets):
                 return False
             return str(presets[idx].get("name", "")).strip().lower() == "reshape"
 
         def _refresh_mode_visibility():
+            """Handle refresh mode visibility."""
             mode = mode_var.get().strip().lower()
             is_toggle = mode == "toggle"
+            is_cases = mode == "cases"
             locked = _is_locked()
             if locked:
                 name_entry.configure(state="disabled")
@@ -6082,6 +8967,8 @@ def open_settings_window():
                 action_text.configure(state="disabled")
                 on_text.configure(state="disabled")
                 off_text.configure(state="disabled")
+                _set_case_rows_enabled(False)
+                cases_default_text.configure(state="disabled")
                 remove_btn.configure(state="disabled")
             else:
                 name_entry.configure(state="normal")
@@ -6089,86 +8976,168 @@ def open_settings_window():
                 default_chk.configure(state="normal" if is_toggle else "disabled")
                 on_text.configure(state="normal" if is_toggle else "disabled")
                 off_text.configure(state="normal" if is_toggle else "disabled")
-                action_text.configure(state="normal" if not is_toggle else "disabled")
+                action_text.configure(state="normal" if (not is_toggle and not is_cases) else "disabled")
+                _set_case_rows_enabled(is_cases)
+                cases_default_text.configure(state="normal" if is_cases else "disabled")
                 remove_btn.configure(state="normal")
 
-        def _save_current():
+            show_action = (mode == "action") and not locked
+            show_toggle = (mode == "toggle") and not locked
+            show_cases = (mode == "cases") and not locked
+            if locked:
+                show_action = show_toggle = show_cases = True
+            if show_action:
+                action_lbl.grid()
+                action_text.grid()
+            else:
+                action_lbl.grid_remove()
+                action_text.grid_remove()
+            if show_toggle:
+                on_lbl.grid()
+                on_text.grid()
+                off_lbl.grid()
+                off_text.grid()
+            else:
+                on_lbl.grid_remove()
+                on_text.grid_remove()
+                off_lbl.grid_remove()
+                off_text.grid_remove()
+            if show_cases:
+                cases_lbl.grid()
+                cases_section.grid()
+                cases_default_lbl.grid()
+                cases_default_text.grid()
+            else:
+                cases_lbl.grid_remove()
+                cases_section.grid_remove()
+                cases_default_lbl.grid_remove()
+                cases_default_text.grid_remove()
+            if show_toggle or locked:
+                default_chk.grid()
+            else:
+                default_chk.grid_remove()
+
+        def _save_current(refresh_list_row=False):
+            """Handle save current."""
             idx = current_idx.get("idx")
             if idx is None or idx >= len(presets):
                 return
             preset = presets[idx]
-            if str(preset.get("name", "")).strip().lower() == "reshape":
-                return
-            name = name_var.get().strip() or f"Preset {idx + 1}"
-            mode = mode_var.get().strip().lower()
-            if mode not in ("action", "toggle"):
-                mode = "action"
+            is_reshape = str(preset.get("name", "")).strip().lower() == "reshape"
+            if is_reshape:
+                name = "reshape"
+                mode = "toggle"
+                default = False
+                template = ""
+                on_tpl = ""
+                off_tpl = ""
+                mode_var.set("Toggle")
+                default_var.set(0)
+                _set_text(action_text, "")
+                _set_text(on_text, "")
+                _set_text(off_text, "")
+                _load_case_rows([])
+                _set_text(cases_default_text, "")
+            else:
+                name = name_var.get().strip() or f"Preset {idx + 1}"
+                mode = mode_var.get().strip().lower()
+                if mode not in ("action", "toggle", "cases"):
+                    mode = "action"
+                default = bool(default_var.get()) if mode == "toggle" else False
+                template = _get_text(action_text) if mode == "action" else ""
+                on_tpl = _get_text(on_text) if mode == "toggle" else ""
+                off_tpl = _get_text(off_text) if mode == "toggle" else ""
             preset["name"] = name
             preset["mode"] = mode
-            preset["default"] = bool(default_var.get())
-            preset["template"] = _get_text(action_text)
-            preset["on"] = _get_text(on_text)
-            preset["off"] = _get_text(off_text)
-            _refresh_list(idx)
+            preset["default"] = default
+            preset["template"] = template
+            preset["on"] = on_tpl
+            preset["off"] = off_tpl
+            preset["cases"] = _collect_case_rows() if mode == "cases" else []
+            preset["case_default"] = _get_text(cases_default_text) if mode == "cases" else ""
+            if refresh_list_row:
+                _refresh_list_row(idx)
 
         default_chk.configure(command=_save_current)
 
         def _load_selected(idx):
+            """Handle load selected."""
             if idx is None or idx >= len(presets):
                 return
             current_idx["idx"] = idx
             preset = presets[idx]
             name_var.set(str(preset.get("name", "")))
             mode_val = str(preset.get("mode", "action")).strip().lower()
-            mode_var.set("Toggle" if mode_val == "toggle" else "Action")
+            if mode_val == "toggle":
+                mode_var.set("Toggle")
+            elif mode_val == "cases":
+                mode_var.set("Cases")
+            else:
+                mode_var.set("Action")
             default_var.set(1 if preset.get("default") else 0)
             _set_text(action_text, str(preset.get("template", "")))
             _set_text(on_text, str(preset.get("on", "")))
             _set_text(off_text, str(preset.get("off", "")))
+            _load_case_rows(preset.get("cases", []))
+            _set_text(cases_default_text, str(preset.get("case_default", "")))
             _refresh_mode_visibility()
 
         def _add_preset():
+            """Handle add preset."""
             presets.append({
                 "name": f"Preset {len(presets) + 1}",
                 "mode": "action",
                 "template": "",
                 "on": "",
                 "off": "",
-                "default": False
+                "default": False,
+                "cases": [],
+                "case_default": ""
             })
             _refresh_list(len(presets) - 1)
 
         def _remove_preset():
+            """Handle remove preset."""
             sel = preset_list.curselection()
             if not sel:
                 return
             idx = sel[0]
+            if str(presets[idx].get("name", "")).strip().lower() == "reshape":
+                return
             presets.pop(idx)
             current_idx["idx"] = None
             _refresh_list(idx if idx < len(presets) else len(presets) - 1)
 
         def _on_select(_evt=None):
+            """Handle on select."""
             sel = preset_list.curselection()
             if not sel:
                 return
-            _save_current()
+            _save_current(refresh_list_row=True)
             _load_selected(sel[0])
 
         def _apply_and_close():
-            _save_current()
+            """Handle apply and close."""
+            _save_current(refresh_list_row=True)
             try:
                 save_config(CFG)
             except Exception:
                 pass
             win.destroy()
 
-        mode_combo.bind("<<ComboboxSelected>>", lambda _e: (_refresh_mode_visibility(), _save_current()))
+        mode_combo.bind("<<ComboboxSelected>>", lambda _e: (_refresh_mode_visibility(), _save_current(refresh_list_row=True)))
         preset_list.bind("<<ListboxSelect>>", _on_select)
 
         action_text.bind("<FocusOut>", lambda _e: _save_current())
         on_text.bind("<FocusOut>", lambda _e: _save_current())
         off_text.bind("<FocusOut>", lambda _e: _save_current())
+        cases_default_text.bind("<FocusOut>", lambda _e: _save_current())
         name_entry.bind("<FocusOut>", lambda _e: _save_current())
+        action_text.bind("<KeyRelease>", lambda _e: _save_current())
+        on_text.bind("<KeyRelease>", lambda _e: _save_current())
+        off_text.bind("<KeyRelease>", lambda _e: _save_current())
+        cases_default_text.bind("<KeyRelease>", lambda _e: _save_current())
+        name_entry.bind("<KeyRelease>", lambda _e: _save_current())
 
         _refresh_list(0 if presets else None)
 
@@ -6177,10 +9146,8 @@ def open_settings_window():
         ttk.Button(btns, text="Close", command=_apply_and_close).pack(side="right")
         win.protocol("WM_DELETE_WINDOW", _apply_and_close)
 
-    # Expose builder in UI
     def _rebuild_tpl_panel(*_):
         """Rebuild the template editor panel based on selected style."""
-        # Clear existing widgets
         for w in list(tpl_panel.children.values()):
             try: w.destroy()
             except Exception: pass
@@ -6191,37 +9158,34 @@ def open_settings_window():
                     justify="center").grid(row=0, column=0, columnspan=2, pady=20)
             return
 
-        # Load current templates and active optionals
         _fill_tpl_vars_for(style)
         modes = _current_modes(style)
         active_optional = _active_optional_for(style)
 
-        # Header
         hdr1 = ttk.Label(tpl_panel, text="CMD", font=("Segoe UI", 10, "bold"))
         hdr2 = ttk.Label(tpl_panel, text="Template", font=("Segoe UI", 10, "bold"))
         hdr1.grid(row=1, column=0, sticky="w", padx=(0, 6))
         hdr2.grid(row=1, column=1, sticky="ew")
         tpl_panel.columnconfigure(1, weight=1)
         
-        # Help text for each token
         help_map = {
             "wait": "{MS} or {S} delay tokens. TIMEOUT_MS/S include pad- and min floor.",
             "move": "{DIST_IN}/{X_IN},{Y_IN} {FORWARDS}; {HEADING_DEG} (global) optional; {MOVE_SPEED} optional cmd (0-127) override.",
-            "turn_global": "Field heading {HEADING_DEG}; {TURN_SPEED} optional dps.",
-            "turn_local": "Relative turn {TURN_DELTA_DEG}; {TURN_SPEED} optional dps.",
+            "turn_global": "Field heading {HEADING_DEG}; target point {TARGET_X_IN},{TARGET_Y_IN}; {TURN_SPEED} optional dps.",
+            "turn_local": "Relative turn {TURN_DELTA_DEG}; target point {TARGET_X_IN},{TARGET_Y_IN}; {TURN_SPEED} optional dps.",
             "pose": "{X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}; {FORWARDS}.",
             "setpose": "Set initial pose {X_IN},{Y_IN},{HEADING_DEG}",
-            "reshape": "{STATE} 1=normal, 2=reshaped (or true/false depending on reshape output)",
+            "reshape_on": "Reshape ON command template; {STATE}=ON value for selected output mode.",
+            "reshape_off": "Reshape OFF command template; {STATE}=OFF value for selected output mode.",
             "reverse_on": "Toggle reverse drive ON",
             "reverse_off": "Toggle reverse drive OFF",
             "tbuffer": "{MS} or {S} for buffer wait",
             "path_follow": "Tokens: {PATH_NAME}, {PATH_FILE}, {PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS}, {PATH_MIN_SPEED}, {PATH_MAX_SPEED} (cmd 0-127).",
-            "swing": "{HEADING_DEG} target, {DIR}=AUTO/CW_CLOCKWISE/CCW_COUNTERCLOCKWISE, {SIDE}=LEFT/RIGHT/AUTO, {TIMEOUT_MS}.",
+            "swing": "{HEADING_DEG} target, point {TARGET_X_IN},{TARGET_Y_IN}, {DIR}=AUTO/CW_CLOCKWISE/CCW_COUNTERCLOCKWISE, {SIDE}=LEFT/RIGHT/AUTO, {LOCKED_SIDE}=RIGHT/LEFT/AUTO {TIMEOUT_MS}.",
             "marker_wait": "Edge marker wait: {MARKER_DIST_IN} inches (or use {MARKER_FRAC} 0-1).",
             "marker_wait_done": "Finish motion after markers (e.g. waitUntilDone)."
         }
-        if adv_motion_var.get() and style == "JAR":
-            # Add JAR advanced placeholders to help text
+        if style == "JAR (advanced)" or (adv_motion_var.get() and style == "JAR"):
             adv_drive_note = " Auto caps/settle: short=precise, long=fast; voltage caps scale with move size; settle err/time scale with move size and cap."
             adv_turn_note = " Auto caps/settle: small angles=precise, large=fast; voltage/settle scale with angle and cap."
             adv_swing_note = " Auto caps/settle: small swings=precise, large=fast; voltage/settle scale with swing angle and cap."
@@ -6232,14 +9196,10 @@ def open_settings_window():
             help_map["turn_local"] += " JAR: {TURN_MAX_V}, {TURN_SETTLE_ERR}, {TURN_SETTLE_TIME}." + adv_turn_note
             help_map["swing"] += " JAR: {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}." + adv_swing_note
         
-        # Active command list honoring selected modes (pose and turn can coexist)
         turn_key = modes.get("turn") or ("turn_global" if style == "LemLib" else "turn_local")
         base_cmds = ["wait", "move", "pose", turn_key, "tbuffer"]
-        if style in ("LemLib", "Custom"):
-            base_cmds += ["marker_wait", "marker_wait_done"]
         active_cmds = base_cmds + active_optional
         
-        # Scrollable command list only
         list_container = ttk.Frame(tpl_panel)
         list_container.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(4, 4))
         list_container.rowconfigure(0, weight=1)
@@ -6253,6 +9213,7 @@ def open_settings_window():
         list_win = list_canvas.create_window((0, 0), window=list_panel, anchor="nw")
 
         def _on_list_config(_evt=None):
+            """Handle on list config."""
             try:
                 list_canvas.configure(scrollregion=list_canvas.bbox("all"))
                 list_canvas.itemconfigure(list_win, width=list_canvas.winfo_width())
@@ -6290,7 +9251,6 @@ def open_settings_window():
         list_panel.columnconfigure(1, weight=1)
         tpl_panel.rowconfigure(2, weight=1)
         
-        # Action buttons (static)
         btns = ttk.Frame(tpl_panel)
         btns.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Edit command templates...", command=_open_template_builder).pack(side="left", padx=(0, 6))
@@ -6304,9 +9264,9 @@ def open_settings_window():
         pass
         
     def _reset_defaults():
+        """Handle reset defaults."""
         style = codegen_style_var.get()
-        # restore default optional commands (setpose)
-        _set_active_optional(style, ["setpose", "path_follow"])
+        _set_active_optional(style, _default_optional_for_style(style))
         _set_modes(style, _default_modes(style))
         for k in base_tpl_keys + optional_pool:
             if k in codegen_defaults.get(style, codegen_defaults["Custom"]):
@@ -6314,6 +9274,7 @@ def open_settings_window():
         _rebuild_tpl_panel()
 
     def _persist_now():
+        """Handle persist now."""
         style = codegen_style_var.get()
         _save_tpl_vars_for(style)
         CFG.setdefault("codegen", {})["style"] = style
@@ -6321,7 +9282,8 @@ def open_settings_window():
             "ticks_per_rotation": float(ticks_var.get() or 360),
             "pad_factor": float(pad_var.get() or 1.0),
             "min_timeout_s": float(min_s_var.get() or 0.0),
-            "reshape_output": reshape_output_var.get() or "1/2"
+            "reshape_output": reshape_output_var.get() or "1/2",
+            "omit_defaults": int(omit_defaults_var.get())
         })
         tpl_panel.after(0, _bind_tpl_live_handlers)
 
@@ -6354,12 +9316,10 @@ def open_settings_window():
             global robot_pos, robot_heading, last_path_sig, last_snapshot, total_estimate_s
             global path_lookahead_enabled, path_lookahead_px, last_lookahead_radius
             
-            # Update CFG dictionary
             CFG["field_centric"] = 1
             CFG["distance_units"] = dist_map[dist_var.get()]
             CFG["angle_units"] = ang_map[ang_var.get()]
             
-            # Handle auto heading to node 1
             use_auto = bool(auto_heading_node1_var.get())
             if use_auto and len(display_nodes) >= 2:
                 target_internal = _heading_for_node0_to1()
@@ -6375,7 +9335,6 @@ def open_settings_window():
             robot_heading = initial_state["heading"]
             CFG["initial_heading_deg"] = float(init_head.get())
             
-            # Update physics
             CFG["robot_physics"]["rpm"] = float(rpm_var.get())
             CFG["robot_physics"]["diameter"] = float(diam_var.get())
             CFG["robot_physics"]["volts_straight"] = 12.0
@@ -6393,7 +9352,6 @@ def open_settings_window():
             CFG["robot_physics"]["curvature_gain"] = float(curv_var.get() or rp.get("curvature_gain", 0.05))
             CFG["gear_ratio"] = float(gr_var.get())
             
-            # Update UI
             CFG.setdefault("ui", {})["show_hitboxes"] = int(show_hitboxes_var.get())
             if not show_hitboxes_var.get():
                 show_hitbox_conflicts_only_var.set(0)
@@ -6402,7 +9360,6 @@ def open_settings_window():
             CFG.setdefault("ui", {})["show_node_numbers"] = int(show_node_numbers_var.get())
             CFG["reshape_label"] = reshape_label_var.get().strip() or "Reshape"
             
-            # Update dimensions
             bd = CFG["bot_dimensions"]
             bd["dt_width"] = float(dt_w.get())
             bd["dt_length"] = float(dt_l.get())
@@ -6415,12 +9372,10 @@ def open_settings_window():
             bd["reshape_offset_x_in"] = float(rs_off_x.get())
             bd["reshape_offset_y_in"] = float(rs_off_y.get())
             
-            # Update offsets
             CFG["offsets"]["offset_1_in"] = float(off1.get())
             CFG["offsets"]["offset_2_in"] = float(off2.get())
             CFG["offsets"]["padding_in"] = float(pad.get())
             
-            # Path config (preserve defaults if absent)
             pc = CFG.setdefault("path_config", {})
             pc["lookahead_in"] = auto_lookahead_in(CFG)
             vmin_cfg, vmax_cfg = _normalize_cmd_range(
@@ -6433,19 +9388,251 @@ def open_settings_window():
             pc.pop("max_speed_ips", None)
             pc["simulate_pursuit"] = int(path_lookahead_enabled)
             
-            # Refresh lookahead globals
             path_lookahead_enabled = bool(pc.get("simulate_pursuit", 1))
             path_lookahead_px = max(0.0, float(pc.get("lookahead_in", auto_lookahead_in(CFG))) * PPI)
             last_lookahead_radius = path_lookahead_px
-            
-            # Update codegen
+
+            mcl = CFG.setdefault("mcl", {})
+            prev_ekf = mcl.get("ekf")
+            def _mcl_f(var, default=0.0):
+                """Handle mcl f."""
+                try:
+                    return float(var.get())
+                except Exception:
+                    return float(default)
+
+            def _mcl_i(var, default=0):
+                """Handle mcl i."""
+                try:
+                    return int(var.get())
+                except Exception:
+                    try:
+                        return int(float(var.get()))
+                    except Exception:
+                        return int(default)
+
+            def _mcl_obj_mode():
+                """Handle mcl obj mode."""
+                mode = str(mcl_region_obj_var.get() or "off").strip().lower()
+                if mode in ("soft", "clip", "penalty"):
+                    return 1
+                if mode in ("hard", "reject"):
+                    return 2
+                return 0
+
+            resample_always = res_cfg.get("always", 0)
+            try:
+                resample_always = int(resample_always)
+            except Exception:
+                resample_always = 0
+            vision_sim_conf = vision_cfg.get("sim_confidence", 1.0)
+            try:
+                vision_sim_conf = float(vision_sim_conf)
+            except Exception:
+                vision_sim_conf = 1.0
+            region_sample_attempts = region_cfg.get("sample_attempts", 50)
+            try:
+                region_sample_attempts = int(region_sample_attempts)
+            except Exception:
+                region_sample_attempts = 50
+
+            mcl["enabled"] = _mcl_i(mcl_enabled_var, 0)
+            mcl["motion_ms"] = _mcl_f(mcl_motion_ms_var, 20.0)
+            mcl["sensor_ms"] = _mcl_f(mcl_sensor_ms_var, 50.0)
+            mcl["particles"] = {
+                "n": _mcl_i(mcl_particles_n_var, 200),
+                "n_min": _mcl_i(mcl_particles_min_var, 200),
+                "n_max": _mcl_i(mcl_particles_max_var, 400),
+            }
+            mcl["resample"] = {
+                "method": str(mcl_resample_method_var.get() or "systematic").strip().lower(),
+                "threshold": _mcl_f(mcl_resample_thresh_var, 0.5),
+                "always": resample_always,
+            }
+            mcl["kld"] = {
+                "enabled": _mcl_i(mcl_kld_enabled_var, 0),
+                "epsilon": _mcl_f(mcl_kld_eps_var, 0.05),
+                "delta": _mcl_f(mcl_kld_delta_var, 0.99),
+                "bin_xy_in": _mcl_f(mcl_kld_bin_xy_var, 2.0),
+                "bin_theta_deg": _mcl_f(mcl_kld_bin_theta_var, 10.0),
+            }
+            mcl["augmented"] = {
+                "enabled": _mcl_i(mcl_aug_enabled_var, 0),
+                "alpha_slow": _mcl_f(mcl_alpha_slow_var, 0.001),
+                "alpha_fast": _mcl_f(mcl_alpha_fast_var, 0.1),
+            }
+            mcl["random_injection"] = _mcl_f(mcl_random_injection_var, 0.01)
+            mcl["motion"] = {
+                "enabled": _mcl_i(mcl_motion_enabled_var, 1),
+                "motion_model": str(mcl_motion_model_var.get() or "drive").strip(),
+                "motion_source": str(mcl_motion_source_var.get() or "encoders").strip(),
+                "use_alpha_model": _mcl_i(mcl_use_alpha_var, 0),
+                "sigma_x_in": _mcl_f(mcl_sigma_x_var, 0.1275),
+                "sigma_y_in": _mcl_f(mcl_sigma_y_var, 0.1275),
+                "sigma_theta_deg": _mcl_f(mcl_sigma_theta_var, 1.0),
+                "alpha1": _mcl_f(mcl_alpha1_var, 0.05),
+                "alpha2": _mcl_f(mcl_alpha2_var, 0.05),
+                "alpha3": _mcl_f(mcl_alpha3_var, 0.05),
+                "alpha4": _mcl_f(mcl_alpha4_var, 0.05),
+            }
+            mcl["set_pose_sigma_xy_in"] = _mcl_f(mcl_set_pose_xy_var, 0.2)
+            mcl["set_pose_sigma_theta_deg"] = _mcl_f(mcl_set_pose_theta_var, 2.0)
+            mcl["sensors"] = {
+                "distance": {
+                    "enabled": _mcl_i(mcl_dist_enabled_var, 1),
+                    "model": str(mcl_dist_model_var.get() or "likelihood_field").strip(),
+                    "sigma_hit_mm": _mcl_f(mcl_dist_sigma_var, 8.5),
+                    "w_hit": _mcl_f(mcl_dist_w_hit_var, 0.9),
+                    "w_rand": _mcl_f(mcl_dist_w_rand_var, 0.1),
+                    "w_short": _mcl_f(mcl_dist_w_short_var, 0.0),
+                    "w_max": _mcl_f(mcl_dist_w_max_var, 0.0),
+                    "lambda_short": _mcl_f(mcl_dist_lambda_short_var, 0.1),
+                    "max_range_mm": _mcl_f(mcl_dist_max_range_var, 2000.0),
+                    "min_range_mm": _mcl_f(mcl_dist_min_range_var, 0.0),
+                    "confidence_min": _mcl_f(mcl_dist_conf_min_var, 0.0),
+                    "object_size_min": _mcl_f(mcl_dist_obj_size_min_var, 0.0),
+                    "object_size_max": _mcl_f(mcl_dist_obj_size_max_var, 0.0),
+                    "innovation_gate_mm": _mcl_f(mcl_dist_innov_gate_var, 0.0),
+                    "median_window": _mcl_f(mcl_dist_median_window_var, 3),
+                    "lf_ignore_max": _mcl_i(mcl_dist_ignore_max_var, 0),
+                    "gate_mm": _mcl_f(mcl_dist_gate_var, 150.0),
+                    "gate_mode": str(mcl_dist_gate_mode_var.get() or "hard").strip(),
+                    "gate_penalty": _mcl_f(mcl_dist_gate_penalty_var, 0.05),
+                    "gate_reject_ratio": _mcl_f(mcl_dist_gate_reject_var, 0.9),
+                    "likelihood_field": {
+                        "resolution_in": _mcl_f(mcl_dist_lf_res_var, 2.0),
+                    }
+                },
+                "imu": {
+                    "enabled": _mcl_i(mcl_imu_enabled_var, 1),
+                    "sigma_deg": _mcl_f(mcl_imu_sigma_var, 1.0),
+                },
+                "vision": {
+                    "enabled": _mcl_i(mcl_vision_enabled_var, 0),
+                    "sigma_xy_in": _mcl_f(mcl_vision_sigma_var, 2.0),
+                    "sigma_theta_deg": _mcl_f(mcl_vision_theta_sigma_var, 5.0),
+                    "confidence_min": _mcl_f(mcl_vision_conf_min_var, 0.0),
+                    "sim_confidence": vision_sim_conf,
+                }
+            }
+            dist_sensors = []
+            for idx, sv in enumerate(mcl_sensor_vars):
+                enabled = _mcl_i(sv["enabled"], 1)
+                name = str(sv["name"].get() or "").strip()
+                if not name:
+                    name = f"sensor_{idx + 1}"
+                dist_sensors.append({
+                    "name": name,
+                    "x_in": _mcl_f(sv["x_in"], 0.0),
+                    "y_in": _mcl_f(sv["y_in"], 0.0),
+                    "angle_deg": _mcl_f(sv["angle_deg"], 0.0),
+                    "bias_mm": _mcl_f(sv["bias_mm"], 0.0),
+                    "angle_offset_deg": _mcl_f(sv["angle_offset_deg"], 0.0),
+                    "min_range_mm": _mcl_f(sv["min_range_mm"], 0.0),
+                    "max_range_mm": _mcl_f(sv["max_range_mm"], 0.0),
+                    "min_confidence": _mcl_f(sv["min_confidence"], 0.0),
+                    "min_object_size": _mcl_f(sv["min_object_size"], 0.0),
+                    "max_object_size": _mcl_f(sv["max_object_size"], 0.0),
+                    "innovation_gate_mm": _mcl_f(sv["innovation_gate_mm"], 0.0),
+                    "map_mode": str(sv["map_mode"].get() or "both").strip(),
+                    "enabled": enabled,
+                })
+            mcl["sensor_geometry"] = {"distance_sensors": dist_sensors}
+            mcl["map_objects"] = {
+                "perimeter": _mcl_i(mcl_map_perimeter_var, 1),
+                "long_goals": _mcl_i(mcl_map_long_goals_var, 1),
+                "long_goal_braces": _mcl_i(mcl_map_long_goal_braces_var, 1),
+                "center_goals": _mcl_i(mcl_map_center_goals_var, 1),
+                "matchloaders": _mcl_i(mcl_map_matchloaders_var, 1),
+                "park_zones": _mcl_i(mcl_map_park_zones_var, 0),
+            }
+            mcl["object_selection"] = {k: _mcl_i(v, 0) for k, v in mcl_object_vars.items()}
+            sensor_object_visibility = {}
+            for idx, sv in enumerate(mcl_sensor_vars):
+                sensor_name = str(sv["name"].get() or "").strip() or f"sensor_{idx + 1}"
+                vis_vars = mcl_sensor_object_vars.get(idx, {})
+                vis_payload = {obj_id: _mcl_i(var, 1) for obj_id, var in vis_vars.items()}
+                sensor_object_visibility[str(idx)] = dict(vis_payload)
+                sensor_object_visibility[sensor_name] = dict(vis_payload)
+            mcl["sensor_object_visibility"] = sensor_object_visibility
+            obj_mode = _mcl_obj_mode()
+            region = {
+                "enabled": _mcl_i(mcl_region_enabled_var, 1),
+                "mode": str(mcl_region_mode_var.get() or "hard").strip(),
+                "type": str(mcl_region_type_var.get() or "segment_path").strip(),
+                "update_mode": str(mcl_region_update_var.get() or "segment_path").strip(),
+                "penalty": _mcl_f(mcl_region_penalty_var, 0.2),
+                "perimeter_gate": _mcl_i(mcl_region_perim_var, 1),
+                "object_gate": 1 if obj_mode == 2 else 0,
+                "object_mode": obj_mode,
+                "grid_type": str(mcl_region_grid_type_var.get() or "quadrant").strip(),
+                "grid_x": _mcl_i(mcl_region_grid_x_var, 2),
+                "grid_y": _mcl_i(mcl_region_grid_y_var, 2),
+                "x_min_in": _mcl_f(mcl_region_x_min_var, 0.0),
+                "x_max_in": _mcl_f(mcl_region_x_max_var, 144.0),
+                "y_min_in": _mcl_f(mcl_region_y_min_var, 0.0),
+                "y_max_in": _mcl_f(mcl_region_y_max_var, 144.0),
+                "radius_in": _mcl_f(mcl_region_radius_var, 12.0),
+                "slope_enabled": _mcl_i(mcl_region_slope_var, 0),
+                "slope_sigma_deg": _mcl_f(mcl_region_slope_sigma_var, 20.0),
+                "sample_attempts": region_sample_attempts,
+            }
+            cur_text = str(mcl_region_current_var.get() or "").strip()
+            if cur_text:
+                parts = [p.strip() for p in cur_text.replace(";", ",").split(",") if p.strip()]
+                if len(parts) == 1:
+                    try:
+                        region["current_region"] = int(parts[0])
+                    except Exception:
+                        region["current_region"] = parts[0]
+                else:
+                    vals = []
+                    for p in parts:
+                        try:
+                            vals.append(int(p))
+                        except Exception:
+                            continue
+                    if vals:
+                        region["current_region"] = vals
+            mcl["region"] = region
+            mcl["confidence"] = {
+                "threshold": _mcl_f(mcl_conf_thresh_var, 0.0),
+                "auto_reinit": _mcl_i(mcl_conf_auto_var, 0),
+                "reinit_mode": str(mcl_conf_mode_var.get() or "global").strip(),
+            }
+            mcl["correction"] = {
+                "enabled": _mcl_i(mcl_corr_enabled_var, 1),
+                "min_confidence": _mcl_f(mcl_corr_min_conf_var, 0.6),
+                "max_trans_jump_in": _mcl_f(mcl_corr_max_trans_var, 8.0),
+                "max_theta_jump_deg": _mcl_f(mcl_corr_max_theta_var, 15.0),
+                "alpha_min": _mcl_f(mcl_corr_alpha_min_var, 0.05),
+                "alpha_max": _mcl_f(mcl_corr_alpha_max_var, 0.25),
+            }
+            mcl["ui"] = {
+                "show_particles": _mcl_i(mcl_show_particles_var, 1),
+                "show_estimate": _mcl_i(mcl_show_estimate_var, 1),
+                "show_covariance": _mcl_i(mcl_show_cov_var, 1),
+                "show_rays": _mcl_i(mcl_show_rays_var, 1),
+                "show_region": _mcl_i(mcl_show_region_var, 1),
+                "show_gating": _mcl_i(mcl_show_gating_var, 1),
+                "max_particles_draw": _mcl_i(mcl_max_draw_var, 500),
+            }
+            mcl["tuning"] = {
+                "enabled": _mcl_i(mcl_tuning_enabled_var, 0),
+                "log_rate_hz": max(1, _mcl_i(mcl_tuning_log_rate_var, 20)),
+                "particle_subsample": max(0, _mcl_i(mcl_tuning_subsample_var, 0)),
+            }
+            if prev_ekf is not None:
+                mcl["ekf"] = prev_ekf
+
             CFG.setdefault("codegen", {})["style"] = codegen_style_var.get()
             opts = CFG["codegen"].setdefault("opts", {})
             opts.update({
                 "ticks_per_rotation": float(ticks_var.get() or 360),
                 "pad_factor": float(pad_var.get() or 1.0),
                 "min_timeout_s": float(min_s_var.get() or 0.0),
-                "reshape_output": reshape_output_var.get() or "1/2"
+                "reshape_output": reshape_output_var.get() or "1/2",
+                "omit_defaults": int(omit_defaults_var.get())
             })
             cal = CFG["codegen"].setdefault("calibration", {})
             cal["enabled"] = int(cal_enabled_var.get())
@@ -6474,15 +9661,14 @@ def open_settings_window():
             CFG["codegen"]["path_columns"] = path_columns_var.get().strip() or "{X}, {Y}, {COMMAND}"
             _save_tpl_vars_for(codegen_style_var.get())  # Save current templates
             _refresh_cal_summary()
-            
-            # Save to disk
+
             save_config(CFG)
             CFG.pop("_phys_cache", None)
             
-            # Reset motion state
             moving = False; paused = False; show_chevron = False
             timeline.clear(); seg_i = 0; t_local = 0.0; last_logged_seg = -1
             robot_pos = display_nodes[0]["pos"]; robot_heading = initial_state["heading"]
+            _mcl_apply_cfg(reset_particles=True)
             last_path_sig = None
             last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
             total_estimate_s = compute_total_estimate_s()
@@ -6507,13 +9693,15 @@ def main():
     global offset_dragging_idx, offset_drag_prev, edge_marker_drag
     
     open_settings_window()
+    _mcl_apply_cfg(reset_particles=True)
     
     running = True
     while running:
         clock.tick(60)
+        dt_s = 1.0 / max(1.0, float(fps))
+        dt_ms = dt_s * 1000.0
         ui.pump_tk()
         
-        # Detect path changes
         sig = tuple(
             (int(n["pos"][0]), int(n["pos"][1]),
              int(n.get("offset", 0)),
@@ -6533,6 +9721,7 @@ def main():
                         str(a.get("name", "")).strip().lower(),
                         (None if a.get("state", None) is None else str(a.get("state")).strip().lower()),
                         (_preset_value_text(a) or None))) if a.get("type") == "preset"
+                 else (("code", str(a.get("code", "")).strip())) if a.get("type") == "code"
                  else (("reshape" if a.get("type") in ("reshape", "geom") else a.get("type")),)
                  for a in n.get("actions", [])
              ),
@@ -6554,9 +9743,7 @@ def main():
             d2 = dx*dx + dy*dy
             if d2 < best and d2 <= SELECTION_RADIUS_PX**2:
                 best, hover_idx = d2, i
-        last_lookahead_point = None
-        
-        # Event handling
+        last_lookahead_point = None        
         for event in pygame.event.get():
             if event.type == pygame.QUIT: 
                 running = False
@@ -6568,9 +9755,7 @@ def main():
                     _refresh_output_header()
                     ui.toggle_output_window(log_lines)
                 
-                # === PATH EDIT MODE KEYBINDS ===
                 if event.key == pygame.K_p and not (mods & pygame.KMOD_CTRL):
-                    # P: Toggle path edit mode for the hovered/selected node
                     if path_edit_mode:
                         exit_path_edit_mode()
                     else:
@@ -6580,19 +9765,18 @@ def main():
                             selected_idx = target_idx
 
                 elif event.key == pygame.K_ESCAPE and path_edit_mode:
-                    # ESC: Exit path edit mode
                     exit_path_edit_mode()
                 
                 elif event.key == pygame.K_a and path_edit_mode and not (mods & pygame.KMOD_CTRL):
-                    # A: Add control point at mouse
                     add_control_point_at_mouse(mouse_pos)
                 
                 elif event.key == pygame.K_x and path_edit_mode and selected_control_point is not None:
-                    # X: Delete selected control point
                     remove_control_point(selected_control_point)
-                
+
+                elif path_edit_mode and event.key == pygame.K_u:
+                    toggle_path_spline_type()
+
                 elif path_edit_mode and event.key == pygame.K_m:
-                    # Mirroring disabled
                     pass
                 
                 elif event.key == pygame.K_m and not path_edit_mode:
@@ -6657,6 +9841,7 @@ def main():
                         last_lookahead_radius = path_lookahead_px
             
                 elif event.key == pygame.K_c:
+                    tutorial_state["flags"]["compiled_once"] = True
                     correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
                     sync_all_path_endpoints()
                     log_lines.clear()
@@ -6719,9 +9904,11 @@ def main():
                             log_lines.clear()
                             log_lines.extend(build_compile_header(CFG, initial_state["heading"]))
                             moving = True; paused = False; show_chevron = True
+                            tutorial_state["flags"]["ran_sim"] = True
                             robot_pos = display_nodes[0]["pos"]
                             robot_heading = initial_state["heading"]
                             reshape_live = False
+                            _mcl_apply_cfg(reset_particles=True)
                             timeline = build_timeline_with_buffers()
                             total_estimate_s = compute_total_from_timeline(timeline)
                             seg_i = 0; t_local = 0.0; last_logged_seg = -1
@@ -6731,6 +9918,7 @@ def main():
                     robot_pos = display_nodes[0]["pos"]
                     robot_heading = initial_state["heading"]
                     reshape_live = False
+                    _mcl_apply_cfg(reset_particles=True)
                     timeline.clear(); seg_i = 0; t_local = 0.0; last_logged_seg = -1
                 
                 elif event.key == pygame.K_f:
@@ -6745,7 +9933,8 @@ def main():
                             if display_nodes[tgt].get("offset_ghost_angle") is None and tgt > 0:
                                 pd_prev = display_nodes[tgt - 1].get("path_to_next", {})
                                 if pd_prev.get("use_path", False):
-                                    display_nodes[tgt]["offset_ghost_angle"] = heading_from_points(display_nodes[tgt - 1]["pos"], display_nodes[tgt]["pos"])
+                                    ang = heading_from_points(display_nodes[tgt - 1]["pos"], display_nodes[tgt]["pos"])
+                                    display_nodes[tgt]["offset_ghost_angle"] = ang
                                 else:
                                     display_nodes[tgt].pop("offset_ghost_angle", None)
                         else:
@@ -6759,7 +9948,22 @@ def main():
                     tgt = selected_idx if selected_idx is not None else (len(display_nodes)-1 if display_nodes else None)
                     if tgt is not None and tgt >= 0:
                         prev = util_snapshot(display_nodes, robot_pos, robot_heading)
-                        display_nodes[tgt]["reverse"] = not display_nodes[tgt].get("reverse", False)
+                        node = display_nodes[tgt]
+                        acts = list(node.get("actions", []))
+                        rev_idxs = [i for i, a in enumerate(acts) if a.get("type") == "reverse"]
+                        if rev_idxs:
+                            has_toggle = any(acts[i].get("state", None) is None for i in rev_idxs)
+                            if has_toggle:
+                                acts = [a for a in acts if a.get("type") != "reverse"]
+                            else:
+                                last_state = acts[rev_idxs[-1]].get("state", False)
+                                new_state = not bool(last_state)
+                                acts = [a for a in acts if a.get("type") != "reverse"]
+                                acts.append({"type": "reverse", "state": new_state})
+                            node["actions"] = acts
+                            node["reverse"] = False
+                        else:
+                            node["reverse"] = not node.get("reverse", False)
                         util_push_undo_prev(undo_stack, prev)
                         last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
                         last_path_sig = None
@@ -6776,9 +9980,13 @@ def main():
                         total_estimate_s = compute_total_estimate_s()
                 
                 elif event.key == pygame.K_s:
+                    tutorial_state["flags"]["save_load_used"] = True
+                    for _node in display_nodes:
+                        _normalize_node_mech_payload(_node)
                     save_nodes(initial_state, display_nodes)
                 
                 elif event.key == pygame.K_l:
+                    tutorial_state["flags"]["save_load_used"] = True
                     ini, nds = load_nodes()
                     if ini and nds:
                         prev = util_snapshot(display_nodes, robot_pos, robot_heading)
@@ -6790,6 +9998,7 @@ def main():
                             for a in n.get("actions", []):
                                 if a.get("type") == "geom": 
                                     a["type"] = "reshape"
+                            _normalize_node_mech_payload(n)
                         display_nodes[:] = nds
                         robot_pos = display_nodes[0]["pos"]
                         robot_heading = initial_state["heading"]
@@ -6844,12 +10053,10 @@ def main():
                         delete_node_at(selected_idx)
                         selected_idx = None
             
-            # Mouse events
 
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left click
                     if path_edit_mode:
-                        # Path edit mode: select/drag control points
                         hover_cp = None
                         for i, cp in enumerate(path_control_points):
                             if math.hypot(cp[0] - mouse_pos[0], cp[1] - mouse_pos[1]) <= PATH_CONTROL_RADIUS:
@@ -6860,7 +10067,6 @@ def main():
                             selected_control_point = hover_cp
                             dragging_control_point = True
                             continue
-                        # Check offset ghost in path mode
                         ghost_hit = None
                         for idx, n in enumerate(display_nodes):
                             if idx == 0: 
@@ -6886,7 +10092,6 @@ def main():
                             continue
                         selected_control_point = None
                     else:
-                        # Normal mode
                         pos = pygame.mouse.get_pos()
                         marker_hit = _edge_marker_hit(pos)
                         if marker_hit is not None:
@@ -6908,7 +10113,7 @@ def main():
                                 seg_idx, proj, t_split = cand
                                 prev = util_snapshot(display_nodes, robot_pos, robot_heading)
                                 display_nodes.insert(seg_idx + 1, {"pos": (proj[0], proj[1])})
-                                # Split edge markers between the two new segments
+                                tutorial_state["flags"]["shift_insert"] = True
                                 events = display_nodes[seg_idx].get("edge_events", [])
                                 ev_left, ev_right = _split_edge_events(events, t_split)
                                 if ev_left is not None:
@@ -6918,7 +10123,6 @@ def main():
                                         display_nodes[seg_idx].pop("edge_events", None)
                                     if ev_right:
                                         display_nodes[seg_idx + 1]["edge_events"] = ev_right
-                                # Split curved paths into two segments
                                 pd = display_nodes[seg_idx].get("path_to_next", {}) or {}
                                 if pd.get("use_path", False) and not pd.get("pose_preview_points"):
                                     cps = list(pd.get("control_points") or [])
@@ -6969,6 +10173,7 @@ def main():
                                 prev = util_snapshot(display_nodes, robot_pos, robot_heading)
                                 p_new = snap_to_grid(pos, GRID_SIZE_PX, snap_enabled)
                                 display_nodes.append({"pos": p_new})
+                                tutorial_state["flags"]["added_node"] = True
                                 correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
                                 sync_all_path_endpoints()
                                 util_push_undo_prev(undo_stack, prev)
@@ -6978,7 +10183,6 @@ def main():
                 
                 elif event.button == 3:  # Right click
                     if path_edit_mode:
-                        # Add control point at mouse
                         add_control_point_at_mouse(mouse_pos)
                     else:
                         marker_hit = _edge_marker_hit(mouse_pos)
@@ -6992,7 +10196,6 @@ def main():
                                 last_path_sig = None
                                 total_estimate_s = compute_total_estimate_s()
                             continue
-                        # First, see if right-clicked near the START of a curved path to set custom speeds
                         hit_seg = None
                         hit_dist = float("inf")
                         for i, node in enumerate(display_nodes[:-1]):
@@ -7015,6 +10218,7 @@ def main():
                                 init_min = _path_speed_cmd(pd_cur, CFG, "min_speed_cmd", 0.0)
                                 init_max = _path_speed_cmd(pd_cur, CFG, "max_speed_cmd", 127.0)
                                 init_la = pd_cur.get("lookahead_in_override", CFG.get("path_config", {}).get("lookahead_in", auto_lookahead_in(CFG)))
+                                tutorial_state["flags"]["path_speed_prompt"] = True
                                 inp = _askstring_centered(
                                     "Path speeds / lookahead",
                                     "Enter min_cmd,max_cmd[,lookahead in]:",
@@ -7039,23 +10243,21 @@ def main():
                                             pd.pop("lookahead_in_override", None)
                                         total_estimate_s = compute_total_estimate_s()
                                         util_push_undo_prev(undo_stack, prev)
-                                # After speed prompt, also show standard node command prompt for the start node
                                 start_node = display_nodes[hit_seg]
                                 node_pos_locked = tuple(start_node.get("pos", (0, 0)))
                                 init_cmd = compile_cmd_string(start_node, hit_seg)
+                                tutorial_state["flags"]["right_click_prompt"] = True
                                 cmd = _askstring_centered(
                                     "Node actions",
                                     "Commands (comma/semicolon separated). Examples:\n"
                                     "  turn 45, wait 2, turn 90\n"
                                     "  wait 1.5; turn -30\n"
-                                    "  swing 90 cw  (swing to heading; optional cw/ccw/auto)\n"
-                                    "  settleswing 90 cw  (swing and allow settling)\n"
                                     "  offset 7   (custom offset)\n"
-                                    "  reshape    (toggle geometry)\n"
+                                    "  reshape / reshape on / reshape off\n"
                                     "  reverse    (toggle / reverse on/off)\n"
                                     "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})\n"
                                     "  clamp on 1 2 3     (toggle preset + values, {STATE})\n"
-                                    "  swingto 180   (force swing heading)\n"
+                                    "  code Intake.spin(100, pct); (raw mechanism code)\n"
                                     "  latspeed 50   (drive cmd override 0-127)\n"
                                     "  turnspeed 180 (deg/s override)\n"
                                     "  chain [0-1/off] (chain through this node; optional looseness)\n",
@@ -7064,8 +10266,6 @@ def main():
                                 changed = False
                                 if cmd is not None:
                                     parse_and_apply_cmds(start_node, cmd, hit_seg)
-                                    changed = True
-                                if prompt_heading_realization(start_node, hit_seg):
                                     changed = True
                                 if changed:
                                     start_node["pos"] = node_pos_locked
@@ -7092,19 +10292,18 @@ def main():
                             node_pos_locked = tuple(node.get("pos", (0, 0)))
                             init = compile_cmd_string(node, pick)
                             prev = util_snapshot(display_nodes, robot_pos, robot_heading)
+                            tutorial_state["flags"]["right_click_prompt"] = True
                             cmd = _askstring_centered(
                                 "Node actions",
                                 "Commands (comma/semicolon separated). Examples:\n"
                                 "  turn 45, wait 2, turn 90\n"
                                 "  wait 1.5; turn -30\n"
-                                "  swing 90 cw  (swing to heading; optional cw/ccw/auto)\n"
-                                "  settleswing 90 cw  (swing and allow settling)\n"
                                 "  offset 7   (custom offset)\n"
-                                "  reshape    (toggle geometry)\n"
+                                "  reshape / reshape on / reshape off\n"
                                 "  reverse    (toggle / reverse on/off)\n"
                                 "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})\n"
                                 "  clamp on 1 2 3     (toggle preset + values, {STATE})\n"
-                                "  swingto 180   (force swing heading)\n"
+                                "  code Intake.spin(100, pct); (raw mechanism code)\n"
                                 "  latspeed 50   (drive cmd override 0-127)\n"
                                 "  turnspeed 180 (deg/s override)\n"
                                 "  chain [0-1/off] (chain through this node; optional looseness)\n"
@@ -7118,7 +10317,6 @@ def main():
                             if prompt_heading_realization(node, pick):
                                 changed = True
                             if changed:
-                                # Keep node anchored while editing commands
                                 node["pos"] = node_pos_locked
                                 display_nodes[pick]["pos"] = node_pos_locked
                                 correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -7153,7 +10351,6 @@ def main():
                             last_path_sig = None
                     continue
                 if path_edit_mode and dragging_control_point and selected_control_point is not None:
-                    # Drag control point (cannot drag endpoints)
                     if 0 < selected_control_point < len(path_control_points) - 1:
                         path_control_points[selected_control_point] = tuple(event.pos)
                 
@@ -7166,6 +10363,7 @@ def main():
                     sync_all_path_endpoints()
                 
                 elif dragging and selected_idx is not None and not moving and not path_edit_mode:
+                    tutorial_state["flags"]["dragged_node"] = True
                     mods_now = pygame.key.get_mods()
                     ctrl_now = bool(mods_now & pygame.KMOD_CTRL)
                     if ctrl_now and not constrain_active:
@@ -7174,6 +10372,8 @@ def main():
                     elif not ctrl_now and constrain_active:
                         constrain_active = False
                         constrain_origin = None
+                    if ctrl_now or constrain_active:
+                        tutorial_state["flags"]["axis_lock_used"] = True
                     
                     raw_p = snap_to_grid(event.pos, GRID_SIZE_PX, snap_enabled)
                     if constrain_active and constrain_origin is not None:
@@ -7228,7 +10428,6 @@ def main():
                         selected_idx = None
             
 
-        # Path change detection
         if not history_freeze and sig != last_path_sig:
             last_path_sig = sig
             moving = False; paused = False; show_chevron = False
@@ -7243,7 +10442,6 @@ def main():
             if not moving:
                 total_estimate_s = compute_total_estimate_s()
         
-        # Animation
         if moving and not paused:
             if seg_i >= len(timeline):
                 moving = False
@@ -7285,8 +10483,13 @@ def main():
                         path_points = seg.get("path_points", [])
                         if path_points:
                             robot_pos = path_points[-1]
-                            if seg.get("reverse"):
-                                robot_heading = (robot_heading + 180.0) % 360.0
+                            end_h = seg.get("facing")
+                            if end_h is None and PATH_FEATURES_AVAILABLE:
+                                end_h = calculate_path_heading(path_points, len(path_points) - 1)
+                            if end_h is not None:
+                                robot_heading = float(end_h) % 360.0
+                                if seg.get("reverse") and not seg.get("facing_is_travel", False):
+                                    robot_heading = (robot_heading + 180.0) % 360.0
                         seg_i += 1
                         t_local = 0.0
                     elif seg_type == "swing":
@@ -7332,7 +10535,6 @@ def main():
                         path_speeds = seg.get("path_speeds")
                         path_meta = seg.get("path_meta")
                         if use_pursuit:
-                            # Pure pursuit-style step toward lookahead
                             _, heading_to_look, look_pt = sample_path_position(
                                 t_local, path_points, T, CFG,
                                 lookahead_px=la_px,
@@ -7342,7 +10544,6 @@ def main():
                                 path_meta=path_meta
                             )
                             if look_pt:
-                                # If we're close to the end of the path, bias heading to the final tangent
                                 dist_end = math.hypot(path_points[-1][0] - robot_pos[0], path_points[-1][1] - robot_pos[1])
                                 if dist_end <= max(la_px * 0.8, PPI * 1.5):
                                     heading_to_look = calculate_path_heading(path_points, len(path_points) - 1)
@@ -7369,7 +10570,6 @@ def main():
                                     robot_pos = (robot_pos[0] + dx/dist * step, robot_pos[1] + dy/dist * step)
                                 robot_heading = clamp_heading_rate(robot_heading, heading_to_look, CFG, dt=1.0/60.0)
                                 last_heading_target = heading_to_look
-                                # Smooth lookahead point for stability (heavier weight on previous)
                                 if last_lookahead_point:
                                     look_pt = (
                                         0.8 * last_lookahead_point[0] + 0.2 * look_pt[0],
@@ -7423,7 +10623,6 @@ def main():
                         robot_pos = seg["pos"]
                         robot_heading = sample_turn_heading_trap(t_local, seg["start_heading"], seg["target_heading"], CFG, rate_override=seg.get("turn_speed_dps"))
                     
-                    # Fire edge markers during motion segments
                     if seg_type in ("move", "path", "path_follow") and seg.get("edge_events"):
                         if "_edge_event_idx" not in seg:
                             seg["_edge_event_idx"] = 0
@@ -7458,9 +10657,9 @@ def main():
                                 if end_h is None and PATH_FEATURES_AVAILABLE:
                                     end_h = calculate_path_heading(path_points, len(path_points) - 1)
                                 if end_h is not None:
-                                    robot_heading = end_h
-                                if seg.get("reverse"):
-                                    robot_heading = (robot_heading + 180.0) % 360.0
+                                    robot_heading = float(end_h) % 360.0
+                                    if seg.get("reverse") and not seg.get("facing_is_travel", False):
+                                        robot_heading = (robot_heading + 180.0) % 360.0
                                 last_heading_target = robot_heading
                         elif seg_type == "wait":
                             robot_pos = seg.get("pos", robot_pos)
@@ -7474,22 +10673,65 @@ def main():
                             reshape_live = not reshape_live
                         seg_i += 1
                         t_local = 0.0
-        
-        # Update shift insert preview
+        if mcl_enabled:
+            mcl_cfg = CFG.get("mcl", {})
+            try:
+                motion_ms = float(mcl_cfg.get("motion_ms", 20.0))
+                sensor_ms = float(mcl_cfg.get("sensor_ms", 50.0))
+            except Exception:
+                motion_ms = 20.0
+                sensor_ms = 50.0
+            mcl_pose = (robot_pos[0], robot_pos[1], _mcl_heading_from_internal(robot_heading))
+            if mcl_state.lf is None or not mcl_state.map_segments:
+                mcl_mod.update_map_segments(mcl_state, CFG)
+            _mcl_update_region_gate()
+            mcl_state.motion_accum += dt_ms
+            did_motion = False
+            motion_input = None
+            if mcl_state.motion_accum >= max(1.0, motion_ms):
+                motion_input = mcl_mod.simulate_motion_input(
+                    mcl_state, mcl_pose
+                )
+                mcl_state.motion_accum = 0.0
+                if motion_input:
+                    mcl_mod.motion_update(mcl_state, CFG, motion_input)
+                mcl_mod.ekf_predict(mcl_state, CFG, motion_input)
+                did_motion = True
+            mcl_state.sensor_accum += dt_ms
+            if mcl_state.sensor_accum >= max(1.0, sensor_ms):
+                if not did_motion:
+                    motion_input = mcl_mod.simulate_motion_input(
+                        mcl_state, mcl_pose
+                    )
+                    mcl_state.motion_accum = 0.0
+                    if motion_input:
+                        mcl_mod.motion_update(mcl_state, CFG, motion_input)
+                    mcl_mod.ekf_predict(mcl_state, CFG, motion_input)
+                measurements = mcl_mod.simulate_measurements(
+                    mcl_state, CFG, mcl_pose, add_noise=True
+                )
+                mcl_mod.sensor_update(mcl_state, CFG, measurements)
+                if isinstance(measurements, dict) and "imu" in measurements:
+                    mcl_mod.ekf_update_imu(mcl_state, CFG, measurements["imu"])
+                if mcl_state.estimate is not None:
+                    try:
+                        conf_val = float(mcl_state.confidence)
+                    except Exception:
+                        conf_val = 0.0
+                    mcl_mod.ekf_update_mcl(mcl_state, CFG, mcl_state.estimate, conf_val)
+                mcl_state.sensor_accum = 0.0
         insert_preview = None
         if not path_edit_mode and not moving:
             mods_now = pygame.key.get_mods()
             if mods_now & pygame.KMOD_SHIFT:
                 insert_preview = _segment_insert_preview(mouse_pos)
 
-        #   Drawing
         screen.fill(BG_COLOR)
         draw_grid(screen, GRID_SIZE_PX)
         draw_field_objects(screen, CFG)
         draw_geometry_borders(screen, display_nodes, CFG, initial_state["heading"])
         draw_follow_geometry(screen, CFG, robot_pos, robot_heading, reshape_live)
-
-        # Draw swing arcs and movetopose previews (straight segments only)
+        _draw_mcl_overlay(screen)
         for i in range(len(display_nodes) - 1):
             node = display_nodes[i]
             pd = node.get("path_to_next", {})
@@ -7508,20 +10750,17 @@ def main():
             if pose_preview and not pd.get("use_path", False):
                 draw_curved_path(screen, pose_preview, color=(80, 220, 200), width=3)
         
-        # Draw paths for curved segments
         for i, node in enumerate(display_nodes[:-1]):
             path_data = node.get("path_to_next", {})
             if not (path_data.get("use_path") and path_data.get("control_points")):
                 continue
             if path_edit_mode and i == path_edit_segment_idx:
-                # The actively edited path is drawn in the overlay below
                 continue
             color = (100, 200, 255)
             width = 3
             if path_edit_mode:
                 color = (120, 120, 120)
                 width = 2
-            # Cached shaded segments
             key = path_shade_key(i, node)
             segs = path_draw_cache.get(key)
             if segs is None:
@@ -7538,7 +10777,6 @@ def main():
                         p0, p1, col = seg_entry
                         pygame.draw.line(screen, col, p0, p1, width)
         
-        # Draw normal node connections (straight segments only)
         for i in range(len(display_nodes) - 1):
             node = display_nodes[i]
             path_data = node.get("path_to_next", {})
@@ -7547,11 +10785,9 @@ def main():
             if path_data.get("swing_vis"):
                 continue
             if not (path_data.get("use_path") and path_data.get("control_points")):
-                # Draw straight line
                 p0, p1 = effective_node_pos(i), effective_node_pos(i + 1)
                 pygame.draw.line(screen, NODE_COLOR, p0, p1, 2)
 
-        # Draw edge mechanism markers
         marker_hover = _edge_marker_hit(mouse_pos)
         marker_hover_idx = None
         if marker_hover is not None:
@@ -7570,7 +10806,6 @@ def main():
                 p = _polyline_point_at(pts, t_val)
                 enabled = bool(ev.get("enabled", True))
                 color = NODE_COLOR if enabled else GREY
-                # Cut a small hole in the segment line under the marker
                 tan = _polyline_tangent(pts, t_val)
                 hole_r = EDGE_MARKER_RADIUS + 2
                 hx0 = (p[0] - tan[0] * hole_r, p[1] - tan[1] * hole_r)
@@ -7579,7 +10814,6 @@ def main():
                 radius = EDGE_MARKER_RADIUS + (2 if marker_hover_idx == (i, j) else 0)
                 pygame.draw.circle(screen, color, (int(p[0]), int(p[1])), radius, 2)
 
-        # Draw grey offset endpoint for any segment type
         for i in range(len(display_nodes) - 1):
             next_node = display_nodes[i + 1]
             off_in = get_node_offset_in(next_node, CFG, i + 1)
@@ -7590,10 +10824,8 @@ def main():
                 continue
             pygame.draw.circle(screen, (140, 140, 140), (int(end_pt[0]), int(end_pt[1])), 6)
 
-        # Draw nodes with proper arguments
         draw_nodes(screen, display_nodes, selected_idx, font, CFG, path_edit_mode, draw_links=False)
 
-        # Shift insert preview (draw hole after lines so it stays visible)
         if insert_preview is not None:
             if len(insert_preview) >= 3:
                 seg_idx, pos, t_ins = insert_preview
@@ -7614,29 +10846,28 @@ def main():
                 pygame.draw.line(screen, BG_COLOR, hx0, hx1, 4)
             pygame.draw.circle(screen, NODE_COLOR, (int(pos[0]), int(pos[1])), 7, 2)
         
-        # PATH EDIT MODE OVERLAY
         if path_edit_mode and path_control_points:
             cp_preview = list(path_control_points)
-            # Draw smooth path preview
             if PATH_FEATURES_AVAILABLE:
-                smooth_path = generate_bezier_path(cp_preview, num_samples=50)
+                pd_preview = {}
+                if path_edit_segment_idx is not None and path_edit_segment_idx < len(display_nodes):
+                    pd_preview = display_nodes[path_edit_segment_idx].get("path_to_next", {}) or {}
+                spline_type = _path_spline_type(pd_preview)
+                smooth_path = generate_bezier_path(cp_preview, num_samples=50, spline_type=spline_type)
                 draw_curved_path(screen, smooth_path, color=(255, 200, 100), width=4)
             
-            # Draw control point handles
             draw_path_control_points(screen, path_control_points, selected_control_point, PATH_CONTROL_RADIUS)
             
-            # Draw lines connecting control points
             if len(cp_preview) >= 2:
                 pygame.draw.lines(screen, (150, 150, 150), False, cp_preview, 1)
             
-            # Draw edit mode label
             draw_path_edit_overlay(screen, path_edit_segment_idx, display_nodes, font_small)
         
         if show_chevron:
             draw_chevron(screen, robot_pos, robot_heading)
-        draw_robot(screen, robot_pos)
-        
-        # Lookahead visualization
+        if not mcl_enabled:
+            draw_robot(screen, robot_pos)
+
         if path_lookahead_enabled and last_lookahead_point:
             try:
                 rad = max(4, int(last_lookahead_radius))
@@ -7654,9 +10885,7 @@ def main():
                     hover_text = _marker_hover_text(events[ev_idx].get("actions", []))
                     _draw_marker_hover(screen, hover_text, mouse_pos, font_small)
         
-        # Draw hover box or help text
         if path_edit_mode:
-            # Help text already drawn in path_edit_overlay
             pass
         elif (hover_idx is not None and 0 <= hover_idx < len(display_nodes)
               and not dragging and selected_idx is None):

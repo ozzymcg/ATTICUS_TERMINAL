@@ -13,10 +13,10 @@
       "value": 12.0
     },
     "weight": {
-      "value": 11.0
+      "value": 11.5
     },
     "t_buffer": {
-      "value": 0.05
+      "value": 0.0
     },
     "max_cmd": {
       "value": 127.0
@@ -28,7 +28,7 @@
       "value": 0.12162162162162163
     },
     "advanced_motion": {
-      "value": 1.0
+      "value": 0.0
     },
     "all_omni": {
       "value": 1.0
@@ -42,16 +42,16 @@
       "value": 13.5
     },
     "length": {
-      "value": 15.5
+      "value": 16.5
     },
     "dt_width": {
-      "value": 12.5
+      "value": 11.5
     },
     "dt_length": {
-      "value": 11.0
+      "value": 10.0
     },
     "full_offset_x_in": {
-      "value": 1.0
+      "value": 0.75
     },
     "full_offset_y_in": {
       "value": 0.0
@@ -61,10 +61,10 @@
         "value": 13.5
       },
       "length": {
-        "value": 20.5
+        "value": 21.5
       },
       "offset_x_in": {
-        "value": 3.5
+        "value": 3.25
       },
       "offset_y_in": {
         "value": 0.0
@@ -73,10 +73,10 @@
   },
   "offsets": {
     "offset_1_in": {
-      "value": 7.0
+      "value": 5.25
     },
     "offset_2_in": {
-      "value": 15.25
+      "value": 15.5
     },
     "padding_in": {
       "value": 1.5
@@ -84,7 +84,7 @@
   },
   "path_config": {
     "lookahead_in": {
-      "value": 11.25
+      "value": 10.35
     },
     "min_speed_cmd": {
       "value": 30.0
@@ -106,7 +106,7 @@
     "value": 0
   },
   "initial_heading_deg": {
-    "value": 25.731
+    "value": 0.0
   },
   "gear_ratio": {
     "value": 0.75
@@ -137,16 +137,17 @@
         "wait": "pros::delay({MS});",
         "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
         "turn": "turn({HEADING_DEG});",
-        "face": "turnToFace({HEADING_DEG});",
+        "face": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
         "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
         "mech": "// MECH: {NAME}",
         "tbuffer": "pros::delay({MS});",
         "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
         "__optional__": [
-          "reshape",
           "setpose",
           "swing",
-          "path_follow"
+          "path_follow",
+          "reshape_on",
+          "reshape_off"
         ],
         "__modes__": {
           "motion": "move",
@@ -154,15 +155,16 @@
         },
         "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
         "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
-        "turn_local": "chassis.turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
+        "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
+        "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
+        "pose_angle": "",
         "reshape": "matchloadPistons.set_value({STATE});",
-        "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
-        "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
-        "marker_wait_done": "chassis.waitUntilDone();"
+        "reshape_on": "MLmech.off();",
+        "reshape_off": "MLmech.on();"
       },
       "PROS": {
         "wait": "pros::delay({MS});",
-        "move": "chassis.moveToPoint{{X_IN}, {Y_IN}, {TIMEOUT_MS}};",
+        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS});",
         "turn": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
         "face": "face({HEADING_DEG});",
         "mech": "// MECH: {NAME}",
@@ -187,9 +189,10 @@
         "mech": "// MECH: {NAME}",
         "tbuffer": "wait ({S}, seconds);",
         "__optional__": [
-          "reshape",
           "setpose",
-          "path_follow"
+          "path_follow",
+          "reshape_on",
+          "reshape_off"
         ],
         "path_follow": "follow_path(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD});",
         "reshape": "MLadapter({STATE});",
@@ -202,7 +205,10 @@
         "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
         "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});",
         "marker_wait": "waitUntil({MARKER_DIST_IN});",
-        "marker_wait_done": "waitUntilDone();"
+        "marker_wait_done": "waitUntilDone();",
+        "reshape_on": "MLadapter({STATE});",
+        "reshape_off": "MLadapter({STATE});",
+        "pose_angle": ""
       },
       "Action List": {
         "__optional__": [],
@@ -212,6 +218,53 @@
         }
       },
       "JAR": {
+        "wait": "task::sleep({MS});",
+        "move": "chassis.set_drive_exit_conditions({DRIVE_EARLY_EXIT});\\nchassis.drive_timeout =  {TIMEOUT_MS};\\nchassis.drive_distance({DIST_IN});",
+        "turn_global": "chassis.set_turn_exit_conditions({TURN_EARLY_EXIT});\\nchassis.turn_timeout = {TIMEOUT_MS};\\nchassis.turn_to_angle({HEADING_DEG});",
+        "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "tbuffer": "task::sleep({MS});",
+        "__optional__": [
+          "reshape_on",
+          "reshape_off",
+          "setpose",
+          "swing"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "reshape": "MLToggle();",
+        "pose_angle": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "reshape_off": "MLmech.on();",
+        "reshape_on": "MLmech.off();",
+        "swing": "chassis.set_swing_exit_conditions({SWING_EARLY_EXIT});\\nchassis.swing_timeout = {TIMEOUT_MS};\\nchassis.{SIDE}_swing_to_angle({HEADING_DEG});",
+        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
+      },
+      "EZ-Template": {
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_local"
+        },
+        "wait": "pros::delay({MS});",
+        "setpose": "chassis.odom_xyt_set({X_IN} _in, {Y_IN} _in, {HEADING_DEG} _deg);",
+        "move": "chassis.pid_odom_set({{{{{X_IN} _in, {Y_IN} _in}}, ({FORWARDS} ? fwd : rev), {DRIVE_MAX_V}}});\nchassis.pid_wait();",
+        "pose": "chassis.pid_odom_set({{{{{X_IN} _in, {Y_IN} _in, {HEADING_DEG} _deg}}, ({FORWARDS} ? fwd : rev), {DRIVE_MAX_V}}});\nchassis.pid_wait();",
+        "turn_global": "chassis.pid_turn_set({HEADING_DEG} _deg, {TURN_MAX_V});\nchassis.pid_wait();",
+        "turn_local": "chassis.pid_turn_relative_set({TURN_DELTA_DEG} _deg, {TURN_MAX_V});\nchassis.pid_wait();",
+        "swing": "chassis.pid_swing_set(ez::{SIDE}_SWING, {HEADING_DEG} _deg, {SWING_MAX_V});\nchassis.pid_wait();",
+        "reshape": "// user hook: reshape({STATE});",
+        "tbuffer": "pros::delay({MS});",
+        "path_follow": "// TODO: EZ-Template pure pursuit export not implemented.\n// LemLib-style path file: {PATH_FILE}\n// lookahead(in): {LOOKAHEAD}, min/max: {PATH_MIN_SPEED}/{PATH_MAX_SPEED}, forwards: {FORWARDS}",
+        "__optional__": [
+          "setpose",
+          "path_follow",
+          "pose",
+          "swing"
+        ],
+        "pose_angle": ""
+      },
+      "JAR (advanced)": {
         "wait": "task::sleep({MS});",
         "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG},{DRIVE_MAX_V},{HEADING_MAX_V},{DRIVE_SETTLE_ERR},{DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
         "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
@@ -223,7 +276,8 @@
         "__optional__": [
           "setpose",
           "swing",
-          "reshape",
+          "reshape_on",
+          "reshape_off",
           "path_follow"
         ],
         "__modes__": {
@@ -233,7 +287,10 @@
         "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
         "reshape": "matchload_state({STATE});",
         "marker_wait": "",
-        "marker_wait_done": ""
+        "marker_wait_done": "",
+        "reshape_on": "matchload_state({STATE});",
+        "reshape_off": "matchload_state({STATE});",
+        "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});"
       }
     },
     "opts": {
@@ -245,7 +302,10 @@
       "path_lookahead": 15.0,
       "pid_consider": 1,
       "pid_style": "JAR",
-      "path_follow_optional_migrated": true
+      "jar_pose_angle_overload": 0,
+      "path_follow_optional_migrated": true,
+      "omit_defaults": 1,
+      "reshape_split_templates_migrated": true
     },
     "path_dir": {
       "value": "export/paths"
@@ -256,11 +316,13 @@
     "mech_presets": [
       {
         "name": "intake",
-        "mode": "action",
-        "template": "set_intake({VALUE1});",
-        "on": "",
-        "off": "",
-        "default": false
+        "mode": "toggle",
+        "template": "",
+        "on": "Intake.spin({VALUE}, 100, pct);",
+        "off": "Intake.stop();",
+        "default": false,
+        "cases": [],
+        "case_default": ""
       },
       {
         "name": "reshape",
@@ -268,7 +330,42 @@
         "template": "",
         "on": "",
         "off": "",
-        "default": false
+        "default": false,
+        "cases": [],
+        "case_default": ""
+      },
+      {
+        "name": "wingmech",
+        "mode": "toggle",
+        "template": "",
+        "on": "Wing.off();",
+        "off": "Wing.on();",
+        "default": false,
+        "cases": [],
+        "case_default": ""
+      },
+      {
+        "name": "trap",
+        "mode": "cases",
+        "template": "",
+        "on": "",
+        "off": "",
+        "default": false,
+        "cases": [
+          {
+            "key": "store",
+            "template": "TopPiston.on();\nBottomPiston.off();"
+          },
+          {
+            "key": "mid",
+            "template": "TopPiston.off();\nBottomPiston.off();"
+          },
+          {
+            "key": "high",
+            "template": "TopPiston.on();\nBottomPiston.on();"
+          }
+        ],
+        "case_default": "TopPiston.on();\\n\nBottomPiston.on();"
       }
     ],
     "calibration": {
@@ -491,7 +588,7 @@
       "value": 0.06
     },
     "accel_mu_scale": {
-      "value": 0.9
+      "value": 0.85
     },
     "accel_min": {
       "value": 60.0
@@ -534,6 +631,1152 @@
     },
     "omni_scale": {
       "value": 0.9
+    }
+  },
+  "mcl": {
+    "enabled": {
+      "value": 0
+    },
+    "motion_ms": {
+      "value": 20.0
+    },
+    "sensor_ms": {
+      "value": 50.0
+    },
+    "particles": {
+      "n": {
+        "value": 300
+      },
+      "n_min": {
+        "value": 200
+      },
+      "n_max": {
+        "value": 400
+      }
+    },
+    "motion": {
+      "enabled": {
+        "value": 1
+      },
+      "motion_model": {
+        "value": "drive"
+      },
+      "motion_source": {
+        "value": "encoders"
+      },
+      "use_alpha_model": {
+        "value": 0
+      },
+      "sigma_x_in": {
+        "value": 0.1275
+      },
+      "sigma_y_in": {
+        "value": 0.1275
+      },
+      "sigma_theta_deg": {
+        "value": 1.0
+      },
+      "alpha1": {
+        "value": 0.05
+      },
+      "alpha2": {
+        "value": 0.05
+      },
+      "alpha3": {
+        "value": 0.05
+      },
+      "alpha4": {
+        "value": 0.05
+      }
+    },
+    "set_pose_sigma_xy_in": {
+      "value": 0.2
+    },
+    "set_pose_sigma_theta_deg": {
+      "value": 2.0
+    },
+    "sensors": {
+      "distance": {
+        "enabled": {
+          "value": 1
+        },
+        "model": {
+          "value": "beam"
+        },
+        "sigma_hit_mm": {
+          "value": 8.5
+        },
+        "w_hit": {
+          "value": 0.95
+        },
+        "w_rand": {
+          "value": 0.05
+        },
+        "w_short": {
+          "value": 0.0
+        },
+        "w_max": {
+          "value": 0.0
+        },
+        "lambda_short": {
+          "value": 0.1
+        },
+        "max_range_mm": {
+          "value": 2000.0
+        },
+        "min_range_mm": {
+          "value": 0.0
+        },
+        "confidence_min": {
+          "value": 20.0
+        },
+        "object_size_min": {
+          "value": 0.0
+        },
+        "object_size_max": {
+          "value": 0.0
+        },
+        "innovation_gate_mm": {
+          "value": 0.0
+        },
+        "median_window": {
+          "value": 3.0
+        },
+        "lf_ignore_max": {
+          "value": 0
+        },
+        "gate_mm": {
+          "value": 150.0
+        },
+        "gate_mode": {
+          "value": "hard"
+        },
+        "gate_penalty": {
+          "value": 0.05
+        },
+        "likelihood_field": {
+          "resolution_in": {
+            "value": 1.0
+          }
+        },
+        "gate_reject_ratio": {
+          "value": 0.9
+        }
+      },
+      "imu": {
+        "enabled": {
+          "value": 1
+        },
+        "sigma_deg": {
+          "value": 1.0
+        }
+      },
+      "vision": {
+        "enabled": {
+          "value": 0
+        },
+        "sigma_xy_in": {
+          "value": 2.0
+        },
+        "sigma_theta_deg": {
+          "value": 5.0
+        },
+        "confidence_min": {
+          "value": 0.0
+        },
+        "sim_confidence": {
+          "value": 1.0
+        }
+      }
+    },
+    "sensor_geometry": {
+      "distance_sensors": [
+        {
+          "name": {
+            "value": "front"
+          },
+          "x_in": {
+            "value": 7.75
+          },
+          "y_in": {
+            "value": 0.0
+          },
+          "angle_deg": {
+            "value": 0.0
+          },
+          "bias_mm": {
+            "value": 0.0
+          },
+          "angle_offset_deg": {
+            "value": 0.0
+          },
+          "min_range_mm": {
+            "value": 0.0
+          },
+          "max_range_mm": {
+            "value": 2000.0
+          },
+          "min_confidence": {
+            "value": 0.0
+          },
+          "min_object_size": {
+            "value": 0.0
+          },
+          "max_object_size": {
+            "value": 0.0
+          },
+          "innovation_gate_mm": {
+            "value": 0.0
+          },
+          "map_mode": {
+            "value": "both"
+          },
+          "enabled": {
+            "value": 1
+          }
+        },
+        {
+          "name": {
+            "value": "left"
+          },
+          "x_in": {
+            "value": 0.0
+          },
+          "y_in": {
+            "value": 6.75
+          },
+          "angle_deg": {
+            "value": 270.0
+          },
+          "bias_mm": {
+            "value": 0.0
+          },
+          "angle_offset_deg": {
+            "value": 0.0
+          },
+          "min_range_mm": {
+            "value": 0.0
+          },
+          "max_range_mm": {
+            "value": 2000.0
+          },
+          "min_confidence": {
+            "value": 0.0
+          },
+          "min_object_size": {
+            "value": 0.0
+          },
+          "max_object_size": {
+            "value": 0.0
+          },
+          "innovation_gate_mm": {
+            "value": 0.0
+          },
+          "map_mode": {
+            "value": "both"
+          },
+          "enabled": {
+            "value": 1
+          }
+        },
+        {
+          "name": {
+            "value": "right"
+          },
+          "x_in": {
+            "value": 0.0
+          },
+          "y_in": {
+            "value": -6.75
+          },
+          "angle_deg": {
+            "value": 90.0
+          },
+          "bias_mm": {
+            "value": 0.0
+          },
+          "angle_offset_deg": {
+            "value": 0.0
+          },
+          "min_range_mm": {
+            "value": 0.0
+          },
+          "max_range_mm": {
+            "value": 2000.0
+          },
+          "min_confidence": {
+            "value": 0.0
+          },
+          "min_object_size": {
+            "value": 0.0
+          },
+          "max_object_size": {
+            "value": 0.0
+          },
+          "innovation_gate_mm": {
+            "value": 0.0
+          },
+          "map_mode": {
+            "value": "both"
+          },
+          "enabled": {
+            "value": 1
+          }
+        },
+        {
+          "name": {
+            "value": "sensor_4"
+          },
+          "x_in": {
+            "value": 0.0
+          },
+          "y_in": {
+            "value": 0.0
+          },
+          "angle_deg": {
+            "value": 0.0
+          },
+          "bias_mm": {
+            "value": 0.0
+          },
+          "angle_offset_deg": {
+            "value": 0.0
+          },
+          "min_range_mm": {
+            "value": 0.0
+          },
+          "max_range_mm": {
+            "value": 2000.0
+          },
+          "min_confidence": {
+            "value": 0.0
+          },
+          "min_object_size": {
+            "value": 0.0
+          },
+          "max_object_size": {
+            "value": 0.0
+          },
+          "innovation_gate_mm": {
+            "value": 0.0
+          },
+          "map_mode": {
+            "value": "both"
+          },
+          "enabled": {
+            "value": 0
+          }
+        }
+      ]
+    },
+    "resample": {
+      "method": {
+        "value": "systematic"
+      },
+      "threshold": {
+        "value": 0.5
+      },
+      "always": {
+        "value": 0
+      }
+    },
+    "kld": {
+      "enabled": {
+        "value": 1
+      },
+      "epsilon": {
+        "value": 0.05
+      },
+      "delta": {
+        "value": 0.99
+      },
+      "bin_xy_in": {
+        "value": 2.0
+      },
+      "bin_theta_deg": {
+        "value": 10.0
+      }
+    },
+    "augmented": {
+      "enabled": {
+        "value": 0
+      },
+      "alpha_slow": {
+        "value": 0.001
+      },
+      "alpha_fast": {
+        "value": 0.1
+      }
+    },
+    "random_injection": {
+      "value": 0.01
+    },
+    "map_objects": {
+      "perimeter": {
+        "value": 1
+      },
+      "long_goals": {
+        "value": 1
+      },
+      "long_goal_braces": {
+        "value": 1
+      },
+      "center_goals": {
+        "value": 1
+      },
+      "matchloaders": {
+        "value": 0
+      },
+      "park_zones": {
+        "value": 0
+      }
+    },
+    "object_selection": {
+      "long_goal_left": {
+        "value": 0
+      },
+      "long_goal_brace_left_top": {
+        "value": 1
+      },
+      "long_goal_brace_left_bottom": {
+        "value": 1
+      },
+      "long_goal_right": {
+        "value": 0
+      },
+      "long_goal_brace_right_top": {
+        "value": 1
+      },
+      "long_goal_brace_right_bottom": {
+        "value": 1
+      },
+      "center_goal_pos45": {
+        "value": 1
+      },
+      "center_goal_neg45": {
+        "value": 0
+      },
+      "matchloader_left_bottom": {
+        "value": 1
+      },
+      "matchloader_left_top": {
+        "value": 1
+      },
+      "matchloader_right_bottom": {
+        "value": 1
+      },
+      "matchloader_right_top": {
+        "value": 1
+      },
+      "park_zone_bottom": {
+        "value": 0
+      },
+      "park_zone_top": {
+        "value": 0
+      }
+    },
+    "sensor_object_visibility": {
+      "0": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 0
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      },
+      "front": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 0
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      },
+      "1": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 0
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      },
+      "left": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 0
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      },
+      "2": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 1
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      },
+      "right": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 1
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      },
+      "3": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 0
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      },
+      "sensor_4": {
+        "long_goal_left": {
+          "value": 0
+        },
+        "long_goal_brace_left_top": {
+          "value": 1
+        },
+        "long_goal_brace_left_bottom": {
+          "value": 1
+        },
+        "long_goal_right": {
+          "value": 0
+        },
+        "long_goal_brace_right_top": {
+          "value": 1
+        },
+        "long_goal_brace_right_bottom": {
+          "value": 1
+        },
+        "center_goal_pos45": {
+          "value": 0
+        },
+        "center_goal_neg45": {
+          "value": 0
+        },
+        "matchloader_left_bottom": {
+          "value": 1
+        },
+        "matchloader_left_top": {
+          "value": 1
+        },
+        "matchloader_right_bottom": {
+          "value": 1
+        },
+        "matchloader_right_top": {
+          "value": 1
+        },
+        "park_zone_bottom": {
+          "value": 0
+        },
+        "park_zone_top": {
+          "value": 0
+        }
+      }
+    },
+    "region": {
+      "enabled": {
+        "value": 0
+      },
+      "mode": {
+        "value": "soft"
+      },
+      "type": {
+        "value": "segment_path"
+      },
+      "update_mode": {
+        "value": "segment_path"
+      },
+      "penalty": {
+        "value": 0.2
+      },
+      "perimeter_gate": {
+        "value": 1
+      },
+      "object_gate": {
+        "value": 0
+      },
+      "object_mode": {
+        "value": 1
+      },
+      "object_clip_free_in": {
+        "value": 0.5
+      },
+      "object_clip_max_in": {
+        "value": 2.0
+      },
+      "object_clip_sigma_in": {
+        "value": 0.75
+      },
+      "grid_type": {
+        "value": "quadrant"
+      },
+      "grid_x": {
+        "value": 2
+      },
+      "grid_y": {
+        "value": 2
+      },
+      "x_min_in": {
+        "value": 0.0
+      },
+      "x_max_in": {
+        "value": 144.0
+      },
+      "y_min_in": {
+        "value": 0.0
+      },
+      "y_max_in": {
+        "value": 144.0
+      },
+      "radius_in": {
+        "value": 12.0
+      },
+      "slope_enabled": {
+        "value": 1
+      },
+      "slope_sigma_deg": {
+        "value": 20.0
+      },
+      "sample_attempts": {
+        "value": 50
+      }
+    },
+    "confidence": {
+      "threshold": {
+        "value": 0.0
+      },
+      "auto_reinit": {
+        "value": 0
+      },
+      "reinit_mode": {
+        "value": "global"
+      }
+    },
+    "correction": {
+      "enabled": {
+        "value": 1
+      },
+      "min_confidence": {
+        "value": 0.6
+      },
+      "max_trans_jump_in": {
+        "value": 8.0
+      },
+      "max_theta_jump_deg": {
+        "value": 15.0
+      },
+      "alpha_min": {
+        "value": 0.03
+      },
+      "alpha_max": {
+        "value": 0.12
+      }
+    },
+    "ekf": {
+      "enabled": {
+        "value": 1
+      },
+      "mcl_min_conf": {
+        "value": 0.6
+      },
+      "sigma_dx_in": {
+        "value": 0.1275
+      },
+      "sigma_dy_in": {
+        "value": 0.1275
+      },
+      "sigma_dtheta_deg": {
+        "value": 1.0
+      },
+      "imu_sigma_deg": {
+        "value": 1.0
+      },
+      "mcl_sigma_x_min": {
+        "value": 0.2
+      },
+      "mcl_sigma_x_max": {
+        "value": 6.0
+      },
+      "mcl_sigma_y_min": {
+        "value": 0.2
+      },
+      "mcl_sigma_y_max": {
+        "value": 6.0
+      },
+      "mcl_sigma_theta_min": {
+        "value": 2.0
+      },
+      "mcl_sigma_theta_max": {
+        "value": 15.0
+      },
+      "init_sigma_xy_in": {
+        "value": 0.2
+      },
+      "init_sigma_theta_deg": {
+        "value": 2.0
+      },
+      "fusion_mode": {
+        "value": 2
+      },
+      "ambiguous_conf": {
+        "value": {
+          "value": 0.35
+        },
+        "min": {
+          "value": 0.0
+        },
+        "max": {
+          "value": 1.0
+        },
+        "step": {
+          "value": 0.01
+        },
+        "name": {
+          "value": "Ambiguous threshold"
+        },
+        "desc": {
+          "value": "Below this MCL confidence, treat pose as ambiguous/lost (EKF primary mode)."
+        }
+      },
+      "recover_conf": {
+        "value": {
+          "value": 0.6
+        },
+        "min": {
+          "value": 0.0
+        },
+        "max": {
+          "value": 1.0
+        },
+        "step": {
+          "value": 0.01
+        },
+        "name": {
+          "value": "Recover threshold"
+        },
+        "desc": {
+          "value": "At/above this confidence for several updates, allow MCL to re-anchor the EKF."
+        }
+      },
+      "recover_stable_updates": {
+        "value": {
+          "value": 3
+        },
+        "min": {
+          "value": 1
+        },
+        "max": {
+          "value": 10
+        },
+        "step": {
+          "value": 1
+        },
+        "name": {
+          "value": "Stable recover updates"
+        },
+        "desc": {
+          "value": "Number of consecutive confident MCL updates required before re-anchoring the EKF."
+        }
+      },
+      "recover_use_reset": {
+        "value": {
+          "value": true
+        },
+        "name": {
+          "value": "Hard reset on recover"
+        },
+        "desc": {
+          "value": "If true, large jumps on recover will hard-reset EKF to MCL pose."
+        }
+      },
+      "track_correction_enabled": {
+        "value": {
+          "value": true
+        },
+        "name": {
+          "value": "Track corrections"
+        },
+        "desc": {
+          "value": "Apply small MCL\u2192EKF corrections even when not lost (drift control)."
+        }
+      },
+      "track_min_conf": {
+        "value": {
+          "value": 0.75
+        },
+        "min": {
+          "value": 0.0
+        },
+        "max": {
+          "value": 1.0
+        },
+        "step": {
+          "value": 0.01
+        },
+        "name": {
+          "value": "Track min confidence"
+        },
+        "desc": {
+          "value": "Minimum confidence to apply small drift corrections in EKF primary mode."
+        }
+      },
+      "track_max_trans_in": {
+        "value": {
+          "value": 2.0
+        },
+        "min": {
+          "value": 0.0
+        },
+        "max": {
+          "value": 12.0
+        },
+        "step": {
+          "value": 0.25
+        },
+        "name": {
+          "value": "Track max translation"
+        },
+        "desc": {
+          "value": "Max translation delta allowed (in) for drift corrections in EKF primary mode."
+        }
+      },
+      "track_max_theta_deg": {
+        "value": {
+          "value": 5.0
+        },
+        "min": {
+          "value": 0.0
+        },
+        "max": {
+          "value": 45.0
+        },
+        "step": {
+          "value": 0.5
+        },
+        "name": {
+          "value": "Track max heading"
+        },
+        "desc": {
+          "value": "Max heading delta allowed (deg) for drift corrections in EKF primary mode."
+        }
+      },
+      "intervene_min_conf": {
+        "value": 0.7
+      },
+      "intervene_trans_in": {
+        "value": 4.0
+      },
+      "intervene_theta_deg": {
+        "value": 8.0
+      },
+      "intervene_p_xy_in2": {
+        "value": 9.0
+      },
+      "intervene_p_theta_deg2": {
+        "value": 100.0
+      },
+      "intervene_hard_reset_trans_in": {
+        "value": 12.0
+      },
+      "intervene_hard_reset_theta_deg": {
+        "value": 25.0
+      },
+      "intervene_cooldown_ms": {
+        "value": 250
+      },
+      "intervene_use_reset": {
+        "value": 1
+      }
+    },
+    "ui": {
+      "show_particles": {
+        "value": 0
+      },
+      "show_estimate": {
+        "value": 1
+      },
+      "show_covariance": {
+        "value": 0
+      },
+      "show_rays": {
+        "value": 1
+      },
+      "show_region": {
+        "value": 0
+      },
+      "show_gating": {
+        "value": 0
+      },
+      "max_particles_draw": {
+        "value": 30
+      }
+    },
+    "tuning": {
+      "enabled": {
+        "value": 1
+      },
+      "log_rate_hz": {
+        "value": 20
+      },
+      "particle_subsample": {
+        "value": 0
+      }
     }
   }
 }

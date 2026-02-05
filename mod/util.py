@@ -1,7 +1,6 @@
 import math
 import copy
 
-# Support running without package context
 if __package__ is None or __package__ == "":
     import os
     import sys
@@ -91,6 +90,7 @@ def apply_tbuffer(cfg, timeline_list):
 
     out = []
     def _num_or_none(val):
+        """Handle num or none."""
         if isinstance(val, dict):
             for key in ("value", "t_min", "t_max", "ms"):
                 if key in val:
@@ -102,6 +102,7 @@ def apply_tbuffer(cfg, timeline_list):
             return None
 
     def _settle_pause_s(seg):
+        """Handle settle pause s."""
         rp = cfg.get("robot_physics", {})
         settle_base = rp.get("settle_base", {})
         swing_base = settle_base.get("swing", {}) if isinstance(settle_base, dict) else {}

@@ -1,8 +1,6 @@
-# mod/sim.py
 import math
 import bisect
 
-# Support running as script (no package) by falling back to absolute imports
 if __package__ is None or __package__ == "":
     import os, sys
     here = os.path.dirname(os.path.abspath(__file__))
@@ -32,10 +30,10 @@ _PHYS_CACHE_KEY = "_phys_cache"
 
 _PHYS_CONST_DEFAULTS = {
     "load_factor": 0.9,
-    "accel_mu_scale": 0.95,
+    "accel_mu_scale": 0.9,
     "accel_min": 60.0,
     "accel_max": 450.0,
-    "t_to_v_base": 0.2,
+    "t_to_v_base": 0.25,
     "t_to_v_min": 0.12,
     "t_to_v_max": 0.60,
     "vmax_min": 10.0,
@@ -49,6 +47,7 @@ _PHYS_CONST_DEFAULTS = {
 }
 
 def _phys_const(cfg, key: str, default: float) -> float:
+    """Handle phys const."""
     consts = cfg.get("physics_constants", {})
     val = consts.get(key, default)
     if isinstance(val, dict):
@@ -215,7 +214,16 @@ def _profile_speed_scale(name: str) -> float:
 
 def _has_custom_waits_at_node(node: dict) -> bool:
     """Check if node has custom wait actions."""
-    acts = node.get("actions_out", node.get("actions", []))
+    acts_a = node.get("actions")
+    acts_b = node.get("actions_out")
+    if isinstance(acts_a, list) and isinstance(acts_b, list) and acts_a and acts_b and acts_a != acts_b:
+        acts = list(acts_a) + [a for a in acts_b if a not in acts_a]
+    elif isinstance(acts_a, list) and acts_a:
+        acts = acts_a
+    elif isinstance(acts_b, list):
+        acts = acts_b
+    else:
+        acts = []
     return any(a.get("type") == "wait" and float(a.get("s", 0) or 0) > 0 for a in acts)
 
 def vmax_straight(cfg):
@@ -247,9 +255,7 @@ def _curvature_of_triplet(p_prev, p, p_next):
     denom = (abx * abx + aby * aby) ** 0.5 * (bcx * bcx + bcy * bcy) ** 0.5
     if denom <= 1e-9:
         return 0.0
-    # Signed area via cross product
     cross = abx * bcy - aby * bcx
-    # Use simple curvature magnitude
     return cross / max(1e-9, denom * max(1e-3, math.hypot(cx - ax, cy - ay)))
 
 
@@ -265,7 +271,6 @@ def path_time_with_curvature(path_points, cfg, speed_mult=1.0, min_speed_overrid
     if total_px <= 1e-9:
         return 0.0, 0.0, resampled, [], []
 
-    # Interpret min/max as command units (0-127) and convert to ips for physics
     max_cfg_cmd = pcfg.get("max_speed_cmd", pcfg.get("max_speed_ips", 127.0))
     max_base_cmd = _clamp_cmd(max_speed_override if max_speed_override is not None else max_cfg_cmd)
     max_base = _cmd_to_ips(max_base_cmd, cfg) * speed_mult
@@ -301,7 +306,6 @@ def path_time_with_curvature(path_points, cfg, speed_mult=1.0, min_speed_overrid
             curv_seg = 0.0
         point_curvatures[seg_idx] = curv_seg
         point_curvatures[seg_idx + 1] = curv_seg
-        # Curvature impact; always enforce turn-rate limit
         if curv_gain <= 0.0:
             v_cap = max_base
         else:
@@ -319,15 +323,12 @@ def path_time_with_curvature(path_points, cfg, speed_mult=1.0, min_speed_overrid
     profile_time = _move_total_time(total_px / PPI, cfg, v_override=max_base, v0=v0 or 0.0, v1=v1 or 0.0)
     final_time = max(base_time, profile_time)
 
-    # soften endpoints to reduce discontinuities
     if len(point_speeds) >= 2:
         point_speeds[0] = min(point_speeds[0], point_speeds[1])
         point_speeds[-1] = min(point_speeds[-1], point_speeds[-2])
 
-    # Preserve a copy of the unscaled profile for export purposes
     point_speeds_raw = list(point_speeds)
 
-    # If we padded time for acceleration, scale speeds so animation/export match final_time
     if final_time > 1e-9 and base_time > 1e-9 and final_time > base_time:
         scale = base_time / final_time
         point_speeds = [v * scale for v in point_speeds]
@@ -449,7 +450,6 @@ def sample_move_profile(t, L_in, cfg, v_override=None, v0=0.0, v1=0.0):
         s = v0 * t + 0.5 * a * t * t
     else:
         t2 = t - t_acc
-        # decel phase only (no cruise)
         s = (v0 + v_peak) * 0.5 * t_acc + (v_peak * t2 - 0.5 * a * t2 * t2)
     return max(0.0, min(L_in, s))
 
@@ -541,8 +541,8 @@ def _effective_centers(nodes, cfg, initial_heading):
         if i == 0:
             eff.append(p)
             continue
-        prev = nodes[i-1]["pos"]
         prev_node = nodes[i - 1]
+        prev = nodes[i-1]["pos"]
         prev_pd = nodes[i - 1].get("path_to_next", {}) if i - 1 >= 0 else {}
         prev_swing = prev_pd.get("swing_vis")
         start_override = prev_pd.get("start_override")
@@ -552,13 +552,18 @@ def _effective_centers(nodes, cfg, initial_heading):
 
         off_in = get_node_offset_in(n, cfg, i)
         ghost_ang = n.get("offset_ghost_angle")
-        if off_in != 0.0 and ghost_ang is None and prev_node.get("move_to_pose"):
+        force_pose_ghost = False
+        if off_in != 0.0 and prev_node.get("move_to_pose"):
             pose_h = prev_node.get("pose_heading_deg")
             if pose_h is None:
                 pose_h = heading_from_points(prev_anchor, p)
-            if prev_node.get("reverse", False):
-                pose_h = (pose_h + 180.0) % 360.0
-            ghost_ang = (pose_h + 180.0) % 360.0
+            try:
+                pose_h = float(pose_h)
+            except Exception:
+                pose_h = heading_from_points(prev_anchor, p)
+            ghost_ang = pose_h % 360.0
+            n["offset_ghost_angle"] = ghost_ang
+            force_pose_ghost = True
         if off_in != 0.0 and ghost_ang is None:
             arrival_heading = None
             if prev_swing and prev_swing.get("end_pos") is not None:
@@ -574,7 +579,8 @@ def _effective_centers(nodes, cfg, initial_heading):
                         if len(cps) >= 2:
                             cps[0] = prev_anchor
                             cps[-1] = p
-                            pts = generate_bezier_path(cps, num_samples=20)
+                            spline_type = prev_pd.get("spline_type")
+                            pts = generate_bezier_path(cps, num_samples=20, spline_type=spline_type)
                     if pts:
                         arrival_heading = calculate_path_heading(pts, len(pts) - 1)
             if arrival_heading is None and has_curve:
@@ -584,7 +590,7 @@ def _effective_centers(nodes, cfg, initial_heading):
                     arrival_heading = None
             if arrival_heading is not None:
                 ghost_ang = arrival_heading
-        if off_in != 0.0 and ghost_ang is not None and (prev_pd.get("use_path", False) or prev_pd.get("pose_preview_points") or prev_swing):
+        if off_in != 0.0 and ghost_ang is not None and (prev_pd.get("use_path", False) or prev_pd.get("pose_preview_points") or prev_swing) and not force_pose_ghost:
             arrival_heading = None
             if prev_swing and prev_swing.get("end_pos") is not None:
                 arrival_heading = heading_from_points(prev_swing.get("end_pos"), p)
@@ -599,7 +605,8 @@ def _effective_centers(nodes, cfg, initial_heading):
                         if len(cps) >= 2:
                             cps[0] = prev_anchor
                             cps[-1] = p
-                            pts = generate_bezier_path(cps, num_samples=20)
+                            spline_type = prev_pd.get("spline_type")
+                            pts = generate_bezier_path(cps, num_samples=20, spline_type=spline_type)
                     if pts:
                         arrival_heading = calculate_path_heading(pts, len(pts) - 1)
                 if arrival_heading is None and has_curve:
@@ -649,17 +656,20 @@ def _tangent_out_of_node(nodes, eff, idx):
     p_next = eff[idx + 1] if eff and idx + 1 < len(eff) else nodes[idx + 1]["pos"]
     return (p_next[0] - p_here[0], p_next[1] - p_here[1])
 
-def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse=False, drive_override=None, pose_heading=None, pose_lead=None):
+def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse_start=False, reverse_end=False, drive_override=None, pose_heading=None, pose_lead=None):
     """
     Build a swing arc segment.
     
     The arc uses a fixed radius (half the track width). The arc ends once the
-    robot's heading matches the desired facing toward p1 (respecting reverse).
+    robot's travel heading matches the desired facing toward p1.
     """
+    heading_offset_start = 180.0 if reverse_start else 0.0
+    heading_offset_end = 180.0 if reverse_end else 0.0
+    travel_start = (start_heading - heading_offset_start) % 360.0
     def _swing_geom(delta_deg: float, dir_norm_local: str):
         """Compute swing end position and geometry for a given delta."""
         R = _bot_half_track_px(cfg)
-        th0 = math.radians(start_heading)
+        th0 = math.radians(travel_start)
         off_angle = th0 - math.pi * 0.5 if dir_norm_local == "cw" else th0 + math.pi * 0.5
         cx = p0[0] + math.cos(off_angle) * R
         cy = p0[1] - math.sin(off_angle) * R
@@ -676,30 +686,23 @@ def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse=False, drive_o
     if dir_norm not in ("cw", "ccw", "auto"):
         dir_norm = "auto"
 
-    # Initial guess based on facing toward the next node (respect reverse travel)
     facing0 = heading_from_points(p0, p1)
-    if reverse:
-        facing0 = (facing0 + 180.0) % 360.0
-    base_diff = ((facing0 - start_heading + 180.0) % 360.0) - 180.0
+    base_diff = ((facing0 - travel_start + 180.0) % 360.0) - 180.0
     delta_deg = base_diff
 
-    # Choose initial direction if auto
     dir_effective = dir_norm
     if dir_effective == "auto":
         dir_effective = "ccw" if delta_deg >= 0 else "cw"
 
-    # Reverse travel flips the geometric rotation (pivot side effect)
     dir_geom = dir_effective
-    if reverse and dir_geom in ("cw", "ccw"):
-        dir_geom = "ccw" if dir_geom == "cw" else "cw"
 
-    # Enforce direction on initial delta (geometry direction)
     if dir_geom == "cw":
         delta_deg = -abs(delta_deg)
     elif dir_geom == "ccw":
         delta_deg = abs(delta_deg)
 
     def _desired_heading(end_pos):
+        """Handle desired heading."""
         desired = heading_from_points(end_pos, p1)
         lead_in = 0.0
         try:
@@ -712,8 +715,6 @@ def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse=False, drive_o
             if ph is None:
                 ph = heading_from_points(end_pos, p1)
             end_heading = ph
-            if reverse:
-                end_heading = (end_heading + 180.0) % 360.0
             disp_heading = convert_heading_input(end_heading, None)
             th = math.radians(disp_heading)
             dist_px = math.hypot(p1[0] - end_pos[0], p1[1] - end_pos[1])
@@ -723,25 +724,30 @@ def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse=False, drive_o
                     p1[1] + math.sin(th) * dist_px * lead_in
                 )
                 desired = heading_from_points(end_pos, carrot)
-        if reverse:
-            desired = (desired + 180.0) % 360.0
         return desired
 
-    # Iteratively refine delta so final heading matches desired heading from arc end to target
     for _ in range(8):
         end_pos, center, r0, geom_delta_deg, R, d_rad = _swing_geom(delta_deg, dir_geom)
         desired = _desired_heading(end_pos)
-        current_target = (start_heading + delta_deg) % 360.0
-        diff = ((desired - current_target + 180.0) % 360.0) - 180.0
+        current_target = (travel_start + delta_deg) % 360.0
+        if dir_effective == "cw":
+            diff = ((desired - current_target) % 360.0) - 360.0
+        else:
+            diff = (desired - current_target) % 360.0
         delta_new = delta_deg + diff
         if dir_effective == "cw":
             delta_new = -abs(delta_new)
         elif dir_effective == "ccw":
             delta_new = abs(delta_new)
-        # If change is tiny, stop
         if abs(diff) < 1e-3:
             break
         delta_deg = delta_new
+
+    delta_deg = math.fmod(delta_deg, 360.0)
+    if dir_effective == "cw":
+        delta_deg = -abs(delta_deg)
+    elif dir_effective == "ccw":
+        delta_deg = abs(delta_deg)
 
     end_pos, center, r0, geom_delta_deg, R, d_rad = _swing_geom(delta_deg, dir_geom)
 
@@ -750,7 +756,8 @@ def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse=False, drive_o
 
     arc_in = (abs(d_rad) * R) / PPI
     Tmove = _move_total_time(arc_in, cfg, v_override=drive_override)
-    target_heading = (start_heading + delta_deg) % 360.0
+    delta_heading = delta_deg + (heading_offset_end - heading_offset_start)
+    target_heading = (start_heading + delta_heading) % 360.0
 
     swing_vis = {
         "start_pos": p0,
@@ -759,7 +766,8 @@ def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse=False, drive_o
         "start_heading": start_heading,
         "target_heading": target_heading,
         "diff_geom": {"center": center, "r0": r0, "delta_deg": geom_delta_deg, "cw": dir_geom == "cw"},
-        "reverse": bool(reverse),
+        "reverse_start": bool(reverse_start),
+        "reverse_end": bool(reverse_end),
         "swing_dir": dir_norm
     }
 
@@ -768,12 +776,14 @@ def _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse=False, drive_o
         "T": Tmove,
         "start_pos": p0,
         "end_pos": end_pos,
+        "target_pos": p1,
         "start_heading": start_heading,
         "target_heading": target_heading,
         "diff_geom": swing_vis["diff_geom"],
-        "reverse": bool(reverse),
+        "reverse_start": bool(reverse_start),
+        "reverse_end": bool(reverse_end),
         "drive_speed_ips": drive_override,
-        "delta_heading": delta_deg,
+        "delta_heading": delta_heading,
         "swing_dir": dir_norm,
         "length_in": arc_in
     }
@@ -796,15 +806,34 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
     eff = _effective_centers(display_nodes, cfg, initial_heading)
     
     def _has_reverse_action(acts):
+        """Check whether has reverse action."""
         return any(a.get("type") == "reverse" for a in acts)
 
+    def _node_actions(node):
+        """Return node actions, merging legacy actions_out when needed."""
+        acts = node.get("actions")
+        acts_out = node.get("actions_out")
+        list_a = acts if isinstance(acts, list) else []
+        list_b = acts_out if isinstance(acts_out, list) else []
+        if list_a and list_b:
+            if list_a == list_b:
+                return list_a
+            merged = list(list_a)
+            for item in list_b:
+                if item not in merged:
+                    merged.append(item)
+            return merged
+        return list_a or list_b
+
     def _apply_reverse_action(reverse_state, act):
+        """Handle apply reverse action."""
         state = act.get("state", None)
         if state is None:
             return not reverse_state
         return bool(state)
 
     def _edge_events_for(node):
+        """Handle edge events for."""
         events = node.get("edge_events", [])
         if not isinstance(events, list):
             return []
@@ -824,9 +853,11 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         return out
 
     def _is_chain_node(node):
+        """Check whether is chain node."""
         return bool(node.get("chain_through", False) or node.get("chain", False))
 
     def _chain_looseness(node):
+        """Handle chain looseness."""
         val = node.get("chain_looseness")
         try:
             val = 0.5 if val is None else float(val)
@@ -835,24 +866,31 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         return max(0.0, min(1.0, val))
 
     def _node_has_pre_actions(node, acts=None):
-        acts = acts if acts is not None else node.get("actions_out", node.get("actions", []))
+        """Handle node has pre actions."""
+        acts = acts if acts is not None else _node_actions(node)
         if acts:
             for act in acts:
-                if act.get("type") != "preset":
+                if act.get("type") not in ("preset", "code"):
                     return True
         if node.get("reshape_toggle", False):
             return True
-        if node.get("reverse", False) and not _has_reverse_action(acts):
+        if node.get("reverse", False):
             return True
         return False
 
     def _prev_movetopose_heading(idx):
+        """Handle prev movetopose heading."""
         if idx <= 0:
             return None
         prev_node = display_nodes[idx - 1]
         if not prev_node.get("move_to_pose", False):
             return None
         prev_pd = prev_node.get("path_to_next", {}) or {}
+        if prev_pd.get("pose_end_heading_travel") is not None:
+            try:
+                return float(prev_pd.get("pose_end_heading_travel")) % 360.0
+            except Exception:
+                return None
         if prev_pd.get("pose_end_heading") is not None:
             try:
                 return float(prev_pd.get("pose_end_heading")) % 360.0
@@ -869,6 +907,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             return None
 
     def _dir_between(p0, p1):
+        """Handle dir between."""
         dx = p1[0] - p0[0]
         dy = p1[1] - p0[1]
         if dx * dx + dy * dy <= 1e-9:
@@ -876,6 +915,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         return math.atan2(dy, dx)
 
     def _dir_from_points(pts, at_end=False):
+        """Handle dir from points."""
         if not pts or len(pts) < 2:
             return None
         if at_end:
@@ -885,6 +925,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         return _dir_between(p0, p1)
 
     def _out_dir_for_node(idx):
+        """Handle out dir for node."""
         if idx >= n - 1:
             return None
         start = eff[idx]
@@ -898,6 +939,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         return _dir_between(start, eff[idx + 1])
 
     def _chain_params(in_dir, out_dir, looseness, max_cmd, max_speed, length_in):
+        """Handle chain params."""
         if in_dir is None or out_dir is None:
             ang_deg = 0.0
         else:
@@ -928,11 +970,21 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
     carry_speed = 0.0
 
     def _swing_action(p0, target_heading, start_heading, swing_dir, reverse_state, drive_override):
-        th = math.radians(target_heading)
+        """Handle swing action."""
+        travel_heading = (target_heading + (180.0 if reverse_state else 0.0)) % 360.0
+        th = math.radians(travel_heading)
         p1 = (p0[0] + math.cos(th) * PPI, p0[1] - math.sin(th) * PPI)
-        return _swing_segment(p0, p1, start_heading, swing_dir, cfg, reverse_state, drive_override)
+        return _swing_segment(
+            p0,
+            p1,
+            start_heading,
+            swing_dir,
+            cfg,
+            reverse_start=reverse_state,
+            reverse_end=reverse_state,
+            drive_override=drive_override
+        )
     
-    # Process edges
     path_cfg = cfg.get("path_config", {})
     base_la_in_global = path_cfg.get("lookahead_in")
     if base_la_in_global is None:
@@ -943,7 +995,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
     for i in range(n - 1):
         node_i = display_nodes[i]
         p0, p1 = eff[i], eff[i+1]
-        # Anchor start at the node (do not carry overrides so arcs begin at the segment start)
         start_anchor = p0
         p0 = start_anchor
         prev_pose_heading = _prev_movetopose_heading(i)
@@ -980,23 +1031,29 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         except Exception:
             turn_speed_frac = 1.0
         turn_speed_frac = max(0.2, min(1.0, min(1.0, turn_speed_frac)))
-        acts = node_i.get("actions_out", node_i.get("actions", []))
-        has_reverse_action = _has_reverse_action(acts)
-        if node_i.get("reverse", False) and not has_reverse_action:
-            reverse = not reverse
-            segs.append({"type": "reverse", "T": 0.0, "pos": p0, "state": 2 if reverse else 1})
-        reverse_after_swing = bool(node_i.get("reverse_after_swing"))
+        acts_all = _node_actions(node_i)
+        reverse_acts = [a for a in acts_all if a.get("type") == "reverse"]
+        acts = [a for a in acts_all if a.get("type") != "reverse"]
+        if node_i.get("reverse", False) and not reverse_acts:
+            new_reverse = not reverse
+            if new_reverse != reverse:
+                reverse = new_reverse
+                segs.append({"type": "reverse", "T": 0.0, "pos": p0, "state": 2 if reverse else 1})
+        for act in reverse_acts:
+            new_reverse = _apply_reverse_action(reverse, act)
+            if new_reverse != reverse:
+                reverse = new_reverse
+                segs.append({"type": "reverse", "T": 0.0, "pos": p0, "state": 2 if reverse else 1})
         next_is_swing = display_nodes[i + 1].get("turn_mode") == "swing" if i + 1 < n else False
         edge_events = _edge_events_for(node_i)
         heading_overridden = False
-        if carry_speed > 1e-6 and _node_has_pre_actions(node_i, acts=acts):
+        if carry_speed > 1e-6 and _node_has_pre_actions(node_i, acts=acts_all):
             carry_speed = 0.0
         
         if node_i.get("reshape_toggle", False):
             reshape = not reshape
             segs.append({"type": "reshape", "T": 0.0, "pos": p0, "state": 2 if reshape else 1})
         
-        # Pre-edge actions
         for act in acts:
             t = act.get("type")
             if t == "wait":
@@ -1024,12 +1081,26 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                             "values": act.get("values", []),
                         }]
                     })
+            elif t == "code":
+                code = str(act.get("code", "")).strip()
+                if code:
+                    segs.append({
+                        "type": "marker",
+                        "T": 0.0,
+                        "pos": start_anchor,
+                        "node_i": i,
+                        "actions": [{
+                            "kind": "code",
+                            "code": code,
+                        }]
+                    })
             elif t == "turn":
                 tgt = float(act.get("deg", curr_heading)) % 360.0
                 diff = _angle_diff_deg(curr_heading, tgt)
                 Tturn = turn_time(diff, cfg, rate_override=turn_speed_override)
                 segs.append({"type": "turn", "T": Tturn, "pos": start_anchor,
                             "start_heading": curr_heading, "target_heading": tgt,
+                            "target_pos": p1,
                             "role": "explicit", "node_i": i, "turn_speed_dps": turn_speed_override,
                             "T_speed_frac": turn_speed_frac})
                 curr_heading = tgt
@@ -1051,9 +1122,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     carry_speed = 0.0
                     heading_overridden = True
         
-        # Check if this segment uses a curved path
         path_data = node_i.setdefault("path_to_next", {})
-        # clear transient visualization helpers
         for k in ("swing_vis", "start_override", "pose_preview_points"):
             if k in path_data:
                 path_data.pop(k, None)
@@ -1062,10 +1131,8 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         prof_scale = _profile_speed_scale(profile_override)
         
         if use_path and path_data.get("control_points"):
-            # CURVED SEGMENT - generate path points
             control_points = list(path_data["control_points"])
             if len(control_points) >= 2:
-                # Anchor endpoints to effective centers (respect offsets)
                 control_points[0] = start_anchor
                 control_points[-1] = p1
             if len(control_points) < 3:
@@ -1073,16 +1140,14 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 path_data["use_path"] = False
                 path_data["control_points"] = []
         if use_path and path_data.get("control_points"):
-            # CURVED SEGMENT - generate path points
             control_points = list(path_data["control_points"])
             if len(control_points) >= 2:
-                # Anchor endpoints to effective centers (respect offsets)
                 control_points[0] = start_anchor
                 control_points[-1] = p1
-            path_points = generate_bezier_path(control_points, num_samples=50)
+            spline_type = path_data.get("spline_type")
+            path_points = generate_bezier_path(control_points, num_samples=50, spline_type=spline_type)
             
             if len(path_points) >= 2:
-                # Per-path lookahead override (base value before scaling)
                 la_override_in = path_data.get("lookahead_in_override")
                 base_la_in = la_override_in if la_override_in is not None else base_la_in_global
                 if base_la_in is None:
@@ -1090,7 +1155,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     base_la_in = max(8.0, min(24.0, float(bd.get("dt_width", bd.get("width", 12.0))) * 0.9))
                 base_lookahead_px = float(base_la_in) * PPI
 
-                # Turn to face the start of the path only if heading is far off (>15°)
                 start_heading = calculate_path_heading(path_points, 0)
                 end_heading = calculate_path_heading(path_points, len(path_points) - 1)
                 if reverse:
@@ -1109,6 +1173,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                             "pos": start_anchor,
                             "start_heading": curr_heading,
                             "target_heading": start_heading,
+                            "target_pos": p1,
                             "role": "face_path",
                             "edge_i": i,
                             "turn_speed_dps": turn_speed_override,
@@ -1116,10 +1181,8 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                         })
                     curr_heading = start_heading
                 else:
-                    # Assume we simply roll into the path with existing heading
                     curr_heading = start_heading
                 
-                # Calculate path length/time with curvature + resampling
                 speed_mult = float(path_data.get("speed_mult", 1.0)) * prof_scale
                 min_override = path_data.get("min_speed_cmd")
                 if min_override is None:
@@ -1167,8 +1230,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     v_end, chain_frac, chain_min_cmd, chain_early_exit, chain_angle = _chain_params(
                         in_dir, out_dir, looseness, base_max_cmd, max_speed_ips, L_in
                     )
-                # Adjust lookahead based on curvature and expected velocity.
-                # Curvature dominates (tighter = shorter), speed nudges longer/shorter.
                 avg_curv = 0.0
                 max_curv = 0.0
                 if curvatures:
@@ -1179,7 +1240,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 la_scale_curv = 1.0 / (1.0 + 8.0 * curv_metric)
                 la_scale_curv = max(0.2, min(1.0, la_scale_curv))
 
-                # Speed influence: map avg speed to a modest scale (<=60 => shrink, >=110 => grow)
                 vmax_cfg = vmax_straight(cfg)
                 avg_speed = vmax_cfg
                 try:
@@ -1187,7 +1247,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                         avg_speed = sum(speeds) / max(1, len(speeds))
                 except Exception:
                     avg_speed = vmax_cfg
-                # linear map: 60 -> 0.75x, 110 -> 1.2x
                 lo_s, hi_s = 60.0, 110.0
                 lo_f, hi_f = 0.75, 1.2
                 t = (avg_speed - lo_s) / max(1e-6, hi_s - lo_s)
@@ -1215,6 +1274,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     "min_speed_cmd": min_override if min_override is not None else cfg.get("path_config", {}).get("min_speed_cmd", cfg.get("path_config", {}).get("min_speed_ips", 0.0)),
                     "max_speed_cmd": max_override if max_override is not None else (drive_override_cmd if drive_override_cmd is not None else cfg.get("path_config", {}).get("max_speed_cmd", cfg.get("path_config", {}).get("max_speed_ips", 127.0))),
                     "facing": end_heading,
+                    "facing_is_travel": True,
                     "i0": i,
                     "i1": i + 1,
                     "reverse": reverse,
@@ -1240,14 +1300,12 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 
             curr_heading = end_heading
         else:
-            # Fallback to straight if path generation failed
             use_path = False
         
         if not use_path:
             start_pt = start_anchor
             turn_mode = node_i.get("turn_mode", "turn")
             swing_dir = node_i.get("swing_dir", "auto")
-            # Optional swing arc before the straight/pose motion
             if turn_mode == "swing":
                 swing_start_heading = curr_heading
                 if not heading_overridden:
@@ -1262,8 +1320,9 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     swing_start_heading,
                     swing_dir,
                     cfg,
-                    reverse,
-                    drive_override,
+                    reverse_start=reverse,
+                    reverse_end=reverse,
+                    drive_override=drive_override,
                     pose_heading=pose_heading,
                     pose_lead=pose_lead
                 )
@@ -1283,8 +1342,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     path_data["start_override"] = swing_end
                     start_pt = swing_end
                     curr_heading = swing_heading_disp
-                    if reverse_after_swing:
-                        reverse = not reverse
 
             facing_override = node_i.get("swing_target_heading_deg")
             facing = heading_from_points(start_pt, p1)
@@ -1295,7 +1352,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             elif reverse:
                 facing = (facing + 180.0) % 360.0
 
-            # movetopose curve (only on straight segments)
             use_pose = bool(node_i.get("move_to_pose", False))
             pose_heading = node_i.get("pose_heading_deg")
             pose_lead = node_i.get("pose_lead_in")
@@ -1314,8 +1370,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 dist_in = dist_px / PPI
 
                 end_heading = pose_heading
-                if reverse:
-                    end_heading = (end_heading + 180.0) % 360.0
                 disp_heading = convert_heading_input(end_heading, None)
                 th = math.radians(disp_heading)
                 carrot = (
@@ -1328,9 +1382,8 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     start_heading = calculate_path_heading(path_points, 0)
                 else:
                     start_heading = heading_from_points(start_pt, p1)
-                if reverse:
-                    start_heading = (start_heading + 180.0) % 360.0
-                diff_to_start = _angle_diff_deg(curr_heading, start_heading)
+                start_heading_facing = (start_heading + (180.0 if reverse else 0.0)) % 360.0
+                diff_to_start = _angle_diff_deg(curr_heading, start_heading_facing)
                 if carry_speed > 1e-6:
                     diff_to_start = 0.0
                 if abs(diff_to_start) > 0.5:
@@ -1341,16 +1394,17 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                             "T": Tface,
                             "pos": start_pt,
                             "start_heading": curr_heading,
-                            "target_heading": start_heading,
+                            "target_heading": start_heading_facing,
+                            "target_pos": p1,
                             "role": "pose_entry",
                             "edge_i": i,
                             "turn_speed_dps": turn_speed_override,
                             "T_speed_frac": turn_speed_frac
                         })
-                    curr_heading = start_heading
+                    curr_heading = start_heading_facing
                     carry_speed = 0.0
                 else:
-                    curr_heading = start_heading
+                    curr_heading = start_heading_facing
                 speed_mult = 1.0 * prof_scale
                 max_cfg_cmd = path_cfg.get("max_speed_cmd", path_cfg.get("max_speed_ips", 127.0))
                 base_max_cmd = drive_override_cmd if drive_override_cmd is not None else max_cfg_cmd
@@ -1431,6 +1485,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     "min_speed_cmd": cfg.get("path_config", {}).get("min_speed_cmd", cfg.get("path_config", {}).get("min_speed_ips", 0.0)),
                     "max_speed_cmd": drive_override_cmd if drive_override_cmd is not None else cfg.get("path_config", {}).get("max_speed_cmd", cfg.get("path_config", {}).get("max_speed_ips", 127.0)),
                     "facing": pose_heading,
+                    "facing_is_travel": False,
                     "i0": i,
                     "i1": i + 1,
                     "reverse": reverse,
@@ -1455,9 +1510,10 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     segs[-1]["edge_events"] = edge_events
                 carry_speed = v_end if chain_next else 0.0
                 path_data["pose_preview_points"] = resampled
-                path_data["pose_end_heading"] = end_heading
+                path_data["pose_end_heading"] = pose_heading
                 path_data["start_override"] = start_pt
-                curr_heading = pose_heading
+                curr_heading = (pose_heading + (180.0 if reverse else 0.0)) % 360.0
+                path_data["pose_end_heading_travel"] = curr_heading
             else:
                 diff_to_facing = _angle_diff_deg(curr_heading, facing)
                 if carry_speed > 1e-6:
@@ -1472,6 +1528,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                         "pos": start_pt,
                         "start_heading": curr_heading,
                         "target_heading": facing,
+                        "target_pos": p1,
                         "role": "face_line",
                         "edge_i": i,
                         "turn_speed_dps": turn_speed_override,
@@ -1480,7 +1537,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     carry_speed = 0.0
                 curr_heading = facing
 
-                # Move along straight segment
                 v_start = min(carry_speed, drive_override)
                 v_end = 0.0
                 chain_next = False
@@ -1531,10 +1587,140 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 curr_heading = facing
 
         
-        # Arrival reshape
         if display_nodes[i+1].get("reshape_toggle_arrival", False):
             reshape = not reshape
             segs.append({"type": "reshape", "T": 0.0, "pos": p1, "state": 2 if reshape else 1})
+
+    final_idx = n - 1
+    final_node = display_nodes[final_idx]
+    final_anchor = eff[final_idx]
+    final_actions_all = _node_actions(final_node)
+    final_reverse_acts = [a for a in final_actions_all if a.get("type") == "reverse"]
+    final_actions = [a for a in final_actions_all if a.get("type") != "reverse"]
+    final_profile_override = final_node.get("profile_override")
+    final_prof_scale = _profile_speed_scale(final_profile_override)
+    final_drive_override_cmd = final_node.get("custom_lateral_cmd")
+    if final_drive_override_cmd is None:
+        final_drive_override_cmd = final_node.get("custom_lateral_ips")
+    final_drive_override_cmd = float(final_drive_override_cmd) if final_drive_override_cmd is not None else None
+    if final_drive_override_cmd is not None:
+        final_drive_override_cmd = _clamp_cmd(final_drive_override_cmd)
+        final_drive_override_cmd = _clamp_cmd(final_drive_override_cmd * final_prof_scale)
+        final_drive_override = _cmd_to_ips(final_drive_override_cmd, cfg)
+    else:
+        final_drive_override = vmax_straight(cfg) * final_prof_scale
+    final_turn_override = float(final_node.get("custom_turn_dps")) if final_node.get("custom_turn_dps") else None
+    final_turn_speed_override = (
+        final_turn_override * final_prof_scale
+        if final_turn_override is not None
+        else (turn_rate(cfg) * final_prof_scale if final_prof_scale != 1.0 else None)
+    )
+    final_vmax_cfg = vmax_straight(cfg)
+    final_drive_speed_frac = 1.0
+    try:
+        if final_vmax_cfg > 1e-6:
+            final_drive_speed_frac = float(final_drive_override) / final_vmax_cfg
+    except Exception:
+        final_drive_speed_frac = 1.0
+    final_drive_speed_frac = max(0.2, min(1.0, final_drive_speed_frac))
+    final_base_turn_rate = turn_rate(cfg)
+    final_turn_speed_frac = 1.0
+    try:
+        if final_turn_speed_override is not None and final_base_turn_rate > 1e-6:
+            final_turn_speed_frac = float(final_turn_speed_override) / final_base_turn_rate
+    except Exception:
+        final_turn_speed_frac = 1.0
+    final_turn_speed_frac = max(0.2, min(1.0, min(1.0, final_turn_speed_frac)))
+
+    if final_node.get("reverse", False) and not final_reverse_acts:
+        new_reverse = not reverse
+        if new_reverse != reverse:
+            reverse = new_reverse
+            segs.append({"type": "reverse", "T": 0.0, "pos": final_anchor, "state": 2 if reverse else 1})
+
+    for act in final_reverse_acts:
+        new_reverse = _apply_reverse_action(reverse, act)
+        if new_reverse != reverse:
+            reverse = new_reverse
+            segs.append({"type": "reverse", "T": 0.0, "pos": final_anchor, "state": 2 if reverse else 1})
+
+    if final_node.get("reshape_toggle", False):
+        reshape = not reshape
+        segs.append({"type": "reshape", "T": 0.0, "pos": final_anchor, "state": 2 if reshape else 1})
+
+    for act in final_actions:
+        t = act.get("type")
+        if t == "wait":
+            segs.append({
+                "type": "wait",
+                "T": float(act.get("s", 0.0)),
+                "pos": final_anchor,
+                "heading": curr_heading,
+                "role": "custom",
+                "node_i": final_idx,
+            })
+        elif t in ("reshape", "geom"):
+            reshape = not reshape
+            segs.append({"type": "reshape", "T": 0.0, "pos": final_anchor, "state": 2 if reshape else 1})
+        elif t == "preset":
+            name = str(act.get("name", "")).strip()
+            if name:
+                segs.append({
+                    "type": "marker",
+                    "T": 0.0,
+                    "pos": final_anchor,
+                    "node_i": final_idx,
+                    "actions": [{
+                        "kind": "preset",
+                        "name": name,
+                        "state": act.get("state", None),
+                        "value": act.get("value", None),
+                        "values": act.get("values", []),
+                    }]
+                })
+        elif t == "code":
+            code = str(act.get("code", "")).strip()
+            if code:
+                segs.append({
+                    "type": "marker",
+                    "T": 0.0,
+                    "pos": final_anchor,
+                    "node_i": final_idx,
+                    "actions": [{
+                        "kind": "code",
+                        "code": code,
+                    }]
+                })
+        elif t == "turn":
+            tgt = float(act.get("deg", curr_heading)) % 360.0
+            diff = _angle_diff_deg(curr_heading, tgt)
+            Tturn = turn_time(diff, cfg, rate_override=final_turn_speed_override)
+            segs.append({
+                "type": "turn",
+                "T": Tturn,
+                "pos": final_anchor,
+                "start_heading": curr_heading,
+                "target_heading": tgt,
+                "target_pos": final_anchor,
+                "role": "explicit",
+                "node_i": final_idx,
+                "turn_speed_dps": final_turn_speed_override,
+                "T_speed_frac": final_turn_speed_frac,
+            })
+            curr_heading = tgt
+        elif t == "swing":
+            tgt = float(act.get("deg", curr_heading)) % 360.0
+            sdir = act.get("dir", "auto")
+            swing_res = _swing_action(final_anchor, tgt, curr_heading, sdir, reverse, final_drive_override)
+            if swing_res is not None:
+                swing_seg, _swing_end, swing_heading, _swing_vis = swing_res
+                swing_seg["role"] = "explicit"
+                swing_seg["node_i"] = final_idx
+                swing_seg["swing_settle"] = bool(act.get("settle", False))
+                swing_seg["drive_speed_cmd"] = final_drive_override_cmd
+                swing_seg["T_speed_frac"] = final_drive_speed_frac
+                segs.append(swing_seg)
+                curr_heading = swing_heading
     
     return segs
 
@@ -1574,8 +1760,8 @@ def sample_path_position(t, path_points, total_time, cfg, lookahead_px=None, use
     """
     if not path_points or len(path_points) < 2:
         return (path_points[0] if path_points else (0, 0)), 0.0, None
-    # helper: closest point on path to current_pos
     def _closest_path_progress(pts, pos):
+        """Handle closest path progress."""
         best_d2 = float("inf")
         best_s = 0.0
         best_seg = 0
@@ -1599,7 +1785,6 @@ def sample_path_position(t, path_points, total_time, cfg, lookahead_px=None, use
             accum += math.sqrt(seg_len2)
         return best_s, best_seg, best_pt
     
-    # Calculate segment lengths
     meta = path_meta or {}
     total_px = meta.get("total_px")
     if total_px is None:
@@ -1607,7 +1792,6 @@ def sample_path_position(t, path_points, total_time, cfg, lookahead_px=None, use
     if total_px <= 1e-9:
         return path_points[-1], calculate_path_heading(path_points, len(path_points) - 1), None
 
-    # If we have per-point speeds, use them to map time -> distance
     speeds = path_speeds if path_speeds and len(path_speeds) == len(path_points) else None
     seg_lengths_px = meta.get("seg_lengths_px")
     if seg_lengths_px is None:
@@ -1631,10 +1815,8 @@ def sample_path_position(t, path_points, total_time, cfg, lookahead_px=None, use
             if path_meta is not None:
                 meta["seg_times"] = seg_times
                 meta["seg_time_total"] = total_T
-        # Clamp t to total_T (fallback to provided total_time if mismatch)
         budget = total_T if total_T > 1e-9 else total_time
         t_clamped = max(0.0, min(budget, t))
-        # Find segment by accumulated time
         acc_t = 0.0
         seg_idx = 0
         while seg_idx < len(seg_times) and acc_t + seg_times[seg_idx] < t_clamped - 1e-9:
@@ -1646,17 +1828,14 @@ def sample_path_position(t, path_points, total_time, cfg, lookahead_px=None, use
         seg_dt = seg_times[seg_idx] if seg_idx < len(seg_times) else 1e-9
         frac = 0.0 if seg_dt <= 1e-9 else (t_clamped - acc_t) / seg_dt
         frac = max(0.0, min(1.0, frac))
-        # Distance along path in px
         s_px = sum(seg_lengths_px[:seg_idx]) + frac * seg_lengths_px[seg_idx]
     else:
-        # Fallback: proportional distance
         if total_time <= 0.0:
             return path_points[-1], calculate_path_heading(path_points, len(path_points) - 1), None
         progress = max(0.0, min(1.0, t / total_time))
         s_px = total_px * progress
         seg_idx = 0
     
-    # If pursuing, anchor progress to closest point to the current position to avoid fallback
     if use_pursuit and current_pos is not None:
         s_px, seg_idx, pos = _closest_path_progress(path_points, current_pos)
     else:
@@ -1666,7 +1845,6 @@ def sample_path_position(t, path_points, total_time, cfg, lookahead_px=None, use
     
     if use_pursuit and lookahead_px and lookahead_px > 0.0:
         center = current_pos if current_pos is not None else pos
-        # search for first intersection ahead along path
         remaining = s_px
         found = None
         for i in range(seg_idx, len(path_points) - 1):
@@ -1677,11 +1855,9 @@ def sample_path_position(t, path_points, total_time, cfg, lookahead_px=None, use
                 t_skip = min(1.0, remaining / seg_len)
             else:
                 t_skip = 0.0
-            # Move start along segment by remaining distance
             start_pt = (pA[0] + (pB[0]-pA[0])*t_skip, pA[1] + (pB[1]-pA[1])*t_skip)
             inters = _line_circle_intersections(start_pt, pB, center, lookahead_px)
             if inters:
-                # pick the first along this segment
                 found = inters[0][:2]
                 break
             remaining = max(0.0, remaining - seg_len)

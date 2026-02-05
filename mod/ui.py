@@ -57,6 +57,7 @@ class _Tooltip:
     """Hover tooltip for widgets."""
 
     def __init__(self, widget, text):
+        """Handle init."""
         self.widget = widget
         self.text = text
         self.tip = None
@@ -64,6 +65,7 @@ class _Tooltip:
         widget.bind("<Leave>", self._hide)
 
     def _show(self, _=None):
+        """Handle show."""
         if self.tip or not self.text:
             return
         x = self.widget.winfo_rootx() + 20
@@ -77,6 +79,7 @@ class _Tooltip:
         label.pack()
 
     def _hide(self, _=None):
+        """Handle hide."""
         if self.tip:
             try:
                 self.tip.destroy()
