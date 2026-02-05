@@ -794,23 +794,23 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
         "JAR": {
-            "wait": "pros::delay({MS});",
-            "move": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN});",
-            "turn_global": "chassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
-            "turn_local": "chassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
-            "pose": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN});\nchassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
-            "pose_angle": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG});",
-            "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG});",
+            "wait": "task::sleep({MS});",
+            "move": "chassis.drive_settle_error = {DRIVE_EARLY_EXIT};\nchassis.drive_timeout =  {TIMEOUT_MS};\nchassis.drive_distance({DIST_IN});",
+            "turn_global": "chassis.turn_settle_error = {TURN_EARLY_EXIT};\nchassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
+            "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+            "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+            "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+            "swing": "chassis.swing_settle_error = {SWING_EARLY_EXIT};\nchassis.swing_timeout = {TIMEOUT_MS};\nchassis.{SIDE_LC}_swing_to_angle({HEADING_DEG});",
             "path_follow": 'followPath("{PATH_FILE}", {TIMEOUT_MS});',
-            "reshape_on": "// RESHAPE ON state={STATE}",
-            "reshape_off": "// RESHAPE OFF state={STATE}",
-            "reshape": "// RESHAPE state={STATE}",
+            "reshape_on": "MLmech.off();",
+            "reshape_off": "MLmech.on();",
+            "reshape": "MLmech.on();",
             "reverse_on": "// reverse handled inline",
             "reverse_off": "// reverse handled inline",
-            "tbuffer": "pros::delay({MS});",
+            "tbuffer": "task::sleep({MS});",
             "marker_wait": "",
             "marker_wait_done": "",
-            "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});"
+            "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
         },
         "PROS": {
             "wait": "pros::delay({MS});",
@@ -849,6 +849,16 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "setpose": "setpose({X_IN},{Y_IN},{HEADING_DEG});"
         }
     }
+
+    # Treat the user's current JAR template as the "base" JAR template so that
+    # JAR-derived variants (e.g. "JAR (advanced)") inherit it unless explicitly overridden.
+    stored_tpls = cfg.get("codegen", {}).get("templates", {})
+    stored_jar = stored_tpls.get("JAR", {})
+    if isinstance(stored_jar, dict):
+        for _k, _v in stored_jar.items():
+            if isinstance(_v, str):
+                defaults["JAR"][_k] = _v
+
     defaults["JAR (advanced)"] = dict(defaults["JAR"])
     defaults["JAR (advanced)"].update({
         "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG},{DRIVE_MAX_V},{HEADING_MAX_V},{DRIVE_SETTLE_ERR},{DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
@@ -894,6 +904,51 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     min_s = float(opts.get("min_timeout_s", 0.0) or 0.0)
     motion_mode = modes.get("motion", "move")
     turn_mode = modes.get("turn", "turn_global" if style == "LemLib" else "turn_local")
+
+    def _opt_num(key: str, default: float) -> float:
+        """Parse numeric config option (supports {'value': ...} style)."""
+        v = opts.get(key, default)
+        if isinstance(v, dict):
+            v = v.get("value", default)
+        try:
+            return float(v)
+        except Exception:
+            return float(default)
+
+    # Default early-exit ranges (inches). If nonzero, they act like a passive chain:
+    # segments that are not explicitly chained still inherit these defaults.
+    default_drive_early_exit = _opt_num("default_drive_early_exit", 0.0)
+    default_turn_early_exit = _opt_num("default_turn_early_exit", 0.0)
+    default_swing_early_exit = _opt_num("default_swing_early_exit", float(DEFAULT_SWING_EARLY_EXIT))
+    # When "settle swing" is used, this value is applied instead of the default chain value.
+    # Default is 0.0 (i.e., wait until fully settled / no early-exit window).
+    default_swing_settle_early_exit = _opt_num("default_swing_settle_early_exit", 0.0)
+
+    # Swing auto-chain: by default, non-settle swings get a small early-exit window
+    # proportional to the commanded swing magnitude (so small swings don't over-chain,
+    # and large swings can start the next segment slightly early).
+    # If the user doesn't explicitly set a fraction, derive it from the configured
+    # default swing early-exit so the UI knob still affects behavior.
+    if "swing_auto_early_exit_frac" in opts:
+        swing_auto_early_exit_frac = _opt_num("swing_auto_early_exit_frac", 0.06)
+    else:
+        try:
+            swing_auto_early_exit_frac = max(0.0, float(default_swing_early_exit) / 120.0)
+        except Exception:
+            swing_auto_early_exit_frac = 0.06
+    swing_auto_early_exit_min = _opt_num("swing_auto_early_exit_min_deg", 2.0)
+    swing_auto_early_exit_max = _opt_num("swing_auto_early_exit_max_deg", 12.0)
+    # Back-compat: older configs may have stored 0.0 here when the key was introduced.
+    # Preserve historical behavior (swings default-chain) unless the config has been migrated.
+    try:
+        migrated = opts.get("default_swing_early_exit_migrated", 0)
+        if isinstance(migrated, dict):
+            migrated = migrated.get("value", 0)
+        if not bool(int(migrated)) and abs(float(default_swing_early_exit)) < 1e-9:
+            default_swing_early_exit = float(DEFAULT_SWING_EARLY_EXIT)
+    except Exception:
+        if abs(float(default_swing_early_exit)) < 1e-9:
+            default_swing_early_exit = float(DEFAULT_SWING_EARLY_EXIT)
     
     path_cfg = cfg.get("path_config", {})
     lookahead_in = float(path_cfg.get("lookahead_in", 15.0))
@@ -1071,7 +1126,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "SWING_SETTLE_TIME": 0,
             "DIR": "AUTO",
             "SIDE": "AUTO",
+            "SIDE_LC": "auto",
             "LOCKED_SIDE": "AUTO",
+            "LOCKED_SIDE_LC": "auto",
             "LOCKED_SIDE_": "",
         }
 
@@ -1130,13 +1187,50 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         if not contexts:
             return tokens
         out = dict(tokens)
+        positional_omit_ok = {
+            "DRIVE_EARLY_EXIT",
+            "TURN_EARLY_EXIT",
+            "SWING_EARLY_EXIT",
+        }
+
+        def _is_exit_conditions_call(token_key: str) -> bool:
+            # Never omit the sole positional argument to exit-condition setters.
+            # We rely on _dedupe_exit_condition_lines() to drop redundant defaults,
+            # but we must still emit explicit resets-to-0 after a chained segment.
+            try:
+                return re.search(
+                    rf"\bset_(?:drive|turn|swing)_exit_conditions\s*\(\s*\{{{re.escape(token_key)}\}}\s*(?:,|\))",
+                    part,
+                ) is not None
+            except Exception:
+                return False
+
+        def _is_settle_assign(token_key: str) -> bool:
+            # Similar to exit conditions: if a user template uses EARLY_EXIT to drive
+            # a JAR settle var (e.g. chassis.drive_settle_error = {DRIVE_EARLY_EXIT};),
+            # do not omit the token here. We dedupe/omit redundant assignments later,
+            # but we still need to emit explicit resets-to-0 after chained segments.
+            try:
+                return re.search(
+                    rf"\b(?:drive|turn|swing)_(?:settle_error|settle_time)\s*=\s*\{{{re.escape(token_key)}\}}\s*;",
+                    part,
+                ) is not None
+            except Exception:
+                return False
+
         for key, ctxs in contexts.items():
             default_hit = _is_default_value(tokens.get(key), cleanup_defaults[key])
             if not default_hit:
                 continue
             if "named" in ctxs and "positional" not in ctxs:
+                if _is_settle_assign(key):
+                    continue
                 out[key] = OMIT_SENTINEL
                 continue
+            if "positional" in ctxs and key in positional_omit_ok:
+                if _is_exit_conditions_call(key):
+                    continue
+                out[key] = OMIT_SENTINEL
         return out
 
     def _split_top_level_commas(content: str) -> list:
@@ -1215,9 +1309,85 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             s = raw.strip()
             if re.search(r"\bset_(?:drive|turn|swing)_exit_conditions\s*\(\s*\)\s*;", s):
                 continue
+            # If omission removed the RHS of an assignment, we can end up with a
+            # useless (and invalid) bare identifier statement like "chassis.foo;".
+            if "(" not in s and "=" not in s:
+                if re.match(r"^[A-Za-z_][\w:]*?(?:\s*\.\s*[A-Za-z_][\w:]*)*\s*;\s*$", s):
+                    continue
             kept_lines.append(raw)
         line = "\n".join(kept_lines)
         return line
+
+    def _hoist_motion_prefix_lines(template_key: str, text: str) -> str:
+        """
+        Ensure motion "prefix" setters appear before the motion call.
+
+        Users sometimes put lines like `chassis.swing_settle_error = ...;` after the
+        corresponding `*_swing_to_angle(...)` call inside the template editor. That
+        breaks chaining/settle behavior. This pass hoists known prefix lines to
+        immediately before the first motion call within the same emitted chunk.
+        """
+        if not template_key or "\n" not in (text or ""):
+            return text
+        key = str(template_key)
+        kind = {
+            "move": "drive",
+            "pose": "drive",
+            "path_follow": "drive",
+            "turn_global": "turn",
+            "turn_local": "turn",
+            "swing": "swing",
+        }.get(key)
+        if not kind:
+            return text
+
+        lines_local = text.splitlines()
+        # JAR-style motion call patterns (keep narrow on purpose).
+        if kind == "drive":
+            call_re = re.compile(r"\b(?:drive_distance|holonomic_drive_to_point|followPath)\s*\(", re.IGNORECASE)
+        elif kind == "turn":
+            call_re = re.compile(r"\b(?:turn_to_angle|turnToAngle)\s*\(", re.IGNORECASE)
+        else:  # swing
+            call_re = re.compile(r"\b(?:left_swing_to_angle|right_swing_to_angle)\s*\(", re.IGNORECASE)
+
+        prefix_re = re.compile(
+            rf"\b(?:set_{kind}_exit_conditions\s*\(|{kind}_(?:settle_error|settle_time|timeout)\s*=)",
+            re.IGNORECASE,
+        )
+
+        call_idx = None
+        for idx_ln, ln in enumerate(lines_local):
+            if call_re.search(ln):
+                call_idx = idx_ln
+                break
+        if call_idx is None:
+            return text
+
+        # Move any matching prefix lines that appear after the motion call.
+        to_move = []
+        kept = []
+        for idx_ln, ln in enumerate(lines_local):
+            if idx_ln > call_idx and prefix_re.search(ln):
+                to_move.append(ln)
+            else:
+                kept.append(ln)
+
+        if not to_move:
+            return text
+
+        # Insert the moved lines right before the motion call line.
+        # Note: `kept` has the motion call at a potentially earlier index now;
+        # recompute insertion point by searching again.
+        insert_at = None
+        for idx_ln, ln in enumerate(kept):
+            if call_re.search(ln):
+                insert_at = idx_ln
+                break
+        if insert_at is None:
+            return text
+
+        out_lines = kept[:insert_at] + to_move + kept[insert_at:]
+        return "\n".join(out_lines)
 
     def _format_tpl_part(part: str, tokens: dict, template_key: str = None):
         """Handle format tpl part."""
@@ -1239,6 +1409,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 return part
         if OMIT_SENTINEL in line:
             line = _drop_sentinel_segments(line)
+        line = _hoist_motion_prefix_lines(template_key, line)
         return line
     
     def emit(template_key, tokens):
@@ -1502,6 +1673,65 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         emit("setpose", initial_setpose_tokens)
         lines.append("")
 
+    if style in ("JAR", "JAR (advanced)"):
+        # Establish settle/exit precedents once for JAR style, then dedupe removes
+        # consecutive repeats later. We only emit lines that look like settle/exit
+        # setters (not timeouts).
+        tokens0 = {
+            "MS": 0, "S": 0, "TIMEOUT_MS": 0, "TIMEOUT_S": 0,
+            "X_IN": 0, "Y_IN": 0, "DIST_IN": 0, "DIST_ROT": 0, "DIST_DEG": 0, "DIST_TICKS": 0,
+            "HEADING_DEG": 0, "HEADING_RAD": 0, "TURN_DELTA_DEG": 0, "TURN_DELTA_RAD": 0,
+            "TARGET_X_IN": 0, "TARGET_Y_IN": 0,
+            "FORWARDS": "true", "FORWARD_PARAM": "{.forwards = true}",
+            "DIR": "AUTO",
+            "SIDE": "LEFT", "SIDE_LC": "left",
+            "LOCKED_SIDE": "LEFT", "LOCKED_SIDE_LC": "left",
+            "LOOKAHEAD": 0, "PATH_NAME": "", "PATH_FILE": "", "PATH_ASSET": "",
+            "MOVE_SPEED": "", "TURN_SPEED": "", "PATH_MIN_SPEED": 0, "PATH_MAX_SPEED": 0,
+            "DRIVE_MAX_V": 12.0, "HEADING_MAX_V": 12.0, "TURN_MAX_V": 12.0, "SWING_MAX_V": 12.0,
+            "DRIVE_SETTLE_ERR": 0.0, "DRIVE_SETTLE_TIME": 0,
+            "TURN_SETTLE_ERR": 0.0, "TURN_SETTLE_TIME": 0,
+            "SWING_SETTLE_ERR": 0.0, "SWING_SETTLE_TIME": 0,
+            "DRIVE_MIN_SPEED": 0, "TURN_MIN_SPEED": 0, "SWING_MIN_SPEED": 0,
+            "DRIVE_EARLY_EXIT": round(float(default_drive_early_exit), 2),
+            "TURN_EARLY_EXIT": round(float(default_turn_early_exit), 2),
+            "SWING_EARLY_EXIT": round(float(default_swing_early_exit), 2),
+            "LEAD_IN": 0.0, "STATE": 0, "NAME": "",
+            "CASE_KEY": "", "VALUE": "", "VALUE1": "", "VALUE2": "", "VALUE3": "",
+            "MARKER_DIST_IN": 0.0, "MARKER_FRAC": 0.0, "MARKER_INDEX": 0,
+        }
+
+        settle_line_re = re.compile(
+            r"\b(set_(?:drive|turn|swing)_exit_conditions)\b|\b(?:drive|turn|swing)_(?:settle_error|settle_time)\b",
+            re.IGNORECASE,
+        )
+
+        def _emit_settle_prefix_from_tpl(tpl_key: str):
+            tpl_val = tpls.get(tpl_key, "")
+            if not tpl_val:
+                return
+            for part in _normalize_tpl(tpl_val):
+                for raw in str(part).splitlines():
+                    if not settle_line_re.search(raw):
+                        continue
+                    line0 = _format_tpl_part(raw, tokens0, template_key=tpl_key)
+                    if line0 and line0.strip():
+                        lines.append(line0)
+
+        def _pick_tpl_key(keys):
+            for k in keys:
+                if k in tpls and str(tpls.get(k, "")).strip():
+                    return k
+            return None
+
+        drive_key = _pick_tpl_key(("move", "pose", "path_follow", "path"))
+        turn_key = _pick_tpl_key(("turn_global", "turn_local"))
+        _emit_settle_prefix_from_tpl(drive_key or "")
+        _emit_settle_prefix_from_tpl(turn_key or "")
+        _emit_settle_prefix_from_tpl("swing")
+        if lines and lines[-1].strip():
+            lines.append("")
+
     def emit_jar_constants(kind: str, tokens: dict, voltage: float, settle_err: float, settle_time: int):
         """No-op placeholder; JAR now uses inline placeholders only."""
         return False
@@ -1516,9 +1746,33 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         re.IGNORECASE,
     )
 
+    _settle_assign_re = re.compile(
+        r"^\s*(?:[\w:]+\s*\.\s*)?((?:drive|turn|swing)_(?:settle_error|settle_time))\s*=\s*([^;]+)\s*;\s*$",
+        re.IGNORECASE,
+    )
+
     def _norm_exit_value(raw: str) -> str:
         """Handle norm exit value."""
         s = str(raw).strip()
+        # Normalize comma-separated numeric lists so that all-zero defaults can be omitted
+        # and consecutive settings can be deduped reliably.
+        if "," in s:
+            parts = [p.strip() for p in s.split(",") if p.strip()]
+            vals = []
+            ok = True
+            for p in parts:
+                try:
+                    v = float(p.rstrip("fF"))
+                except Exception:
+                    ok = False
+                    break
+                if abs(v) < 1e-9:
+                    v = 0.0
+                vals.append(v)
+            if ok and vals:
+                if all(abs(v) < 1e-9 for v in vals):
+                    return "0.000000"
+                return ",".join(f"{v:.6f}" for v in vals)
         try:
             v = float(s.rstrip("fF"))
             if abs(v) < 1e-9:
@@ -1530,7 +1784,23 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     def _dedupe_exit_condition_lines(lines_in):
         """Handle dedupe exit condition lines."""
         out = []
-        last_val = {}
+        # Default exit conditions are assumed to be all-zero until a line changes them.
+        # This lets us omit redundant "set_*_exit_conditions(0...);" at the start of exports.
+        last_val = {"drive": "0.000000", "turn": "0.000000", "swing": "0.000000"}
+        # Also dedupe JAR settle assignments (commonly used as the "first pre-\\n" knob
+        # in templates). Defaults are assumed to be 0 until changed.
+        last_settle = {
+            "drive_settle_error": "0.000000",
+            "drive_settle_time": "0.000000",
+            "turn_settle_error": "0.000000",
+            "turn_settle_time": "0.000000",
+            "swing_settle_error": "0.000000",
+            "swing_settle_time": "0.000000",
+        }
+        # Ensure the first time a kind/var appears, we keep it to establish
+        # a clear "precedent" in the exported code (then dedupe consecutive repeats).
+        seen_kind = set()
+        seen_settle = set()
         for entry in lines_in:
             text = str(entry)
             parts = text.splitlines() or [text]
@@ -1538,11 +1808,22 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             for line in parts:
                 m = _exit_call_re.match(line)
                 if not m:
+                    m2 = _settle_assign_re.match(line)
+                    if m2:
+                        var = m2.group(1).lower()
+                        value = _norm_exit_value(m2.group(2))
+                        if var not in seen_settle:
+                            seen_settle.add(var)
+                        elif var in last_settle and last_settle[var] == value:
+                            continue
+                        last_settle[var] = value
                     kept_parts.append(line)
                     continue
                 kind = m.group(1).lower()
                 value = _norm_exit_value(m.group(2))
-                if kind in last_val and last_val[kind] == value:
+                if kind not in seen_kind:
+                    seen_kind.add(kind)
+                elif kind in last_val and last_val[kind] == value:
                     continue
                 last_val[kind] = value
                 kept_parts.append(line)
@@ -1595,9 +1876,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             settle_cap = cap if jar_like_style else 12.0
             settle_err, settle_time = _compute_settle_final(cfg, move_type, settle_mag_val, settle_cap, profile)
             settle_time_adj = int(round(settle_time))
-        drive_early_exit = 0.0 if drive_early_exit is None else drive_early_exit
-        turn_early_exit = 0.0 if turn_early_exit is None else turn_early_exit
-        swing_early_exit = 0.0 if swing_early_exit is None else swing_early_exit
+        drive_early_exit = default_drive_early_exit if drive_early_exit is None else drive_early_exit
+        turn_early_exit = default_turn_early_exit if turn_early_exit is None else turn_early_exit
+        swing_early_exit = default_swing_early_exit if swing_early_exit is None else swing_early_exit
         drive_min_speed = 0 if drive_min_speed is None else drive_min_speed
         turn_min_speed = 0 if turn_min_speed is None else turn_min_speed
         swing_min_speed = 0 if swing_min_speed is None else swing_min_speed
@@ -2029,16 +2310,35 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "TARGET_Y_IN": round(target_y_in, 6),
                 "DIR": dir_token,
                 "SIDE": side_token,
+                "SIDE_LC": side_token.lower(),
                 "SWING_MAX_V": "",
                 "SWING_SETTLE_ERR": "",
                 "SWING_SETTLE_TIME": "",
                 "LOCKED_SIDE": locked_side,
+                "LOCKED_SIDE_LC": (locked_side or "").lower(),
             })
             profile = seg.get("profile_override") or pick_profile("swing", abs(delta_heading), cfg=cfg)
             swing_tpl_key = "swing"
             swing_settle = bool(seg.get("swing_settle", False))
             swing_min_speed = 0 if swing_settle else DEFAULT_SWING_MIN_SPEED
-            swing_early_exit = 0.0 if swing_settle else DEFAULT_SWING_EARLY_EXIT
+            if swing_settle:
+                swing_early_exit = default_swing_settle_early_exit
+            else:
+                # Auto-chain early exit for swings (fraction of commanded heading change).
+                # Users can tune frac/min/max via codegen.opts.* keys.
+                try:
+                    auto = abs(float(delta_heading)) * float(swing_auto_early_exit_frac)
+                except Exception:
+                    auto = abs(float(delta_heading)) * 0.06
+                if swing_auto_early_exit_max and swing_auto_early_exit_max > 0:
+                    auto = min(auto, float(swing_auto_early_exit_max))
+                if swing_auto_early_exit_min and swing_auto_early_exit_min > 0:
+                    auto = max(auto, float(swing_auto_early_exit_min))
+                # If the user disables auto-chain, fall back to the passive default.
+                if swing_auto_early_exit_frac <= 0:
+                    swing_early_exit = default_swing_early_exit
+                else:
+                    swing_early_exit = auto
             _apply_settle(
                 tokens,
                 "swing",

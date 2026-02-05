@@ -6073,6 +6073,30 @@ def open_settings_window():
     top.after(0, _refresh_mcl_export_wrap)
 
     _stored_tpl_defaults = CFG.get("codegen", {}).get("templates", {})
+
+    # JAR (non-advanced) defaults (locked in the UI): keep this lightweight and match
+    # the non-advanced expectations (simple settle/timeout + motion call).
+    _jar_defaults = {
+        "wait": "task::sleep({MS});",
+        "move": "chassis.drive_settle_error = {DRIVE_EARLY_EXIT};\nchassis.drive_timeout =  {TIMEOUT_MS};\nchassis.drive_distance({DIST_IN});",
+        "turn_global": "chassis.turn_settle_error = {TURN_EARLY_EXIT};\nchassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
+        "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
+        "swing": "chassis.swing_settle_error = {SWING_EARLY_EXIT};\nchassis.swing_timeout = {TIMEOUT_MS};\nchassis.{SIDE_LC}_swing_to_angle({HEADING_DEG});",
+        "path_follow": 'followPath("{PATH_FILE}", {TIMEOUT_MS});',
+        "reshape_on": "MLmech.off();",
+        "reshape_off": "MLmech.on();",
+        "reshape": "MLmech.on();",
+        "reverse_on": "// reverse handled inline",
+        "reverse_off": "// reverse handled inline",
+        "tbuffer": "task::sleep({MS});",
+        "marker_wait": "",
+        "marker_wait_done": "",
+        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});",
+    }
+
+    # JAR (advanced) keeps the fully-parameterized placeholders.
     _jar_advanced_defaults = {
         "wait": "task::sleep({MS});",
         "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG},{DRIVE_MAX_V},{HEADING_MAX_V},{DRIVE_SETTLE_ERR},{DRIVE_SETTLE_TIME}, {TIMEOUT_MS});",
@@ -6092,13 +6116,6 @@ def open_settings_window():
         "marker_wait_done": "",
         "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});"
     }
-    _jar_current_defaults = dict(_jar_advanced_defaults)
-    if isinstance(_stored_tpl_defaults, dict):
-        _saved_jar = _stored_tpl_defaults.get("JAR", {})
-        if isinstance(_saved_jar, dict):
-            for _k, _v in _saved_jar.items():
-                if isinstance(_v, str):
-                    _jar_current_defaults[_k] = _v
 
     codegen_defaults = {
         "LemLib": {
@@ -6119,7 +6136,7 @@ def open_settings_window():
             "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
             "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
-        "JAR": dict(_jar_current_defaults),
+        "JAR": dict(_jar_defaults),
         "JAR (advanced)": dict(_jar_advanced_defaults),
         "Custom": {
             "wait": "wait({S}, seconds);",
@@ -6151,20 +6168,27 @@ def open_settings_window():
                     continue
                 if isinstance(_v, str):
                     dst[_k] = _v
-    CFG.setdefault("codegen", {
-        "style": "JAR",
-        "templates": {},
-        "opts": {
-            "ticks_per_rotation": 360,
-            "pad_factor": 1.0,
-            "min_timeout_s": 0.0,
-            "reshape_output": "1/2",
-            "jar_pose_angle_overload": 0,
-            "omit_defaults": 1
-        },
-        "path_dir": "export/paths",
-        "path_columns": "{X}, {Y}, {COMMAND}",
-        "mech_presets": [
+        CFG.setdefault("codegen", {
+            "style": "JAR",
+            "templates": {},
+            "opts": {
+                "ticks_per_rotation": 360,
+                "pad_factor": 1.0,
+                "min_timeout_s": 0.0,
+                "reshape_output": "1/2",
+                "jar_pose_angle_overload": 0,
+                # Passive chain defaults (inches): used when segments are not explicitly chained.
+                "default_drive_early_exit": 0.0,
+                "default_turn_early_exit": 0.0,
+                # Keep historical behavior: swings default to a small early-exit window unless "settle swing" is used.
+                "default_swing_early_exit": 7.0,
+                # When "settle swing" is used, apply this early-exit window (0 by default).
+                "default_swing_settle_early_exit": 0.0,
+                "omit_defaults": 1
+            },
+            "path_dir": "export/paths",
+            "path_columns": "{X}, {Y}, {COMMAND}",
+            "mech_presets": [
             {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False}
         ],
         "calibration": {
@@ -6196,6 +6220,24 @@ def open_settings_window():
         return base
 
     opt_cfg = CFG["codegen"].setdefault("opts", {})
+    # Migration/defaults for existing configs: avoid accidentally changing swing behavior
+    # by introducing new opts with a 0 default.
+    opt_cfg.setdefault("default_drive_early_exit", 0.0)
+    opt_cfg.setdefault("default_turn_early_exit", 0.0)
+    opt_cfg.setdefault("default_swing_early_exit", 7.0)
+    opt_cfg.setdefault("default_swing_settle_early_exit", 0.0)
+    # If this key existed from an earlier build where we defaulted it to 0,
+    # migrate back to the historical swing behavior once.
+    if not opt_cfg.get("default_swing_early_exit_migrated", 0):
+        try:
+            _v = opt_cfg.get("default_swing_early_exit", 7.0)
+            if isinstance(_v, dict):
+                _v = _v.get("value", 7.0)
+            if abs(float(_v)) < 1e-9:
+                opt_cfg["default_swing_early_exit"] = 7.0
+        except Exception:
+            opt_cfg["default_swing_early_exit"] = 7.0
+        opt_cfg["default_swing_early_exit_migrated"] = 1
     migrate_path_follow = not bool(opt_cfg.get("path_follow_optional_migrated", False))
     migrate_reshape_split = not bool(opt_cfg.get("reshape_split_templates_migrated", False))
     for _style, _tpl in codegen_defaults.items():
@@ -6250,7 +6292,9 @@ def open_settings_window():
         "X_IN", "Y_IN", "DIST_IN", "DIST_ROT", "DIST_DEG", "DIST_TICKS",
         "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
         "TARGET_X_IN", "TARGET_Y_IN",
-        "FORWARDS", "FORWARD_PARAM", "DIR", "SIDE", "LOCKED_SIDE", "LOOKAHEAD",
+        "FORWARDS", "FORWARD_PARAM", "DIR",
+        "SIDE", "SIDE_LC", "LOCKED_SIDE", "LOCKED_SIDE_LC",
+        "LOOKAHEAD",
         "PATH_NAME", "PATH_FILE", "PATH_ASSET",
         "MOVE_SPEED", "TURN_SPEED", "PATH_MIN_SPEED", "PATH_MAX_SPEED",
         "DRIVE_MAX_V", "HEADING_MAX_V", "TURN_MAX_V", "SWING_MAX_V",
@@ -6268,6 +6312,10 @@ def open_settings_window():
     min_s_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("min_timeout_s", 0.0)))
     reshape_output_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("reshape_output", "1/2")))
     omit_defaults_var = tk.IntVar(value=int(CFG.get("codegen", {}).get("opts", {}).get("omit_defaults", 1)))
+    default_drive_exit_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("default_drive_early_exit", 0.0)))
+    default_turn_exit_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("default_turn_early_exit", 0.0)))
+    default_swing_exit_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("default_swing_early_exit", 7.0)))
+    default_settle_swing_exit_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("opts", {}).get("default_swing_settle_early_exit", 0.0)))
     path_dir_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("path_dir", "export/paths")))
     path_columns_var = tk.StringVar(value=str(CFG.get("codegen", {}).get("path_columns", "{X}, {Y}, {COMMAND}")))
     cal_raw = CFG.get("codegen", {}).get("calibration", {})
@@ -6311,11 +6359,40 @@ def open_settings_window():
     omit_defaults_chk = ttk.Checkbutton(tabs["codegen"], variable=omit_defaults_var)
     _row(tabs["codegen"], 3, "Omit default params:", omit_defaults_chk,
         "Remove default-valued named params from templates (disable to preserve full placeholder order).")
+
+    # JAR-only settle/chain defaults (hide for other styles).
+    jar_defaults_frame = ttk.LabelFrame(tabs["codegen"], text="JAR settle/chain defaults")
+    jar_defaults_frame.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6, pady=(4, 6))
+    jar_defaults_frame.columnconfigure(1, weight=1)
+    drive_exit_entry = ttk.Entry(jar_defaults_frame, textvariable=default_drive_exit_var, width=10)
+    _row(jar_defaults_frame, 0, "Default drive early-exit (in):", drive_exit_entry,
+         "Passive chain default (inches). Used when a segment is not explicitly chained. 0 disables.")
+    turn_exit_entry = ttk.Entry(jar_defaults_frame, textvariable=default_turn_exit_var, width=10)
+    _row(jar_defaults_frame, 1, "Default turn early-exit (deg):", turn_exit_entry,
+         "Passive chain default (degrees). Used when a segment is not explicitly chained. 0 disables.")
+    swing_exit_entry = ttk.Entry(jar_defaults_frame, textvariable=default_swing_exit_var, width=10)
+    _row(jar_defaults_frame, 2, "Default swing early-exit (deg):", swing_exit_entry,
+         "Default swing chaining window (degrees) for non-settle swings. 0 disables chaining.")
+    settle_swing_exit_entry = ttk.Entry(jar_defaults_frame, textvariable=default_settle_swing_exit_var, width=10)
+    _row(jar_defaults_frame, 3, "Default settle swing early-exit (deg):", settle_swing_exit_entry,
+         "Used only for Settle Swing. 0 means no early-exit window (fully settle).")
+
+    def _refresh_jar_defaults_visibility(_evt=None):
+        """Show JAR-only settle defaults only when a JAR style is selected."""
+        try:
+            is_jar = str(codegen_style_var.get()) in ("JAR", "JAR (advanced)")
+            if is_jar:
+                jar_defaults_frame.grid()
+            else:
+                jar_defaults_frame.grid_remove()
+        except Exception:
+            pass
+    _refresh_jar_defaults_visibility()
     
     ticks_label = ttk.Label(tabs["codegen"], text="Ticks per rotation:")
     ticks_entry = ttk.Entry(tabs["codegen"], textvariable=ticks_var)
-    ticks_label.grid(row=4, column=0, sticky="w", padx=6, pady=4)
-    ticks_entry.grid(row=4, column=1, sticky="ew", padx=6, pady=4)
+    ticks_label.grid(row=5, column=0, sticky="w", padx=6, pady=4)
+    ticks_entry.grid(row=5, column=1, sticky="ew", padx=6, pady=4)
     ui.add_tooltip(ticks_label, "Encoder ticks per wheel rotation for distance conversion.")
     ui.add_tooltip(ticks_entry, "Encoder ticks per wheel rotation for distance conversion.")
     ui.track_live_widget(ticks_entry)
@@ -6335,7 +6412,7 @@ def open_settings_window():
             on_update()
     path_cols_btn = ttk.Button(path_dir_frame, text="Columns...", command=_edit_path_columns)
     path_cols_btn.pack(side="left", padx=4)
-    _row(tabs["codegen"], 5, "Path export dir:", path_dir_frame, "Directory to save generated path files.")
+    _row(tabs["codegen"], 6, "Path export dir:", path_dir_frame, "Directory to save generated path files.")
     ui.add_tooltip(path_dir_btn, "Directory to save generated path files.")
     ui.add_tooltip(path_cols_btn, "Set output columns for path files.")
     ui.track_live_widget(path_dir_entry)
@@ -8080,17 +8157,21 @@ def open_settings_window():
                 tpl_vars[k].set(val)
         _current_modes(style_name)
 
+    _LOCKED_TEMPLATE_STYLES = {"JAR"}  # "JAR (advanced)" remains editable
+
     def _save_tpl_vars_for(style_name: str):
         """Save UI variables to config."""
         if style_name == "Action List":
             return
+        locked = style_name in _LOCKED_TEMPLATE_STYLES
         tdict = CFG.setdefault("codegen", {}).setdefault("templates", {}).setdefault(style_name, {})
         active_opt = _active_optional_for(style_name)
-        for k in base_tpl_keys + optional_pool:
-            if k in optional_pool and k not in active_opt:
-                tdict.pop(k, None)
-                continue
-            tdict[k] = tpl_vars[k].get()
+        if not locked:
+            for k in base_tpl_keys + optional_pool:
+                if k in optional_pool and k not in active_opt:
+                    tdict.pop(k, None)
+                    continue
+                tdict[k] = tpl_vars[k].get()
         tdict["__optional__"] = active_opt
         _set_modes(style_name, _current_modes(style_name))
 
@@ -8119,6 +8200,13 @@ def open_settings_window():
         style = codegen_style_var.get()
         if style == "Action List":
             messagebox.showinfo("Edit templates", "Action List mode has no templates to edit.")
+            return
+        if style in _LOCKED_TEMPLATE_STYLES:
+            messagebox.showinfo(
+                "Templates locked",
+                "The JAR template is locked to prevent accidental edits.\n\n"
+                "Use 'JAR (advanced)' if you need a customizable JAR variant."
+            )
             return
         _fill_tpl_vars_for(style)
         if template_builder_win["win"] is not None and template_builder_win["win"].winfo_exists():
@@ -8335,7 +8423,8 @@ def open_settings_window():
                 ],
                 "swing": [
                     "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
-                    "TARGET_X_IN", "TARGET_Y_IN", "DIR", "SIDE", "LOCKED_SIDE",
+                    "TARGET_X_IN", "TARGET_Y_IN", "DIR",
+                    "SIDE", "SIDE_LC", "LOCKED_SIDE", "LOCKED_SIDE_LC",
                     "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
                     "SWING_MAX_V", "SWING_SETTLE_ERR", "SWING_SETTLE_TIME",
                     "SWING_MIN_SPEED", "SWING_EARLY_EXIT"
@@ -9253,9 +9342,23 @@ def open_settings_window():
         
         btns = ttk.Frame(tpl_panel)
         btns.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Button(btns, text="Edit command templates...", command=_open_template_builder).pack(side="left", padx=(0, 6))
+        locked = style in _LOCKED_TEMPLATE_STYLES
+        edit_btn = ttk.Button(btns, text="Edit command templates...", command=_open_template_builder)
+        edit_btn.pack(side="left", padx=(0, 6))
+        if locked:
+            try:
+                edit_btn.configure(state="disabled")
+            except Exception:
+                pass
+
         ttk.Button(btns, text="Mechanism presets...", command=_open_mech_preset_editor).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Reset to Defaults", command=_reset_defaults).pack(side="left")
+        reset_btn = ttk.Button(btns, text="Reset to Defaults", command=_reset_defaults)
+        reset_btn.pack(side="left")
+        if locked:
+            try:
+                reset_btn.configure(state="disabled")
+            except Exception:
+                pass
         tpl_panel.after(0, _bind_tpl_live_handlers)
 
     try:
@@ -9278,11 +9381,20 @@ def open_settings_window():
         style = codegen_style_var.get()
         _save_tpl_vars_for(style)
         CFG.setdefault("codegen", {})["style"] = style
+        def _f_or(var, default=0.0):
+            try:
+                return float(var.get() or default)
+            except Exception:
+                return float(default)
         CFG["codegen"].setdefault("opts", {}).update({
             "ticks_per_rotation": float(ticks_var.get() or 360),
             "pad_factor": float(pad_var.get() or 1.0),
             "min_timeout_s": float(min_s_var.get() or 0.0),
             "reshape_output": reshape_output_var.get() or "1/2",
+            "default_drive_early_exit": _f_or(default_drive_exit_var, 0.0),
+            "default_turn_early_exit": _f_or(default_turn_exit_var, 0.0),
+            "default_swing_early_exit": _f_or(default_swing_exit_var, 0.0),
+            "default_swing_settle_early_exit": _f_or(default_settle_swing_exit_var, 0.0),
             "omit_defaults": int(omit_defaults_var.get())
         })
         tpl_panel.after(0, _bind_tpl_live_handlers)
@@ -9290,6 +9402,7 @@ def open_settings_window():
     def _on_style_change(_=None):
         """Handle style dropdown change."""
         _rebuild_tpl_panel()
+        _refresh_jar_defaults_visibility()
     style_widget.bind("<<ComboboxSelected>>", _on_style_change)
 
     def _bind_live_handlers():
@@ -9627,11 +9740,20 @@ def open_settings_window():
 
             CFG.setdefault("codegen", {})["style"] = codegen_style_var.get()
             opts = CFG["codegen"].setdefault("opts", {})
+            def _f_or(var, default=0.0):
+                try:
+                    return float(var.get() or default)
+                except Exception:
+                    return float(default)
             opts.update({
                 "ticks_per_rotation": float(ticks_var.get() or 360),
                 "pad_factor": float(pad_var.get() or 1.0),
                 "min_timeout_s": float(min_s_var.get() or 0.0),
                 "reshape_output": reshape_output_var.get() or "1/2",
+                "default_drive_early_exit": _f_or(default_drive_exit_var, 0.0),
+                "default_turn_early_exit": _f_or(default_turn_exit_var, 0.0),
+                "default_swing_early_exit": _f_or(default_swing_exit_var, 0.0),
+                "default_swing_settle_early_exit": _f_or(default_settle_swing_exit_var, 0.0),
                 "omit_defaults": int(omit_defaults_var.get())
             })
             cal = CFG["codegen"].setdefault("calibration", {})

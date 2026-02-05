@@ -1,6 +1,8 @@
-# Atticus Terminal
+# <img width="597" height="596" alt="Screenshot 2026-01-02 235826" src="https://github.com/user-attachments/assets/96e6ef74-4857-4868-845e-cf7e54e407fc" />
 
-Atticus Terminal is a VEX Robotics autonomous editor that lets you express **intent in field geometry** (nodes, headings, paths, offsets, and action triggers), then compiles that intent into an ** execution timeline**. That compiled timeline is used consistently for **simulation (with overlays + collision checks)**, **conservative time estimation**, and **instant export/code generation** into your own library. Once you give the program your bot's geometry and sensor locations, you can can optionally export a customized MCL system into your own PROS code and tune it automatically using the terminal's algorithm.
+# ATTICUS TERMINAL
+
+Atticus Terminal is a VEX Robotics autonomous editor that lets you express **intent in field geometry** (nodes, headings, paths, offsets, and action triggers), then compiles that intent into an **execution timeline**. That compiled timeline is used consistently for **simulation** (with overlays + collision checks), **conservative time estimation**, and **instant export/code generation** into your own library. Once you give the program your bot's geometry and sensor locations, you can can optionally export a customized MCL system into your own PROS code and tune it automatically using the terminal's algorithm.
 
 ## Purpose
 
@@ -8,7 +10,7 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 - Verifying clearances using a footprint of the robot's geometry and collision sampling before running on field.
 - Estimating whether an auton fits inside a time window through physics-based, tunable time estimation.
 - Exporting the same routine into different code styles (LemLib / JAR / custom) using templates + mechanism presets.
-- Customizable **MCL + EKF localization** tools for drift correction/recovery, with import-based (microSD) MCL tuning automation.
+- Customizable **MCL + EKF localization** tools for drift correction/recovery, with import-based (microSD) tuning automation.
 
 ---
 
@@ -22,10 +24,10 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 
 ---
 
-## Customizable MCL + EKF localization
+## Custom PROS MCL + EKF localization
 
 Atticus Terminal includes an **MCL tab** for configuring an optional **Monte Carlo Localization w/ Extended Kalman Filter** drift-correction system, plus an automatic tuning system via microSD that support importing logs and exporting configuration/runtime artifacts.
-Upon exporting MCL code from the MCL tab in the terminal, an API with further details and examples will be made visible.
+Upon exporting MCL code from the MCL tab in the terminal, a **full API with further details and example usage** will be made visible.
 
 ---
 
@@ -70,3 +72,7 @@ The included `atticus_terminal.spec` bundles project data so exported builds are
 ## License
 
 See `LICENSE`.
+
+## Support / Bug Reporting
+
+Contact Ozzy of 15800A through most VEX Discord servers, or by @ozzymcgrath on Instragram.

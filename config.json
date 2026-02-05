@@ -130,7 +130,7 @@
   },
   "codegen": {
     "style": {
-      "value": "JAR"
+      "value": "LemLib"
     },
     "templates": {
       "LemLib": {
@@ -219,8 +219,8 @@
       },
       "JAR": {
         "wait": "task::sleep({MS});",
-        "move": "chassis.set_drive_exit_conditions({DRIVE_EARLY_EXIT});\\nchassis.drive_timeout =  {TIMEOUT_MS};\\nchassis.drive_distance({DIST_IN});",
-        "turn_global": "chassis.set_turn_exit_conditions({TURN_EARLY_EXIT});\\nchassis.turn_timeout = {TIMEOUT_MS};\\nchassis.turn_to_angle({HEADING_DEG});",
+        "move": "chassis.drive_settle_error = {DRIVE_EARLY_EXIT};\\nchassis.drive_timeout =  {TIMEOUT_MS};\\nchassis.drive_distance({DIST_IN});",
+        "turn_global": "chassis.turn_settle_error = {TURN_EARLY_EXIT};\\nchassis.turn_timeout = {TIMEOUT_MS};\\nchassis.turn_to_angle({HEADING_DEG});",
         "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
         "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
         "tbuffer": "task::sleep({MS});",
@@ -238,7 +238,7 @@
         "pose_angle": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG});",
         "reshape_off": "MLmech.on();",
         "reshape_on": "MLmech.off();",
-        "swing": "chassis.set_swing_exit_conditions({SWING_EARLY_EXIT});\\nchassis.swing_timeout = {TIMEOUT_MS};\\nchassis.{SIDE}_swing_to_angle({HEADING_DEG});",
+        "swing": "chassis.swing_settle_error = {SWING_EARLY_EXIT};\\nchassis.swing_timeout = {TIMEOUT_MS};\\nchassis.{SIDE_LC}_swing_to_angle({HEADING_DEG});",
         "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
       },
       "EZ-Template": {
@@ -305,7 +305,12 @@
       "jar_pose_angle_overload": 0,
       "path_follow_optional_migrated": true,
       "omit_defaults": 1,
-      "reshape_split_templates_migrated": true
+      "reshape_split_templates_migrated": true,
+      "default_drive_early_exit": 0.5,
+      "default_turn_early_exit": 1.0,
+      "default_swing_early_exit": 7.0,
+      "default_swing_settle_early_exit": 1.0,
+      "default_swing_early_exit_migrated": 1
     },
     "path_dir": {
       "value": "export/paths"
@@ -754,13 +759,13 @@
         "gate_penalty": {
           "value": 0.05
         },
+        "gate_reject_ratio": {
+          "value": 0.9
+        },
         "likelihood_field": {
           "resolution_in": {
             "value": 1.0
           }
-        },
-        "gate_reject_ratio": {
-          "value": 0.9
         }
       },
       "imu": {
@@ -1453,15 +1458,6 @@
       },
       "object_mode": {
         "value": 1
-      },
-      "object_clip_free_in": {
-        "value": 0.5
-      },
-      "object_clip_max_in": {
-        "value": 2.0
-      },
-      "object_clip_sigma_in": {
-        "value": 0.75
       },
       "grid_type": {
         "value": "quadrant"
