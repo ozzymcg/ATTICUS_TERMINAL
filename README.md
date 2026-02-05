@@ -27,12 +27,7 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 ## Custom PROS MCL + EKF localization
 
 Atticus Terminal includes an **MCL tab** for configuring an optional **Monte Carlo Localization w/ Extended Kalman Filter** drift-correction system, plus an automatic tuning system via microSD that support importing logs and exporting configuration/runtime artifacts.
-<<<<<<< HEAD
 See pre-exported docs/API of this system in the ProsMCL folder.
-=======
-Upon exporting MCL code from the MCL tab in the terminal, a **full API with further details and example usage** will be made visible.
->>>>>>> 718c96afeeb6d1f74b1dae893d53a3fc1da2e5fd
-
 ---
 
 ## Quick Start (git clone)
