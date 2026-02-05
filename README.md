@@ -10,7 +10,7 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 - Verifying clearances using a footprint of the robot's geometry and collision sampling before running on field.
 - Estimating whether an auton fits inside a time window through physics-based, tunable time estimation.
 - Exporting the same routine into different code styles (LemLib / JAR / custom) using templates + mechanism presets.
-- Customizable **MCL + EKF localization** tools for drift correction/recovery, with import-based (microSD) MCL tuning automation.
+- Customizable **MCL + EKF localization** tools for drift correction/recovery, with import-based (microSD) tuning automation.
 
 ---
 
