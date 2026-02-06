@@ -20,7 +20,7 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 - **Mechanism-first targeting:** per-node offsets so you can place a *mechanism contact point* (intake/clamp/etc) on the field target, making alignment easy.
 - **Footprint + reshape legality:** customized robot geometry and physics with a collision checker for field objects.
 - **Path file creation:** custom path file creation with tunable velocity curves and multiple Catmull-Rom Spline types.
-- **Export templates + presets:** templates map compiled segments into library and mechanism presets with custom code blocks, generating custom code instantly.
+- **Export templates + presets:** templates map compiled segments into a chosen library and mechanism presets with custom code blocks, generating routine code instantly.
 
 ---
 
