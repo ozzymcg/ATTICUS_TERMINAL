@@ -1,6 +1,6 @@
 # Examples
 
-These examples are practical autonomous templates, not toy snippets.
+These examples are practical autonomous templates.
 Important: odom + IMU only will drift over long runs; use distance and/or vision corrections.
 
 - `03_mcl_intervenes_with_lemlib.cpp`: full LemLib autonomous flow with distance sensors, auto-feed pose provider, parallel correction, and live tuning telemetry.
