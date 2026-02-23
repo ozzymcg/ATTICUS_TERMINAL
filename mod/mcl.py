@@ -79,6 +79,7 @@ def _ekf_cfg(cfg: dict) -> dict:
         "mcl_sigma_y_max": float(ekf.get("mcl_sigma_y_max", 6.0)),
         "mcl_sigma_theta_min": float(ekf.get("mcl_sigma_theta_min", set_th)),
         "mcl_sigma_theta_max": float(ekf.get("mcl_sigma_theta_max", 15.0)),
+        "mcl_mahalanobis_gate": float(ekf.get("mcl_mahalanobis_gate", 11.34)),
         "init_sigma_xy_in": float(ekf.get("init_sigma_xy_in", set_xy)),
         "init_sigma_theta_deg": float(ekf.get("init_sigma_theta_deg", set_th)),
     }
@@ -291,6 +292,7 @@ def _default_distance_sensors(cfg: dict) -> List[dict]:
 def get_distance_sensors(cfg: dict, include_disabled: bool = False) -> List[dict]:
     """Return distance sensors."""
     mcl = cfg.get("mcl", {}) if isinstance(cfg, dict) else {}
+    mode_split_cfg = mcl.get("mode_split", {}) if isinstance(mcl, dict) else {}
     sensors_cfg = mcl.get("sensors", {}) if isinstance(mcl, dict) else {}
     dist_cfg = sensors_cfg.get("distance", {}) if isinstance(sensors_cfg, dict) else {}
     sensor_obj_vis_cfg = mcl.get("sensor_object_visibility", {}) if isinstance(mcl, dict) else {}
@@ -317,7 +319,7 @@ def get_distance_sensors(cfg: dict, include_disabled: bool = False) -> List[dict
         return {
             "bias_mm": _num(sensor.get("bias_mm", 0.0)),
             "angle_offset_deg": _num(sensor.get("angle_offset_deg", 0.0)),
-            "min_range_mm": _num(sensor.get("min_range_mm", dist_cfg.get("min_range_mm", 0.0))),
+            "min_range_mm": _num(sensor.get("min_range_mm", dist_cfg.get("min_range_mm", 20.0))),
             "max_range_mm": _num(sensor.get("max_range_mm", dist_cfg.get("max_range_mm", 0.0))),
             "min_confidence": _num(sensor.get("min_confidence", dist_cfg.get("confidence_min", 0.0))),
             "min_object_size": _num(sensor.get("min_object_size", dist_cfg.get("object_size_min", 0.0))),
@@ -380,7 +382,7 @@ def _build_likelihood_field(cfg: dict, segments: List[Tuple[float, float, float,
     sensors_cfg = mcl.get("sensors", {}) if isinstance(mcl, dict) else {}
     dist_cfg = sensors_cfg.get("distance", {}) if isinstance(sensors_cfg, dict) else {}
     lf_cfg = dist_cfg.get("likelihood_field", {}) if isinstance(dist_cfg, dict) else {}
-    res_in = float(lf_cfg.get("resolution_in", 2.0))
+    res_in = float(lf_cfg.get("resolution_in", 1.0))
     res_px = max(1.0, res_in * PPI)
     w, h = float(WINDOW_WIDTH), float(WINDOW_HEIGHT)
     nx = int(math.ceil(w / res_px)) + 1
@@ -504,6 +506,7 @@ class MCLState:
     w_slow: Optional[float] = None
     w_fast: Optional[float] = None
     confidence: float = 0.0
+    ess_ratio: float = 1.0
     ekf_pose: Optional[Tuple[float, float, float]] = None
     ekf_P: Optional[List[List[float]]] = None
 
@@ -592,6 +595,9 @@ def ekf_predict(state: MCLState, cfg: dict, motion_input: Optional[dict]) -> Non
     dx_px = float(motion_input.get("dx_in", 0.0)) * PPI
     dy_px = float(motion_input.get("dy_in", 0.0)) * PPI
     dtheta = float(motion_input.get("dtheta_deg", 0.0))
+    noise_scale = float(motion_input.get("noise_scale", 1.0))
+    if not math.isfinite(noise_scale) or noise_scale < 1.0:
+        noise_scale = 1.0
     x, y, theta = state.ekf_pose
     th_rad = math.radians(theta)
     s = math.sin(th_rad)
@@ -613,10 +619,11 @@ def ekf_predict(state: MCLState, cfg: dict, motion_input: Optional[dict]) -> Non
     sigma_dx_px = ekf_cfg["sigma_dx_in"] * PPI
     sigma_dy_px = ekf_cfg["sigma_dy_in"] * PPI
     sigma_dth = ekf_cfg["sigma_dtheta_deg"]
+    q_scale = noise_scale * noise_scale
     Q = [
-        [sigma_dx_px * sigma_dx_px, 0.0, 0.0],
-        [0.0, sigma_dy_px * sigma_dy_px, 0.0],
-        [0.0, 0.0, sigma_dth * sigma_dth],
+        [sigma_dx_px * sigma_dx_px * q_scale, 0.0, 0.0],
+        [0.0, sigma_dy_px * sigma_dy_px * q_scale, 0.0],
+        [0.0, 0.0, sigma_dth * sigma_dth * q_scale],
     ]
     P = state.ekf_P
     FP = _mat3_mul(F, P)
@@ -693,12 +700,21 @@ def ekf_update_mcl(state: MCLState, cfg: dict,
     S_inv = _mat3_inv(S)
     if S_inv is None:
         return
-    K = _mat3_mul(P, S_inv)
     nu = [
         float(mcl_pose[0]) - x,
         float(mcl_pose[1]) - y,
         _angle_diff_deg(float(mcl_pose[2]), theta),
     ]
+    gate = float(ekf_cfg.get("mcl_mahalanobis_gate", 0.0))
+    if gate > 0.0:
+        md2 = (
+            nu[0] * (S_inv[0][0] * nu[0] + S_inv[0][1] * nu[1] + S_inv[0][2] * nu[2])
+            + nu[1] * (S_inv[1][0] * nu[0] + S_inv[1][1] * nu[1] + S_inv[1][2] * nu[2])
+            + nu[2] * (S_inv[2][0] * nu[0] + S_inv[2][1] * nu[1] + S_inv[2][2] * nu[2])
+        )
+        if md2 > gate:
+            return
+    K = _mat3_mul(P, S_inv)
     dx = K[0][0] * nu[0] + K[0][1] * nu[1] + K[0][2] * nu[2]
     dy = K[1][0] * nu[0] + K[1][1] * nu[1] + K[1][2] * nu[2]
     dth = K[2][0] * nu[0] + K[2][1] * nu[1] + K[2][2] * nu[2]
@@ -784,6 +800,7 @@ def reset_state_to_pose(state: MCLState, cfg: dict, pose: Tuple[float, float, fl
     state.w_slow = None
     state.w_fast = None
     state.confidence = 0.0
+    state.ess_ratio = 1.0
 
 
 def update_map_segments(state: MCLState, cfg: dict) -> None:
@@ -1050,6 +1067,76 @@ def _estimate_pose(particles: List[Dict[str, float]]) -> Optional[Tuple[float, f
     return (x, y, theta)
 
 
+def _mode_split_pose(
+    particles: List[Dict[str, float]],
+    confidence: float,
+    mode_cfg: dict,
+) -> Optional[Tuple[float, float, float]]:
+    """Choose dominant of two lightweight modes when posterior is ambiguous."""
+    if not particles or not isinstance(mode_cfg, dict):
+        return None
+    if int(mode_cfg.get("enabled", 1)) != 1:
+        return None
+    conf_max = float(mode_cfg.get("conf_max", 0.55))
+    if confidence > conf_max:
+        return None
+    min_sep_px = float(mode_cfg.get("min_separation_in", 8.0)) * PPI
+    min_mass = _clamp(float(mode_cfg.get("min_mass", 0.15)), 0.0, 0.49)
+    if len(particles) < 4 or min_sep_px <= 0.0:
+        return None
+
+    seed_a = max(range(len(particles)), key=lambda i: float(particles[i].get("w", 0.0)))
+    ax = float(particles[seed_a].get("x", 0.0))
+    ay = float(particles[seed_a].get("y", 0.0))
+    seed_b = max(
+        range(len(particles)),
+        key=lambda i: (float(particles[i].get("x", 0.0)) - ax) ** 2 + (float(particles[i].get("y", 0.0)) - ay) ** 2,
+    )
+    cx = [ax, float(particles[seed_b].get("x", 0.0))]
+    cy = [ay, float(particles[seed_b].get("y", 0.0))]
+    mass = [0.0, 0.0]
+    sx = [0.0, 0.0]
+    sy = [0.0, 0.0]
+    ssin = [0.0, 0.0]
+    scos = [0.0, 0.0]
+
+    for _ in range(2):
+        mass[:] = [0.0, 0.0]
+        sx[:] = [0.0, 0.0]
+        sy[:] = [0.0, 0.0]
+        ssin[:] = [0.0, 0.0]
+        scos[:] = [0.0, 0.0]
+        for p in particles:
+            px = float(p.get("x", 0.0))
+            py = float(p.get("y", 0.0))
+            w = float(p.get("w", 0.0))
+            d0 = (px - cx[0]) ** 2 + (py - cy[0]) ** 2
+            d1 = (px - cx[1]) ** 2 + (py - cy[1]) ** 2
+            k = 1 if d1 < d0 else 0
+            mass[k] += w
+            sx[k] += px * w
+            sy[k] += py * w
+            ux, uy = _heading_unit(float(p.get("theta", 0.0)))
+            ssin[k] += ux * w
+            scos[k] += uy * w
+        for k in (0, 1):
+            if mass[k] > 1e-12:
+                cx[k] = sx[k] / mass[k]
+                cy[k] = sy[k] / mass[k]
+
+    sep2 = (cx[0] - cx[1]) ** 2 + (cy[0] - cy[1]) ** 2
+    if mass[0] < min_mass or mass[1] < min_mass or sep2 < (min_sep_px * min_sep_px):
+        return None
+    keep = 1 if mass[1] > mass[0] else 0
+    if mass[keep] <= 1e-12:
+        return None
+    return (
+        sx[keep] / mass[keep],
+        sy[keep] / mass[keep],
+        _heading_from_unit(ssin[keep], scos[keep]),
+    )
+
+
 def _cov_xy(particles: List[Dict[str, float]], mean: Tuple[float, float, float]) -> Tuple[float, float, float]:
     """Handle cov xy."""
     if not particles:
@@ -1234,7 +1321,7 @@ def _gaussian(x: float, mu: float, sigma: float, normalize: bool = False) -> flo
 
 def _distance_model_weight(dist_cfg: dict, expected_mm: float, measured_mm: float) -> Tuple[float, bool]:
     """Handle distance model weight."""
-    sigma = float(dist_cfg.get("sigma_hit_mm", 8.5))
+    sigma = float(dist_cfg.get("sigma_hit_mm", 15.0))
     w_hit = float(dist_cfg.get("w_hit", 0.9))
     w_rand = float(dist_cfg.get("w_rand", 0.1))
     w_short = float(dist_cfg.get("w_short", 0.0))
@@ -1551,23 +1638,109 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
     vision_meas = measurements.get("vision", None)
     sensors = get_distance_sensors(cfg) if use_distance else []
     model = str(dist_cfg.get("model", "likelihood_field")).strip().lower()
+    if model not in ("likelihood_field", "beam"):
+        model = "likelihood_field"
     max_range_mm = float(dist_cfg.get("max_range_mm", 2000.0))
     max_range_px = max_range_mm / MM_PER_IN * PPI
-    min_range_mm = float(dist_cfg.get("min_range_mm", 0.0))
+    min_range_mm = float(dist_cfg.get("min_range_mm", 20.0))
     lf_ignore_max = int(dist_cfg.get("lf_ignore_max", 0)) == 1
+    use_no_object_info = int(dist_cfg.get("use_no_object_info", 0)) == 1
     gate_mm = float(dist_cfg.get("gate_mm", 0.0))
     gate_mode = str(dist_cfg.get("gate_mode", "hard")).strip().lower()
     gate_penalty = float(dist_cfg.get("gate_penalty", 0.05))
     gate_reject_ratio = _clamp(float(dist_cfg.get("gate_reject_ratio", 0.9)), 0.0, 1.0)
+    # Multi-ray is reserved for LF mode to keep non-LF compute bounded/deterministic.
+    fov_multi_ray = int(dist_cfg.get("fov_multi_ray", 0)) == 1 and model == "likelihood_field"
+    try:
+        rays_per_sensor = int(dist_cfg.get("rays_per_sensor", 3))
+    except Exception:
+        rays_per_sensor = 3
+    if model != "likelihood_field":
+        rays_per_sensor = 1
+    rays_per_sensor = max(1, min(9, rays_per_sensor))
+    fov_half_deg_near = float(dist_cfg.get("fov_half_deg_near", 18.0))
+    fov_half_deg_far = float(dist_cfg.get("fov_half_deg_far", 12.0))
+    fov_switch_mm = float(dist_cfg.get("fov_switch_mm", 203.0))
     innov_gate_mm = float(dist_cfg.get("innovation_gate_mm", 0.0))
     median_window = int(dist_cfg.get("median_window", 1))
-    sigma_hit = float(dist_cfg.get("sigma_hit_mm", 8.5))
+    sigma_hit = float(dist_cfg.get("sigma_hit_mm", 15.0))
+    sigma_far_scale = float(dist_cfg.get("sigma_far_scale", 0.05))
+    sigma_min_mm = float(dist_cfg.get("sigma_min_mm", 8.0))
+    sigma_max_mm = float(dist_cfg.get("sigma_max_mm", 120.0))
+    conf_sigma_scale = float(dist_cfg.get("conf_sigma_scale", 1.0))
+    conf_min_map = float(dist_cfg.get("confidence_min", 0.0))
+    if conf_min_map >= 63.0:
+        conf_min_map = 62.0
+    conf_min_map = _clamp(conf_min_map, 0.0, 62.0)
     w_hit = float(dist_cfg.get("w_hit", 0.9))
     w_rand = float(dist_cfg.get("w_rand", 0.1))
     w_max = float(dist_cfg.get("w_max", 0.0))
+    min_sensor_weight = float(dist_cfg.get("min_sensor_weight", 1.0e-6))
     vision_conf_min = float(vision_cfg.get("confidence_min", 0.0))
     dist_weights = None
     skip_sensors = set()
+    dist_meta: Dict[str, Dict[str, float]] = {}
+    if use_distance and isinstance(dist_meas, dict):
+        normalized_dist = {}
+        for name, raw in dist_meas.items():
+            conf_val = None
+            conf_meaningful = None
+            obj_size = None
+            obj_valid = None
+            mm_val = None
+            if isinstance(raw, dict):
+                try:
+                    mm_val = float(raw.get("mm", raw.get("distance_mm", raw.get("value", raw.get("measured_mm", -1.0)))))
+                except Exception:
+                    mm_val = None
+                try:
+                    conf_val = float(raw.get("confidence")) if raw.get("confidence") is not None else None
+                except Exception:
+                    conf_val = None
+                try:
+                    conf_meaningful = bool(raw.get("confidence_meaningful")) if raw.get("confidence_meaningful") is not None else None
+                except Exception:
+                    conf_meaningful = None
+                try:
+                    obj_size = float(raw.get("object_size")) if raw.get("object_size") is not None else None
+                except Exception:
+                    obj_size = None
+                try:
+                    obj_valid = bool(raw.get("object_size_valid")) if raw.get("object_size_valid") is not None else None
+                except Exception:
+                    obj_valid = None
+            else:
+                try:
+                    mm_val = float(raw)
+                except Exception:
+                    mm_val = None
+            if mm_val is None:
+                continue
+            normalized_dist[name] = mm_val
+            if conf_meaningful is None:
+                conf_meaningful = mm_val > 200.0
+            dist_meta[name] = {
+                "confidence": conf_val if conf_val is not None else -1.0,
+                "confidence_meaningful": 1.0 if conf_meaningful else 0.0,
+                "object_size": obj_size if obj_size is not None else -1.0,
+                "object_size_valid": 1.0 if (obj_valid if obj_valid is not None else (obj_size is not None and obj_size >= 0.0)) else 0.0,
+            }
+        dist_meas = normalized_dist
+
+    def _sigma_eff_mm(name: str, meas_mm: float) -> float:
+        """Compute effective distance sigma in millimeters."""
+        sigma_eff = sigma_hit if meas_mm <= 200.0 else sigma_far_scale * meas_mm
+        sigma_eff = _clamp(sigma_eff, sigma_min_mm, sigma_max_mm)
+        meta = dist_meta.get(name, {})
+        conf_meaningful = bool(meta.get("confidence_meaningful", 0.0) > 0.5)
+        conf_val = float(meta.get("confidence", -1.0))
+        if conf_meaningful and conf_val >= 0.0:
+            denom = 63.0 - conf_min_map
+            if denom > 1e-9:
+                q = _clamp((conf_val - conf_min_map) / denom, 0.0, 1.0)
+                sigma_eff *= (1.0 + conf_sigma_scale * (1.0 - q))
+        return _clamp(sigma_eff, sigma_min_mm, sigma_max_mm)
+
     if use_distance and isinstance(dist_meas, dict) and median_window > 1:
         for name, raw in list(dist_meas.items()):
             try:
@@ -1597,13 +1770,25 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
                     meas_mm = float(dist_meas.get(name))
                 except Exception:
                     continue
+                if not math.isfinite(meas_mm):
+                    continue
+                no_object = meas_mm >= 9999.0
                 bias_mm = float(sensor.get("bias_mm", 0.0))
                 meas_mm -= bias_mm
                 s_min = float(sensor.get("min_range_mm", min_range_mm))
                 s_max = float(sensor.get("max_range_mm", max_range_mm))
+                if s_min <= 0.0:
+                    s_min = 20.0
                 if s_max <= 0.0:
                     s_max = max_range_mm
+                if no_object:
+                    if use_no_object_info:
+                        meas_mm = s_max
+                    else:
+                        continue
                 if s_min > 0.0 and meas_mm < s_min:
+                    continue
+                if meas_mm > s_max:
                     continue
                 if lf_ignore_max and model == "likelihood_field" and meas_mm >= s_max:
                     continue
@@ -1623,13 +1808,28 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
                     meas_mm = float(dist_meas.get(name))
                 except Exception:
                     continue
+                if not math.isfinite(meas_mm):
+                    skip_sensors.add(name)
+                    continue
+                no_object = meas_mm >= 9999.0
                 bias_mm = float(sensor.get("bias_mm", 0.0))
                 meas_mm -= bias_mm
                 s_min = float(sensor.get("min_range_mm", min_range_mm))
                 s_max = float(sensor.get("max_range_mm", max_range_mm))
+                if s_min <= 0.0:
+                    s_min = 20.0
                 if s_max <= 0.0:
                     s_max = max_range_mm
+                if no_object:
+                    if use_no_object_info:
+                        meas_mm = s_max
+                    else:
+                        skip_sensors.add(name)
+                        continue
                 if s_min > 0.0 and meas_mm < s_min:
+                    skip_sensors.add(name)
+                    continue
+                if meas_mm > s_max:
                     skip_sensors.add(name)
                     continue
                 if lf_ignore_max and model == "likelihood_field" and meas_mm >= s_max:
@@ -1660,62 +1860,101 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
                     meas_mm = float(dist_meas.get(name))
                 except Exception:
                     continue
+                if not math.isfinite(meas_mm):
+                    continue
+                no_object = meas_mm >= 9999.0
                 bias_mm = float(sensor.get("bias_mm", 0.0))
                 meas_mm -= bias_mm
                 s_min = float(sensor.get("min_range_mm", min_range_mm))
                 s_max = float(sensor.get("max_range_mm", max_range_mm))
+                if s_min <= 0.0:
+                    s_min = 20.0
                 if s_max <= 0.0:
                     s_max = max_range_mm
+                if no_object:
+                    if use_no_object_info:
+                        meas_mm = s_max
+                    else:
+                        continue
                 if s_min > 0.0 and meas_mm < s_min:
+                    continue
+                if meas_mm > s_max:
                     continue
                 if lf_ignore_max and model == "likelihood_field" and meas_mm >= s_max:
                     continue
                 origin, heading = _sensor_world_pose(particle.get("x", 0.0), particle.get("y", 0.0),
                                                      particle.get("theta", 0.0), sensor)
                 segs = _sensor_segments(state, sensor)
-                pred_px = raycast_distance(segs, origin, heading, s_max / MM_PER_IN * PPI)
-                pred_mm = s_max if pred_px is None else px_to_in(pred_px) * MM_PER_IN
-                gated = gate_mm > 0.0 and abs(meas_mm - pred_mm) > gate_mm
                 lf = _sensor_lf(state, sensor)
-                if model == "likelihood_field" and lf is not None:
-                    max_range_px_s = s_max / MM_PER_IN * PPI
-                    meas_px = max(0.0, min(max_range_px_s, meas_mm / MM_PER_IN * PPI))
-                    ux, uy = _heading_unit(heading)
-                    end_x = origin[0] + ux * meas_px
-                    end_y = origin[1] + uy * meas_px
-                    dist_px = _lf_distance_px(lf, end_x, end_y)
-                    dist_mm = px_to_in(dist_px) * MM_PER_IN
-                    p_hit = _gaussian(dist_mm, 0.0, sigma_hit, normalize=False)
-                    p_rand = 1.0 / s_max if 0.0 <= meas_mm <= s_max else 0.0
-                    p_max = 1.0 if w_max > 0.0 and meas_mm >= s_max - 1e-6 else 0.0
-                    w_meas = w_hit * p_hit + w_rand * p_rand + w_max * p_max
-                    if gated:
-                        if gate_mode == "soft":
-                            w_meas *= max(0.0, gate_penalty)
-                        else:
-                            w_meas = 0.0
-                    w_dist *= w_meas
-                else:
-                    w_meas, _g = _distance_model_weight(dist_cfg, pred_mm, meas_mm)
-                    w_dist *= w_meas
+                ray_count = rays_per_sensor if fov_multi_ray else 1
+                half_deg = fov_half_deg_near if meas_mm < fov_switch_mm else fov_half_deg_far
+                ray_logs: List[float] = []
+                for ridx in range(ray_count):
+                    delta = 0.0
+                    if ray_count > 1:
+                        delta = -half_deg + (2.0 * half_deg * float(ridx) / float(ray_count - 1))
+                    ray_heading = _wrap_deg(heading + delta)
+                    pred_px = raycast_distance(segs, origin, ray_heading, s_max / MM_PER_IN * PPI)
+                    pred_mm = s_max if pred_px is None else px_to_in(pred_px) * MM_PER_IN
+                    gated = gate_mm > 0.0 and abs(meas_mm - pred_mm) > gate_mm
+                    sigma_eff = _sigma_eff_mm(name, meas_mm)
+                    if model == "likelihood_field" and lf is not None:
+                        max_range_px_s = s_max / MM_PER_IN * PPI
+                        meas_px = max(0.0, min(max_range_px_s, meas_mm / MM_PER_IN * PPI))
+                        ux, uy = _heading_unit(ray_heading)
+                        end_x = origin[0] + ux * meas_px
+                        end_y = origin[1] + uy * meas_px
+                        dist_px = _lf_distance_px(lf, end_x, end_y)
+                        dist_mm = px_to_in(dist_px) * MM_PER_IN
+                        p_hit = _gaussian(dist_mm, 0.0, sigma_eff, normalize=False)
+                        p_rand = 1.0 / s_max if 0.0 <= meas_mm <= s_max else 0.0
+                        p_max = 1.0 if w_max > 0.0 and meas_mm >= s_max - 1e-6 else 0.0
+                        w_meas = w_hit * p_hit + w_rand * p_rand + w_max * p_max
+                        if gate_mm > 0.0 and dist_mm > gate_mm:
+                            if gate_mode == "soft":
+                                w_meas *= max(0.0, gate_penalty)
+                            else:
+                                w_meas = 0.0
+                    else:
+                        error = meas_mm - pred_mm
+                        p_hit = _gaussian(error, 0.0, sigma_eff, normalize=False)
+                        p_rand = 1.0 / s_max if 0.0 <= meas_mm <= s_max else 0.0
+                        p_max = 1.0 if w_max > 0.0 and meas_mm >= s_max - 1e-6 else 0.0
+                        w_meas = w_hit * p_hit + w_rand * p_rand + w_max * p_max
+                        if gated:
+                            if gate_mode == "soft":
+                                w_meas *= max(0.0, gate_penalty)
+                            else:
+                                w_meas = 0.0
+                    if min_sensor_weight > 0.0 and w_meas < min_sensor_weight:
+                        w_meas = min_sensor_weight
+                    ray_logs.append(math.log(max(w_meas, 1.0e-300)))
+                if ray_logs:
+                    m = max(ray_logs)
+                    mean_exp = sum(math.exp(v - m) for v in ray_logs) / float(len(ray_logs))
+                    w_dist *= math.exp(m) * mean_exp
             return w_dist
 
-        dist_total = 0.0
+        dist_has_support = False
         dist_weights = []
         for p in state.particles:
             w_dist = _distance_weight(p)
             dist_weights.append(w_dist)
-            dist_total += float(p.get("w", 1.0)) * w_dist
-        if dist_total <= 1e-12:
+            if w_dist > 0.0:
+                dist_has_support = True
+        if not dist_has_support:
             dist_weights = None
-    total_w = 0.0
+    log_weights: list[float] = []
+    max_log_w = -1.0e300
     for idx, p in enumerate(state.particles):
-        w = float(p.get("w", 1.0))
+        w_prior = max(float(p.get("w", 1.0)), 1.0e-300)
+        log_w = math.log(w_prior)
         if dist_weights is not None:
-            w *= dist_weights[idx]
+            log_w += math.log(max(float(dist_weights[idx]), 1.0e-300))
         if use_imu and imu_meas is not None:
             try:
-                w *= _imu_weight(imu_cfg, float(p.get("theta", 0.0)), float(imu_meas))
+                w_imu = _imu_weight(imu_cfg, float(p.get("theta", 0.0)), float(imu_meas))
+                log_w += math.log(max(w_imu, 1.0e-300))
             except Exception:
                 pass
         if use_vision and isinstance(vision_meas, dict):
@@ -1730,15 +1969,26 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
                     vis_y = float(vision_meas.get("y_in", 0.0))
                     vis_th = vision_meas.get("theta_deg", None)
                     vis_th_val = float(vis_th) if vis_th is not None else None
-                    w *= _vision_weight(vision_cfg,
-                                        (px_to_in(p.get("x", 0.0)), px_to_in(p.get("y", 0.0))),
-                                        float(p.get("theta", 0.0)),
-                                        (vis_x, vis_y),
-                                        vis_th_val)
+                    w_vis = _vision_weight(
+                        vision_cfg,
+                        (px_to_in(p.get("x", 0.0)), px_to_in(p.get("y", 0.0))),
+                        float(p.get("theta", 0.0)),
+                        (vis_x, vis_y),
+                        vis_th_val,
+                    )
+                    log_w += math.log(max(w_vis, 1.0e-300))
                 except Exception:
                     pass
-        w *= _apply_region_gate(cfg, state, p)
-        w *= _apply_slope_field(cfg, state, p)
+        log_w += math.log(max(_apply_region_gate(cfg, state, p), 1.0e-300))
+        log_w += math.log(max(_apply_slope_field(cfg, state, p), 1.0e-300))
+        log_weights.append(log_w)
+        if log_w > max_log_w:
+            max_log_w = log_w
+    total_w = 0.0
+    if not math.isfinite(max_log_w):
+        max_log_w = 0.0
+    for idx, p in enumerate(state.particles):
+        w = math.exp(log_weights[idx] - max_log_w)
         p["w"] = w
         total_w += w
     n = len(state.particles)
@@ -1759,16 +2009,25 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
     _normalize_weights(state.particles)
     state.n_eff = _effective_n(state.particles)
     state.estimate = _estimate_pose(state.particles)
+    state.ess_ratio = _clamp(state.n_eff / max(1.0, float(n)), 0.0, 1.0)
+    state.confidence = _clamp(1.0 - state.ess_ratio, 0.0, 1.0)
+    mode_split_applied = False
     if state.estimate is not None:
+        split_pose = _mode_split_pose(state.particles, state.confidence, mode_split_cfg)
+        if split_pose is not None:
+            state.estimate = split_pose
+            mode_split_applied = True
         state.cov_xy = _cov_xy(state.particles, state.estimate)
-    state.confidence = _clamp(1.0 - (state.n_eff / max(1.0, float(n))), 0.0, 1.0)
     state.stats = {
         "n": float(n),
         "n_eff": state.n_eff,
+        "ess_ratio": state.ess_ratio,
+        "peakedness": state.confidence,
         "w_avg": w_avg,
         "w_slow": 0.0 if state.w_slow is None else state.w_slow,
         "w_fast": 0.0 if state.w_fast is None else state.w_fast,
         "confidence": state.confidence,
+        "mode_split": 1.0 if mode_split_applied else 0.0,
     }
     conf_cfg = mcl.get("confidence", {}) if isinstance(mcl, dict) else {}
     conf_thresh = float(conf_cfg.get("threshold", 0.0))
@@ -1783,12 +2042,15 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
         state.estimate = _estimate_pose(state.particles)
         if state.estimate is not None:
             state.cov_xy = _cov_xy(state.particles, state.estimate)
-        state.confidence = _clamp(1.0 - (state.n_eff / max(1.0, float(n))), 0.0, 1.0)
+        state.ess_ratio = _clamp(state.n_eff / max(1.0, float(n)), 0.0, 1.0)
+        state.confidence = _clamp(1.0 - state.ess_ratio, 0.0, 1.0)
         state.stats["reinit"] = 1.0
         return
     res_cfg = mcl.get("resample", {}) if isinstance(mcl, dict) else {}
     method = str(res_cfg.get("method", "systematic")).strip().lower()
     threshold = float(res_cfg.get("threshold", 0.5))
+    roughen_xy_px = float(res_cfg.get("roughen_xy_in", 0.12)) * PPI
+    roughen_theta_deg = float(res_cfg.get("roughen_theta_deg", 1.2))
     do_resample = int(res_cfg.get("always", 0)) == 1 or state.n_eff < threshold * max(1, n)
     if do_resample:
         n_target = _kld_target(cfg, state.particles)
@@ -1800,13 +2062,23 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
             new_particles = _resample_multinomial(state.particles, n_target, state.rng)
         else:
             new_particles = _resample_systematic(state.particles, n_target, state.rng)
-        inj = float(mcl.get("random_injection", 0.0))
-        if augmented_enabled and state.w_slow is not None and state.w_fast is not None and state.w_slow > 1e-9:
-            inj = max(inj, max(0.0, 1.0 - state.w_fast / state.w_slow))
+        inj = 0.0
+        if augmented_enabled:
+            if state.w_slow is not None and state.w_fast is not None and state.w_slow > 1e-9:
+                inj = max(0.0, 1.0 - state.w_fast / state.w_slow)
+        else:
+            inj = float(mcl.get("random_injection", 0.0))
         if inj > 0.0:
             for i in range(len(new_particles)):
                 if state.rng.random() < inj:
                     new_particles[i] = _sample_random_pose(cfg, state.rng)
+        if roughen_xy_px > 0.0 or roughen_theta_deg > 0.0:
+            for p in new_particles:
+                if roughen_xy_px > 0.0:
+                    p["x"] = float(p.get("x", 0.0)) + state.rng.gauss(0.0, roughen_xy_px)
+                    p["y"] = float(p.get("y", 0.0)) + state.rng.gauss(0.0, roughen_xy_px)
+                if roughen_theta_deg > 0.0:
+                    p["theta"] = _wrap_deg(float(p.get("theta", 0.0)) + state.rng.gauss(0.0, roughen_theta_deg))
         _normalize_weights(new_particles)
         state.particles = new_particles
         state.stats["resampled"] = 1.0
@@ -1830,7 +2102,7 @@ def simulate_measurements(state: MCLState, cfg: dict, true_pose: Tuple[float, fl
     sensors = get_distance_sensors(cfg) if use_distance else []
     max_range_mm = float(dist_cfg.get("max_range_mm", 2000.0))
     max_range_px = max_range_mm / MM_PER_IN * PPI
-    sigma_hit = float(dist_cfg.get("sigma_hit_mm", 8.5))
+    sigma_hit = float(dist_cfg.get("sigma_hit_mm", 15.0))
     imu_sigma = float(imu_cfg.get("sigma_deg", 1.0))
     vision_sigma = float(vision_cfg.get("sigma_xy_in", 2.0))
     vision_theta_sigma = float(vision_cfg.get("sigma_theta_deg", 5.0))

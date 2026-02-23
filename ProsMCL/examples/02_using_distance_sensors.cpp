@@ -1,5 +1,10 @@
 // 02_using_distance_sensors.cpp
 
+#include "api.h"
+#include "mcl_runtime.h"
+#include <cmath>
+#include <vector>
+
 // Vision-assisted autonomous example.
 // This is the practical pattern when you have:
 // - wheel odometry + IMU
@@ -9,8 +14,9 @@
 // -------------------------- REQUIRED USER INPUTS --------------------------
 static constexpr int IMU_PORT = 10;            // Change to your IMU port.
 static constexpr double TRACK_WIDTH_IN = 12.0; // Change to measured track width in inches.
+static constexpr double kPi = 3.14159265358979323846;
 // REQUIRED: set your real distance sensor ports in configured order.
-static const std::vector<int> DIST_PORTS = { 1, 2, 3 };
+static const std::vector<int> DIST_PORTS = { 1, 2 };
 
 ProsMCL localizer(IMU_PORT, DIST_PORTS);
 
@@ -55,7 +61,7 @@ static void feed_manual_odom_once() {
   // NOTE: for standard encoder signs (both sides forward-positive), CW+ is (dL-dR).
   const double dx_in = 0.5 * (dL + dR);
   const double dy_in = 0.0;
-  const double dtheta_deg_cw = ((dL - dR) / TRACK_WIDTH_IN) * 180.0 / M_PI;
+  const double dtheta_deg_cw = ((dL - dR) / TRACK_WIDTH_IN) * 180.0 / kPi;
   localizer.setOdomDelta(dx_in, dy_in, dtheta_deg_cw);
 }
 
@@ -64,7 +70,7 @@ void initialize() {
 
   // Start runtime once and set known start pose.
   // Edit these values to your actual start tile.
-  localizer.startEasy((int)pros::millis(), 90.0, 0.0, 0.0, 90.0);
+  localizer.startEasyExternal((int)pros::millis(), 0.0, 0.0, 0.0, 0.0);
 
   prev_left_in = read_left_inches();
   prev_right_in = read_right_inches();

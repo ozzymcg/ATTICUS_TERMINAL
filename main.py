@@ -51,7 +51,7 @@ except ModuleNotFoundError:
 
 from mod.config import (
     WINDOW_WIDTH, WINDOW_HEIGHT, GRID_SIZE_PX, BG_COLOR, NODE_COLOR, TEXT_COLOR, PPI,
-    save_config, reload_cfg, auto_lookahead_in, DEFAULT_CONFIG
+    save_config, reload_cfg, auto_lookahead_in, DEFAULT_CONFIG, MCL_CONFIG_VERSION
 )
 from mod.geom import (
     convert_heading_input, interpret_input_angle, heading_from_points,
@@ -80,6 +80,19 @@ from mod import ui
 from mod import mcl as mcl_mod
 from mod import mcl_codegen
 from mod import mcl_tuning as mcl_tuning_mod
+from mod import atticus_pack_codegen
+from mod import atticus_runlog as atticus_runlog_mod
+from mod import atticus_diagnostics as atticus_diag_mod
+
+# macOS Tk/SDL guard:
+# If SDL (pygame) initializes NSApp first, modern Tk can crash with
+# NSInvalidArgumentException: '-[SDLApplication macOSVersion]'.
+# Pre-initializing a hidden Tk root avoids that app-class collision.
+if sys.platform == "darwin":
+    try:
+        ui.ensure_tk_root()
+    except Exception:
+        pass
 
 
 try:
@@ -245,7 +258,6 @@ def _internal_heading_from_mcl(heading_deg: float) -> float:
     except Exception:
         return float(heading_deg or 0.0)
 
-
 def _mcl_particle_target(cfg):
     """Handle mcl particle target."""
     mcl_cfg = cfg.get("mcl", {})
@@ -255,7 +267,6 @@ def _mcl_particle_target(cfg):
     except Exception:
         n = 200
     return max(1, n)
-
 
 def _mcl_build_path_polyline():
     """Handle mcl build path polyline."""
@@ -269,7 +280,6 @@ def _mcl_build_path_polyline():
         else:
             pts.extend(seg_pts)
     return pts
-
 
 def _mcl_update_region_gate():
     """Handle mcl update region gate."""
@@ -290,7 +300,6 @@ def _mcl_update_region_gate():
             mcl_state.region_gate = None
     else:
         mcl_state.region_gate = None
-
 
 def _mcl_apply_cfg(reset_particles=False):
     """Handle mcl apply cfg."""
@@ -316,7 +325,6 @@ def _mcl_apply_cfg(reset_particles=False):
         mcl_heading = _mcl_heading_from_internal(robot_heading)
         mcl_mod.ekf_reset_state(mcl_state, CFG, (robot_pos[0], robot_pos[1], mcl_heading))
 
-
 def _draw_heading_marker(surface, pos, heading_deg, color, size=10, width=2):
     """Draw heading marker."""
     heading_internal = _internal_heading_from_mcl(heading_deg)
@@ -325,7 +333,6 @@ def _draw_heading_marker(surface, pos, heading_deg, color, size=10, width=2):
     left = (pos[0] + math.cos(rad + 2.5) * size * 0.7, pos[1] - math.sin(rad + 2.5) * size * 0.7)
     right = (pos[0] + math.cos(rad - 2.5) * size * 0.7, pos[1] - math.sin(rad - 2.5) * size * 0.7)
     pygame.draw.polygon(surface, color, [tip, left, right], width)
-
 
 def _draw_covariance_ellipse(surface, mean, cov, color=(200, 80, 200), n_sigma=2.0):
     """Draw covariance ellipse."""
@@ -357,7 +364,6 @@ def _draw_covariance_ellipse(surface, mean, cov, color=(200, 80, 200), n_sigma=2
         pts.append((mean[0] + xr, mean[1] + yr))
     if len(pts) >= 3:
         pygame.draw.lines(surface, color, True, pts, 2)
-
 
 def _draw_mcl_overlay(surface):
     """Draw mcl overlay."""
@@ -946,7 +952,6 @@ def compute_total_estimate_s():
     tl = build_timeline_with_buffers()
     return compute_total_from_timeline(tl)
 
-
 def clamp_heading_rate(current_h, target_h, cfg, dt):
     """Limit heading change per frame to respect physical turn constraints."""
     max_rate = turn_rate(cfg)  # deg/s from physics
@@ -958,7 +963,6 @@ def clamp_heading_rate(current_h, target_h, cfg, dt):
         return (target_h + 360.0) % 360.0
     step = max(-max_step, min(max_step, d))
     return (current_h + step + 360.0) % 360.0
-
 
 def smooth_angle(prev_h, target_h, alpha=0.35):
     """Blend angles on shortest arc."""
@@ -1589,8 +1593,6 @@ def compile_cmd_string(node, idx):
     if node.get("custom_turn_dps"):
         parts.append(f"turnspeed {node['custom_turn_dps']:g}")
     return ", ".join(parts)
-
-
 
 def parse_and_apply_cmds(node, cmd_str, idx):
     """Parse and apply commands to node."""
@@ -2547,13 +2549,20 @@ def open_settings_window():
     pad = tk.StringVar(value=str(off.get("padding_in", 0)))
 
     mcl_cfg = CFG.get("mcl", {})
+    mcl_interop_cfg = mcl_cfg.get("interop", {}) if isinstance(mcl_cfg, dict) else {}
     mcl_enabled_var = tk.IntVar(value=int(mcl_cfg.get("enabled", 0)))
-    mcl_motion_ms_var = tk.StringVar(value=str(mcl_cfg.get("motion_ms", 20)))
+    mcl_pose_convention_var = tk.StringVar(
+        value=str(mcl_interop_cfg.get("pose_convention", "cw_zero_forward"))
+    )
+    mcl_pose_swap_xy_var = tk.IntVar(value=int(mcl_interop_cfg.get("swap_xy", 0)))
+    mcl_pose_invert_x_var = tk.IntVar(value=int(mcl_interop_cfg.get("invert_x", 0)))
+    mcl_pose_invert_y_var = tk.IntVar(value=int(mcl_interop_cfg.get("invert_y", 0)))
+    mcl_motion_ms_var = tk.StringVar(value=str(mcl_cfg.get("motion_ms", 10)))
     mcl_sensor_ms_var = tk.StringVar(value=str(mcl_cfg.get("sensor_ms", 50)))
     parts_cfg = mcl_cfg.get("particles", {})
-    mcl_particles_n_var = tk.StringVar(value=str(parts_cfg.get("n", parts_cfg.get("n_min", 200))))
-    mcl_particles_min_var = tk.StringVar(value=str(parts_cfg.get("n_min", 200)))
-    mcl_particles_max_var = tk.StringVar(value=str(parts_cfg.get("n_max", 400)))
+    mcl_particles_n_var = tk.StringVar(value=str(parts_cfg.get("n", parts_cfg.get("n_min", 350))))
+    mcl_particles_min_var = tk.StringVar(value=str(parts_cfg.get("n_min", 250)))
+    mcl_particles_max_var = tk.StringVar(value=str(parts_cfg.get("n_max", 500)))
     res_cfg = mcl_cfg.get("resample", {})
     mcl_resample_method_var = tk.StringVar(value=str(res_cfg.get("method", "systematic")))
     mcl_resample_thresh_var = tk.StringVar(value=str(res_cfg.get("threshold", 0.5)))
@@ -2563,6 +2572,11 @@ def open_settings_window():
     mcl_kld_delta_var = tk.StringVar(value=str(kld_cfg.get("delta", 0.99)))
     mcl_kld_bin_xy_var = tk.StringVar(value=str(kld_cfg.get("bin_xy_in", 2.0)))
     mcl_kld_bin_theta_var = tk.StringVar(value=str(kld_cfg.get("bin_theta_deg", 10.0)))
+    cgr_cfg = mcl_cfg.get("cgr_lite", {})
+    mcl_cgr_enabled_var = tk.IntVar(value=int(cgr_cfg.get("enabled", 1)))
+    mcl_cgr_top_k_var = tk.StringVar(value=str(cgr_cfg.get("top_k", 8)))
+    mcl_cgr_max_iters_var = tk.StringVar(value=str(cgr_cfg.get("max_iters", 2)))
+    mcl_cgr_budget_ms_var = tk.StringVar(value=str(cgr_cfg.get("budget_ms", 1.5)))
     aug_cfg = mcl_cfg.get("augmented", {})
     mcl_aug_enabled_var = tk.IntVar(value=int(aug_cfg.get("enabled", 0)))
     mcl_alpha_slow_var = tk.StringVar(value=str(aug_cfg.get("alpha_slow", 0.001)))
@@ -2588,14 +2602,14 @@ def open_settings_window():
     vision_cfg = sensors_cfg.get("vision", {})
     mcl_dist_enabled_var = tk.IntVar(value=int(dist_cfg.get("enabled", 1)))
     mcl_dist_model_var = tk.StringVar(value=str(dist_cfg.get("model", "likelihood_field")))
-    mcl_dist_sigma_var = tk.StringVar(value=str(dist_cfg.get("sigma_hit_mm", 8.5)))
+    mcl_dist_sigma_var = tk.StringVar(value=str(dist_cfg.get("sigma_hit_mm", 15.0)))
     mcl_dist_w_hit_var = tk.StringVar(value=str(dist_cfg.get("w_hit", 0.9)))
     mcl_dist_w_rand_var = tk.StringVar(value=str(dist_cfg.get("w_rand", 0.1)))
     mcl_dist_w_short_var = tk.StringVar(value=str(dist_cfg.get("w_short", 0.0)))
     mcl_dist_w_max_var = tk.StringVar(value=str(dist_cfg.get("w_max", 0.0)))
     mcl_dist_lambda_short_var = tk.StringVar(value=str(dist_cfg.get("lambda_short", 0.1)))
     mcl_dist_max_range_var = tk.StringVar(value=str(dist_cfg.get("max_range_mm", 2000.0)))
-    mcl_dist_min_range_var = tk.StringVar(value=str(dist_cfg.get("min_range_mm", 0.0)))
+    mcl_dist_min_range_var = tk.StringVar(value=str(dist_cfg.get("min_range_mm", 20.0)))
     mcl_dist_conf_min_var = tk.StringVar(value=str(dist_cfg.get("confidence_min", 0.0)))
     mcl_dist_obj_size_min_var = tk.StringVar(value=str(dist_cfg.get("object_size_min", 0.0)))
     mcl_dist_obj_size_max_var = tk.StringVar(value=str(dist_cfg.get("object_size_max", 0.0)))
@@ -2607,7 +2621,7 @@ def open_settings_window():
     mcl_dist_gate_penalty_var = tk.StringVar(value=str(dist_cfg.get("gate_penalty", 0.05)))
     mcl_dist_gate_reject_var = tk.StringVar(value=str(dist_cfg.get("gate_reject_ratio", 0.9)))
     lf_cfg = dist_cfg.get("likelihood_field", {})
-    mcl_dist_lf_res_var = tk.StringVar(value=str(lf_cfg.get("resolution_in", 2.0)))
+    mcl_dist_lf_res_var = tk.StringVar(value=str(lf_cfg.get("resolution_in", 1.0)))
     mcl_imu_enabled_var = tk.IntVar(value=int(imu_cfg.get("enabled", 1)))
     mcl_imu_sigma_var = tk.StringVar(value=str(imu_cfg.get("sigma_deg", 1.0)))
     mcl_vision_enabled_var = tk.IntVar(value=int(vision_cfg.get("enabled", 0)))
@@ -2631,8 +2645,8 @@ def open_settings_window():
             "enabled": tk.IntVar(value=enabled_default),
             "bias_mm": tk.StringVar(value=str(entry.get("bias_mm", 0.0))),
             "angle_offset_deg": tk.StringVar(value=str(entry.get("angle_offset_deg", 0.0))),
-            "min_range_mm": tk.StringVar(value=str(entry.get("min_range_mm", dist_cfg.get("min_range_mm", 0.0)))),
-            "max_range_mm": tk.StringVar(value=str(entry.get("max_range_mm", dist_cfg.get("max_range_mm", 0.0)))),
+            "min_range_mm": tk.StringVar(value=str(entry.get("min_range_mm", dist_cfg.get("min_range_mm", 20.0)))),
+            "max_range_mm": tk.StringVar(value=str(entry.get("max_range_mm", dist_cfg.get("max_range_mm", 2000.0)))),
             "min_confidence": tk.StringVar(value=str(entry.get("min_confidence", dist_cfg.get("confidence_min", 0.0)))),
             "min_object_size": tk.StringVar(value=str(entry.get("min_object_size", dist_cfg.get("object_size_min", 0.0)))),
             "max_object_size": tk.StringVar(value=str(entry.get("max_object_size", dist_cfg.get("object_size_max", 0.0)))),
@@ -5293,6 +5307,39 @@ def open_settings_window():
     r = 0
     _row(core_frame, r, "Enable MCL:", ttk.Checkbutton(core_frame, variable=mcl_enabled_var),
          "Enable or disable MCL processing in simulation."); r += 1
+    _row(
+        core_frame,
+        r,
+        "Export pose convention:",
+        ttk.Combobox(
+            core_frame,
+            values=["cw_zero_forward", "atticus", "ccw_zero_forward"],
+            textvariable=mcl_pose_convention_var,
+            state="readonly",
+        ),
+        "Generated PROS external pose adapters convention.",
+    ); r += 1
+    _row(
+        core_frame,
+        r,
+        "External swap X/Y:",
+        ttk.Checkbutton(core_frame, variable=mcl_pose_swap_xy_var),
+        "Swap external pose X and Y axes before conversion into internal MCL frame.",
+    ); r += 1
+    _row(
+        core_frame,
+        r,
+        "External invert X:",
+        ttk.Checkbutton(core_frame, variable=mcl_pose_invert_x_var),
+        "Invert external X axis before conversion into internal MCL frame.",
+    ); r += 1
+    _row(
+        core_frame,
+        r,
+        "External invert Y:",
+        ttk.Checkbutton(core_frame, variable=mcl_pose_invert_y_var),
+        "Invert external Y axis before conversion into internal MCL frame.",
+    ); r += 1
     _row(core_frame, r, "Motion update ms:", ttk.Entry(core_frame, textvariable=mcl_motion_ms_var),
          "Prediction update interval (ms)."); r += 1
     _row(core_frame, r, "Sensor update ms:", ttk.Entry(core_frame, textvariable=mcl_sensor_ms_var),
@@ -5323,6 +5370,18 @@ def open_settings_window():
          "KLD bin size for x/y."); r += 1
     mcl_row_kld_bin_theta = _row(core_frame, r, "KLD bin theta:", ttk.Entry(core_frame, textvariable=mcl_kld_bin_theta_var),
          "KLD bin size for heading (deg)."); r += 1
+    cgr_frame = ttk.Frame(core_frame)
+    cgr_check = ttk.Checkbutton(cgr_frame, variable=mcl_cgr_enabled_var)
+    cgr_check.pack(side="left")
+    ttk.Label(cgr_frame, text="Enable CGR-lite top-K refine").pack(side="left", padx=(4, 0))
+    _track_widgets(cgr_check)
+    _row(core_frame, r, "CGR-lite:", cgr_frame, "Enable bounded top-K local refinement after sensor batches."); r += 1
+    mcl_row_cgr_top_k = _row(core_frame, r, "CGR top-K:", ttk.Entry(core_frame, textvariable=mcl_cgr_top_k_var),
+         "Number of top particles to refine."); r += 1
+    mcl_row_cgr_iters = _row(core_frame, r, "CGR max iters:", ttk.Entry(core_frame, textvariable=mcl_cgr_max_iters_var),
+         "Maximum bounded refinement iterations per finalize."); r += 1
+    mcl_row_cgr_budget = _row(core_frame, r, "CGR budget (ms):", ttk.Entry(core_frame, textvariable=mcl_cgr_budget_ms_var),
+         "Hard time budget for CGR-lite refinement per call."); r += 1
     aug_frame = ttk.Frame(core_frame)
     aug_check = ttk.Checkbutton(aug_frame, variable=mcl_aug_enabled_var)
     aug_check.pack(side="left")
@@ -5781,11 +5840,16 @@ def open_settings_window():
         _set_row_visible(mcl_row_kld_delta, kld_on)
         _set_row_visible(mcl_row_kld_bin_xy, kld_on)
         _set_row_visible(mcl_row_kld_bin_theta, kld_on)
+        cgr_on = _var_int(mcl_cgr_enabled_var, 1) == 1
+        _set_row_visible(mcl_row_cgr_top_k, cgr_on)
+        _set_row_visible(mcl_row_cgr_iters, cgr_on)
+        _set_row_visible(mcl_row_cgr_budget, cgr_on)
 
         aug_on = _var_int(mcl_aug_enabled_var, 0) == 1
         _set_row_visible(mcl_row_alpha_slow, aug_on)
         _set_row_visible(mcl_row_alpha_fast, aug_on)
-        _set_row_visible(mcl_row_random_injection, True)
+        # Random injection only applies when augmented injection is disabled.
+        _set_row_visible(mcl_row_random_injection, not aug_on)
 
         motion_on = _var_int(mcl_motion_enabled_var, 1) == 1
         use_alpha = _var_int(mcl_use_alpha_var, 0) == 1
@@ -5801,15 +5865,17 @@ def open_settings_window():
 
         dist_on = _var_int(mcl_dist_enabled_var, 1) == 1
         dist_model = str(mcl_dist_model_var.get() or "").strip().lower()
+        dist_lf = dist_model == "likelihood_field"
         gate_mm = _var_float(mcl_dist_gate_var, 0.0)
         gate_on = dist_on and gate_mm > 0.0
         _set_row_visible(mcl_row_dist_model, dist_on)
         _set_row_visible(mcl_row_dist_sigma, dist_on)
         _set_row_visible(mcl_row_dist_w_hit, dist_on)
         _set_row_visible(mcl_row_dist_w_rand, dist_on)
-        _set_row_visible(mcl_row_dist_w_short, dist_on)
+        # `w_short`/`lambda_short` are beam-model terms and are no-ops in LF mode.
+        _set_row_visible(mcl_row_dist_w_short, dist_on and not dist_lf)
         _set_row_visible(mcl_row_dist_w_max, dist_on)
-        _set_row_visible(mcl_row_dist_lambda_short, dist_on)
+        _set_row_visible(mcl_row_dist_lambda_short, dist_on and not dist_lf)
         _set_row_visible(mcl_row_dist_max_range, dist_on)
         _set_row_visible(mcl_row_dist_min_range, dist_on)
         _set_row_visible(mcl_row_dist_conf_min, dist_on)
@@ -5890,7 +5956,7 @@ def open_settings_window():
             pass
 
     for var in (
-        mcl_kld_enabled_var, mcl_aug_enabled_var, mcl_motion_enabled_var,
+        mcl_kld_enabled_var, mcl_cgr_enabled_var, mcl_aug_enabled_var, mcl_motion_enabled_var,
         mcl_use_alpha_var, mcl_dist_enabled_var, mcl_dist_model_var,
         mcl_dist_gate_var, mcl_imu_enabled_var,
         mcl_vision_enabled_var, mcl_region_enabled_var, mcl_region_type_var,
@@ -6024,24 +6090,159 @@ def open_settings_window():
             + chosen
         )
 
+    def _export_atticus_efficiency_pack():
+        """Export Atticus generated pack (runner/config/plan/source adapter)."""
+        try:
+            on_update()
+        except Exception:
+            pass
+        def _cfg_val(v, default):
+            if isinstance(v, dict) and "value" in v:
+                return v.get("value", default)
+            return v if v is not None else default
+        try:
+            tl = build_timeline_with_buffers()
+        except Exception as e:
+            messagebox.showerror("Export Efficiency Pack", f"Could not build timeline:\n{e}")
+            return
+        default_dir = os.path.join(os.getcwd(), "export", "atticus_pack")
+        chosen = filedialog.askdirectory(
+            parent=top,
+            initialdir=default_dir if os.path.isdir(default_dir) else os.getcwd(),
+            title="Select Atticus Efficiency Pack export directory"
+        )
+        if not chosen:
+            return
+        pack_cfg = ((CFG.get("codegen", {}) if isinstance(CFG, dict) else {}).get("atticus_pack", {}) if isinstance(CFG, dict) else {})
+        auto_convert = bool(int(_cfg_val(pack_cfg.get("auto_convert_unsupported"), 0)))
+        strict_validation = bool(int(_cfg_val(pack_cfg.get("strict_validation"), 1)))
+        emit_adapter = bool(int(_cfg_val(pack_cfg.get("emit_localizer_adapter"), 1)))
+        try:
+            report = atticus_pack_codegen.write_efficiency_pack(
+                CFG,
+                tl,
+                chosen,
+                routine_name="autonomous",
+                auto_convert_unsupported=auto_convert,
+                strict_validation=strict_validation,
+                emit_localizer_adapter=emit_adapter,
+            )
+        except Exception as e:
+            messagebox.showerror("Export Efficiency Pack", f"Failed to export:\n{e}")
+            return
+        issues = report.get("issues", []) if isinstance(report, dict) else []
+        warn_count = sum(1 for i in issues if isinstance(i, dict) and str(i.get("severity", "")).lower() == "warning")
+        messagebox.showinfo(
+            "Export Efficiency Pack",
+            "Generated atticus_generated artifacts in:\n"
+            + chosen
+            + f"\n\nProject hash: {report.get('project_hash', 'n/a')}\nWarnings: {warn_count}"
+        )
+
+    def _import_atticus_runlog():
+        """Import .atlrun and show replay scrubber + diagnostics."""
+        path = filedialog.askopenfilename(
+            parent=top,
+            title="Import Atticus runlog",
+            filetypes=[("Atticus runlog", "*.atlrun"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            header, frames = atticus_runlog_mod.parse_runlog(path)
+            issues = atticus_diag_mod.run_diagnostics(frames)
+            summary = atticus_diag_mod.build_diagnostic_summary(frames)
+        except Exception as e:
+            messagebox.showerror("Import Runlog", f"Failed to import runlog:\n{e}")
+            return
+
+        win = tk.Toplevel(top)
+        win.title(f"Runlog Replay - {os.path.basename(path)}")
+        win.geometry("760x520")
+        win.transient(top)
+
+        info_var = tk.StringVar(
+            value=(
+                f"Schema {header.major}.{header.minor} | Frames: {len(frames)} | "
+                f"Avg peakedness: {summary.get('avg_peakedness', 0.0):.3f} | "
+                f"Avg ESS: {summary.get('avg_ess_ratio', 0.0):.3f} | "
+                f"Applied: {int(summary.get('corrections_applied', 0.0))} | "
+                f"Blocked(w/reason): {int(summary.get('corrections_blocked_with_reason', 0.0))}"
+            )
+        )
+        ttk.Label(win, textvariable=info_var, justify="left").pack(fill="x", padx=10, pady=(10, 6))
+
+        frame_text = tk.Text(win, height=8, wrap="word")
+        frame_text.pack(fill="x", padx=10, pady=(0, 6))
+        frame_text.configure(state="disabled")
+
+        issues_text = tk.Text(win, height=12, wrap="word")
+        issues_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        issues_text.configure(state="disabled")
+
+        def _set_text(widget, content: str):
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.insert("1.0", content)
+            widget.configure(state="disabled")
+
+        def _render(idx: int):
+            if not frames:
+                _set_text(frame_text, "No frames in runlog.")
+                _set_text(issues_text, "No diagnostics.")
+                return
+            i = max(0, min(len(frames) - 1, idx))
+            f = frames[i]
+            corr_reasons = atticus_diag_mod.decode_correction_reasons(int(f.flags))
+            corr_applied = atticus_diag_mod.correction_applied_from_flags(int(f.flags), float(f.alpha))
+            _set_text(
+                frame_text,
+                (
+                    f"t={f.time_ms} ms | seg={f.seg_idx} trig={f.trig_idx} flags=0x{f.flags:08x}\n"
+                    f"pose=({f.pose_x:.2f}, {f.pose_y:.2f}, {f.pose_theta:.1f}) "
+                    f"fused=({f.fused_x:.2f}, {f.fused_y:.2f}, {f.fused_theta:.1f})\n"
+                    f"alpha={f.alpha:.3f} conf={f.confidence:.3f} slip={f.slip:.2f} late_ms={f.late_ms:.2f}\n"
+                    f"N={f.particle_count:.1f} Neff={f.neff:.2f} ESS={f.ess_ratio:.3f} peaked={f.peakedness:.3f}\n"
+                    f"correction={'APPLIED' if corr_applied else 'BLOCKED'} | reasons="
+                    f"{', '.join(corr_reasons) if corr_reasons else 'none'}"
+                ),
+            )
+            local = [it for it in issues if abs(it.time_ms - f.time_ms) <= 80]
+            if not local:
+                _set_text(issues_text, "No nearby diagnostic issues.")
+            else:
+                lines = []
+                for it in local[:64]:
+                    lines.append(
+                        f"[{it.severity}] {it.code} @ {it.time_ms}ms seg={it.seg_idx}: {it.message}"
+                    )
+                _set_text(issues_text, "\n".join(lines))
+
+        scrub = ttk.Scale(win, from_=0, to=max(0, len(frames) - 1), orient="horizontal")
+        scrub.pack(fill="x", padx=10, pady=(0, 8))
+        scrub.configure(command=lambda v: _render(int(float(v))))
+        _render(0)
+
     export_frame = ttk.LabelFrame(mcl_body, text="MCL PROS Code Generation (EXPERIMENTAL)")
     export_frame.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
     export_frame.columnconfigure(1, weight=1)
     _row(export_frame, 0, "Export:", ttk.Button(export_frame, text="Export MCL Code...", command=_export_mcl_codegen),
          "Generate MCL core + runtime wrapper for PROS.")
+    _row(export_frame, 1, "Efficiency Pack:", ttk.Button(export_frame, text="Export Atticus Pack...", command=_export_atticus_efficiency_pack),
+         "Generate atticus_generated runtime plan/config/runner integration artifacts.")
     mcl_tuning_info_lbl = ttk.Label(
         export_frame,
         text="Tuning mode enables .mcllog session logging for the microSD wizard. Turn ON when collecting tuning runs, OFF for normal competition exports.",
         wraplength=420,
         justify="left"
     )
-    _row(export_frame, 1, "Info:", mcl_tuning_info_lbl,
+    _row(export_frame, 2, "Info:", mcl_tuning_info_lbl,
          "Quick guidance for when tuning mode should be enabled.")
-    _row(export_frame, 2, "Tuning mode:", ttk.Checkbutton(export_frame, variable=mcl_tuning_enabled_var),
+    _row(export_frame, 3, "Tuning mode:", ttk.Checkbutton(export_frame, variable=mcl_tuning_enabled_var),
          "Enable .mcllog telemetry support in generated exports.")
-    _row(export_frame, 3, "Log rate (Hz):", ttk.Entry(export_frame, textvariable=mcl_tuning_log_rate_var),
+    _row(export_frame, 4, "Log rate (Hz):", ttk.Entry(export_frame, textvariable=mcl_tuning_log_rate_var),
          "Tuning telemetry log sample rate for wizard sessions.")
-    _row(export_frame, 4, "Particle subsample:", ttk.Entry(export_frame, textvariable=mcl_tuning_subsample_var),
+    _row(export_frame, 5, "Particle subsample:", ttk.Entry(export_frame, textvariable=mcl_tuning_subsample_var),
          "Optional particle debug subsample (0 keeps disabled).")
     tune_btns = ttk.Frame(export_frame)
     tune_btns.columnconfigure(0, weight=1)
@@ -6054,11 +6255,13 @@ def open_settings_window():
     ttk.Button(tune_btns, text="Save Report...", command=_export_mcl_tuning_report).grid(
         row=2, column=0, sticky="ew"
     )
-    _row(export_frame, 5, "Tuning tools:", tune_btns,
+    _row(export_frame, 6, "Tuning tools:", tune_btns,
          "Import a microSD tuning session, apply recommendations, and save a tuning report.")
     mcl_tuning_status_lbl = ttk.Label(export_frame, textvariable=mcl_tune_status_var, wraplength=420, justify="left")
-    _row(export_frame, 6, "Session:", mcl_tuning_status_lbl,
+    _row(export_frame, 7, "Session:", mcl_tuning_status_lbl,
          "Status for the latest imported tuning session.")
+    _row(export_frame, 8, "Runlog:", ttk.Button(export_frame, text="Import .atlrun...", command=_import_atticus_runlog),
+         "Import Atticus binary runlog, replay frames, and view diagnostics.")
 
     def _refresh_mcl_export_wrap(_evt=None):
         """Handle refresh mcl export wrap."""
@@ -9543,6 +9746,8 @@ def open_settings_window():
                 vision_sim_conf = float(vision_sim_conf)
             except Exception:
                 vision_sim_conf = 1.0
+            recovery_cfg = mcl_cfg.get("recovery", {}) if isinstance(mcl_cfg, dict) else {}
+            mode_split_cfg = mcl_cfg.get("mode_split", {}) if isinstance(mcl_cfg, dict) else {}
             region_sample_attempts = region_cfg.get("sample_attempts", 50)
             try:
                 region_sample_attempts = int(region_sample_attempts)
@@ -9550,17 +9755,22 @@ def open_settings_window():
                 region_sample_attempts = 50
 
             mcl["enabled"] = _mcl_i(mcl_enabled_var, 0)
-            mcl["motion_ms"] = _mcl_f(mcl_motion_ms_var, 20.0)
+            mcl["config_version"] = int(MCL_CONFIG_VERSION)
+            mcl["loop_ms"] = float(mcl_cfg.get("loop_ms", 10.0))
+            mcl["stall_ms"] = float(mcl_cfg.get("stall_ms", max(1.0, 2.0 * mcl["loop_ms"])))
+            mcl["motion_ms"] = _mcl_f(mcl_motion_ms_var, 10.0)
             mcl["sensor_ms"] = _mcl_f(mcl_sensor_ms_var, 50.0)
             mcl["particles"] = {
-                "n": _mcl_i(mcl_particles_n_var, 200),
-                "n_min": _mcl_i(mcl_particles_min_var, 200),
-                "n_max": _mcl_i(mcl_particles_max_var, 400),
+                "n": _mcl_i(mcl_particles_n_var, 350),
+                "n_min": _mcl_i(mcl_particles_min_var, 250),
+                "n_max": _mcl_i(mcl_particles_max_var, 500),
             }
             mcl["resample"] = {
                 "method": str(mcl_resample_method_var.get() or "systematic").strip().lower(),
                 "threshold": _mcl_f(mcl_resample_thresh_var, 0.5),
                 "always": resample_always,
+                "roughen_xy_in": float(res_cfg.get("roughen_xy_in", 0.12)),
+                "roughen_theta_deg": float(res_cfg.get("roughen_theta_deg", 1.2)),
             }
             mcl["kld"] = {
                 "enabled": _mcl_i(mcl_kld_enabled_var, 0),
@@ -9577,8 +9787,8 @@ def open_settings_window():
             mcl["random_injection"] = _mcl_f(mcl_random_injection_var, 0.01)
             mcl["motion"] = {
                 "enabled": _mcl_i(mcl_motion_enabled_var, 1),
-                "motion_model": str(mcl_motion_model_var.get() or "drive").strip(),
-                "motion_source": str(mcl_motion_source_var.get() or "encoders").strip(),
+                "motion_model": "drive",
+                "motion_source": "encoders",
                 "use_alpha_model": _mcl_i(mcl_use_alpha_var, 0),
                 "sigma_x_in": _mcl_f(mcl_sigma_x_var, 0.1275),
                 "sigma_y_in": _mcl_f(mcl_sigma_y_var, 0.1275),
@@ -9587,38 +9797,79 @@ def open_settings_window():
                 "alpha2": _mcl_f(mcl_alpha2_var, 0.05),
                 "alpha3": _mcl_f(mcl_alpha3_var, 0.05),
                 "alpha4": _mcl_f(mcl_alpha4_var, 0.05),
+                "delta_guard_enabled": int(motion_cfg.get("delta_guard_enabled", 1)),
+                "max_dx_in_per_tick": float(motion_cfg.get("max_dx_in_per_tick", 0.0)),
+                "max_dy_in_per_tick": float(motion_cfg.get("max_dy_in_per_tick", 0.0)),
+                "max_dtheta_deg_per_tick": float(motion_cfg.get("max_dtheta_deg_per_tick", 0.0)),
+                "guard_vmax_in_s": float(motion_cfg.get("guard_vmax_in_s", 60.0)),
+                "guard_wmax_deg_s": float(motion_cfg.get("guard_wmax_deg_s", 540.0)),
+                "guard_margin_in": float(motion_cfg.get("guard_margin_in", 0.5)),
+                "guard_margin_deg": float(motion_cfg.get("guard_margin_deg", 8.0)),
+                "fault_inflate_cycles": int(motion_cfg.get("fault_inflate_cycles", 2)),
+                "fault_noise_scale": float(motion_cfg.get("fault_noise_scale", 2.5)),
             }
             mcl["set_pose_sigma_xy_in"] = _mcl_f(mcl_set_pose_xy_var, 0.2)
             mcl["set_pose_sigma_theta_deg"] = _mcl_f(mcl_set_pose_theta_var, 2.0)
+            mcl["interop"] = {
+                "pose_convention": str(mcl_pose_convention_var.get() or "cw_zero_forward").strip().lower(),
+                "swap_xy": _mcl_i(mcl_pose_swap_xy_var, 0),
+                "invert_x": _mcl_i(mcl_pose_invert_x_var, 0),
+                "invert_y": _mcl_i(mcl_pose_invert_y_var, 0),
+            }
+            dist_model_save = str(mcl_dist_model_var.get() or "likelihood_field").strip().lower()
+            if dist_model_save not in ("likelihood_field", "beam"):
+                dist_model_save = "likelihood_field"
+            dist_fov_multi = int(dist_cfg.get("fov_multi_ray", 1))
+            dist_rays_per_sensor = int(dist_cfg.get("rays_per_sensor", 3))
+            if dist_model_save != "likelihood_field":
+                # Keep beam mode deterministic/bounded by forcing single-ray updates.
+                dist_fov_multi = 0
+                dist_rays_per_sensor = 1
             mcl["sensors"] = {
                 "distance": {
                     "enabled": _mcl_i(mcl_dist_enabled_var, 1),
-                    "model": str(mcl_dist_model_var.get() or "likelihood_field").strip(),
-                    "sigma_hit_mm": _mcl_f(mcl_dist_sigma_var, 8.5),
+                    "model": dist_model_save,
+                    "sigma_hit_mm": _mcl_f(mcl_dist_sigma_var, 15.0),
+                    "sigma_far_scale": float(dist_cfg.get("sigma_far_scale", 0.05)),
+                    "sigma_min_mm": float(dist_cfg.get("sigma_min_mm", 8.0)),
+                    "sigma_max_mm": float(dist_cfg.get("sigma_max_mm", 120.0)),
+                    "conf_sigma_scale": float(dist_cfg.get("conf_sigma_scale", 1.0)),
+                    "min_sensor_weight": float(dist_cfg.get("min_sensor_weight", 1e-6)),
                     "w_hit": _mcl_f(mcl_dist_w_hit_var, 0.9),
                     "w_rand": _mcl_f(mcl_dist_w_rand_var, 0.1),
                     "w_short": _mcl_f(mcl_dist_w_short_var, 0.0),
                     "w_max": _mcl_f(mcl_dist_w_max_var, 0.0),
                     "lambda_short": _mcl_f(mcl_dist_lambda_short_var, 0.1),
                     "max_range_mm": _mcl_f(mcl_dist_max_range_var, 2000.0),
-                    "min_range_mm": _mcl_f(mcl_dist_min_range_var, 0.0),
+                    "min_range_mm": _mcl_f(mcl_dist_min_range_var, 20.0),
                     "confidence_min": _mcl_f(mcl_dist_conf_min_var, 0.0),
                     "object_size_min": _mcl_f(mcl_dist_obj_size_min_var, 0.0),
                     "object_size_max": _mcl_f(mcl_dist_obj_size_max_var, 0.0),
                     "innovation_gate_mm": _mcl_f(mcl_dist_innov_gate_var, 0.0),
                     "median_window": _mcl_f(mcl_dist_median_window_var, 3),
+                    "batch_size": int(dist_cfg.get("batch_size", 3)),
                     "lf_ignore_max": _mcl_i(mcl_dist_ignore_max_var, 0),
+                    "use_no_object_info": int(dist_cfg.get("use_no_object_info", 0)),
+                    "fov_multi_ray": dist_fov_multi,
+                    "rays_per_sensor": dist_rays_per_sensor,
+                    "fov_half_deg_near": float(dist_cfg.get("fov_half_deg_near", 18.0)),
+                    "fov_half_deg_far": float(dist_cfg.get("fov_half_deg_far", 12.0)),
+                    "fov_switch_mm": float(dist_cfg.get("fov_switch_mm", 203.0)),
+                    "raycast_bucket_in": float(dist_cfg.get("raycast_bucket_in", 12.0)),
                     "gate_mm": _mcl_f(mcl_dist_gate_var, 150.0),
                     "gate_mode": str(mcl_dist_gate_mode_var.get() or "hard").strip(),
                     "gate_penalty": _mcl_f(mcl_dist_gate_penalty_var, 0.05),
                     "gate_reject_ratio": _mcl_f(mcl_dist_gate_reject_var, 0.9),
                     "likelihood_field": {
-                        "resolution_in": _mcl_f(mcl_dist_lf_res_var, 2.0),
+                        "resolution_in": _mcl_f(mcl_dist_lf_res_var, 1.0),
+                        "max_bytes": int((dist_cfg.get("likelihood_field", {}) or {}).get("max_bytes", 262144)),
                     }
                 },
                 "imu": {
                     "enabled": _mcl_i(mcl_imu_enabled_var, 1),
                     "sigma_deg": _mcl_f(mcl_imu_sigma_var, 1.0),
+                    "check_calibrating": int(imu_cfg.get("check_calibrating", 1)),
+                    "fallback_noise_scale": float(imu_cfg.get("fallback_noise_scale", 2.0)),
                 },
                 "vision": {
                     "enabled": _mcl_i(mcl_vision_enabled_var, 0),
@@ -9641,8 +9892,8 @@ def open_settings_window():
                     "angle_deg": _mcl_f(sv["angle_deg"], 0.0),
                     "bias_mm": _mcl_f(sv["bias_mm"], 0.0),
                     "angle_offset_deg": _mcl_f(sv["angle_offset_deg"], 0.0),
-                    "min_range_mm": _mcl_f(sv["min_range_mm"], 0.0),
-                    "max_range_mm": _mcl_f(sv["max_range_mm"], 0.0),
+                    "min_range_mm": _mcl_f(sv["min_range_mm"], 20.0),
+                    "max_range_mm": _mcl_f(sv["max_range_mm"], 2000.0),
                     "min_confidence": _mcl_f(sv["min_confidence"], 0.0),
                     "min_object_size": _mcl_f(sv["min_object_size"], 0.0),
                     "max_object_size": _mcl_f(sv["max_object_size"], 0.0),
@@ -9713,6 +9964,29 @@ def open_settings_window():
                 "auto_reinit": _mcl_i(mcl_conf_auto_var, 0),
                 "reinit_mode": str(mcl_conf_mode_var.get() or "global").strip(),
             }
+            mcl["mode_split"] = {
+                "enabled": int(mode_split_cfg.get("enabled", 1)),
+                "conf_max": float(mode_split_cfg.get("conf_max", 0.55)),
+                "min_separation_in": float(mode_split_cfg.get("min_separation_in", 8.0)),
+                "min_mass": float(mode_split_cfg.get("min_mass", 0.15)),
+            }
+            mcl["cgr_lite"] = {
+                "enabled": _mcl_i(mcl_cgr_enabled_var, 1),
+                "top_k": max(1, _mcl_i(mcl_cgr_top_k_var, 8)),
+                "max_iters": max(1, _mcl_i(mcl_cgr_max_iters_var, 2)),
+                "budget_ms": max(0.0, _mcl_f(mcl_cgr_budget_ms_var, 1.5)),
+            }
+            mcl["recovery"] = {
+                "enabled": int(recovery_cfg.get("enabled", 1)),
+                "ess_ratio_min": float(recovery_cfg.get("ess_ratio_min", 0.2)),
+                "ess_streak": int(recovery_cfg.get("ess_streak", 3)),
+                "ekf_gate_reject_streak": int(recovery_cfg.get("ekf_gate_reject_streak", 3)),
+                "cooldown_ms": int(recovery_cfg.get("cooldown_ms", 500)),
+                "lost_exit_confidence": float(recovery_cfg.get("lost_exit_confidence", 0.55)),
+                "lost_exit_streak": int(recovery_cfg.get("lost_exit_streak", 3)),
+                "lost_injection_fraction": float(recovery_cfg.get("lost_injection_fraction", 0.15)),
+                "lost_force_reinit_ms": int(recovery_cfg.get("lost_force_reinit_ms", 0)),
+            }
             mcl["correction"] = {
                 "enabled": _mcl_i(mcl_corr_enabled_var, 1),
                 "min_confidence": _mcl_f(mcl_corr_min_conf_var, 0.6),
@@ -9720,6 +9994,9 @@ def open_settings_window():
                 "max_theta_jump_deg": _mcl_f(mcl_corr_max_theta_var, 15.0),
                 "alpha_min": _mcl_f(mcl_corr_alpha_min_var, 0.05),
                 "alpha_max": _mcl_f(mcl_corr_alpha_max_var, 0.25),
+                "safe_window_enabled": int((mcl_cfg.get("correction", {}) or {}).get("safe_window_enabled", 1)),
+                "safe_max_speed_in_s": float((mcl_cfg.get("correction", {}) or {}).get("safe_max_speed_in_s", 8.0)),
+                "safe_max_turn_deg_s": float((mcl_cfg.get("correction", {}) or {}).get("safe_max_turn_deg_s", 60.0)),
             }
             mcl["ui"] = {
                 "show_particles": _mcl_i(mcl_show_particles_var, 1),
@@ -10798,10 +11075,10 @@ def main():
         if mcl_enabled:
             mcl_cfg = CFG.get("mcl", {})
             try:
-                motion_ms = float(mcl_cfg.get("motion_ms", 20.0))
+                motion_ms = float(mcl_cfg.get("motion_ms", 10.0))
                 sensor_ms = float(mcl_cfg.get("sensor_ms", 50.0))
             except Exception:
-                motion_ms = 20.0
+                motion_ms = 10.0
                 sensor_ms = 50.0
             mcl_pose = (robot_pos[0], robot_pos[1], _mcl_heading_from_internal(robot_heading))
             if mcl_state.lf is None or not mcl_state.map_segments:

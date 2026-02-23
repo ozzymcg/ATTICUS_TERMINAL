@@ -1,5 +1,10 @@
 // 01_minimal_motor_encoders_imu.cpp
 
+#include "api.h"
+#include "mcl_runtime.h"
+#include <cmath>
+#include <vector>
+
 // Recommended baseline for accurate autonomous skills runs.
 // Why this pattern is practical in VEX:
 // - Keeps your drivetrain control loop simple.
@@ -11,10 +16,11 @@
 // -------------------------- REQUIRED USER INPUTS --------------------------
 static constexpr int IMU_PORT = 10;               // Change to your IMU smart port.
 static constexpr double TRACK_WIDTH_IN = 12.0;    // Change to your measured left-right tracking width.
+static constexpr double kPi = 3.14159265358979323846;
 // REQUIRED: keep this non-empty for real matches.
 // Order must match mcl.distance_sensors order (front/left/right/etc in config).
 // If you see placeholder ports here, replace them with your real smart ports.
-static const std::vector<int> DIST_PORTS = { 1, 2, 3 };
+static const std::vector<int> DIST_PORTS = { 1, 2 };
 
 ProsMCL localizer(IMU_PORT, DIST_PORTS);
 
@@ -59,7 +65,7 @@ static void feed_manual_odom_once() {
   // NOTE: for standard encoder signs (both sides forward-positive), CW+ is (dL-dR).
   const double dx_in = 0.5 * (dL + dR);
   const double dy_in = 0.0;
-  const double dtheta_deg_cw = ((dL - dR) / TRACK_WIDTH_IN) * 180.0 / M_PI;
+  const double dtheta_deg_cw = ((dL - dR) / TRACK_WIDTH_IN) * 180.0 / kPi;
 
   // Background runtime consumes these deltas; no explicit localizer.update() call is needed.
   localizer.setOdomDelta(dx_in, dy_in, dtheta_deg_cw);
@@ -74,8 +80,8 @@ void initialize() {
   //
   // REQUIRED INPUTS:
   // start_x_in, start_y_in, start_theta_deg must match your real starting tile.
-  // Atticus convention: +x forward, +y left, theta CW+.
-  localizer.startEasy((int)pros::millis(), 90.0, 0.0, 0.0, 90.0);
+  // External convention here is 0 deg = forward (CW+), converted via mcl.interop.
+  localizer.startEasyExternal((int)pros::millis(), 0.0, 0.0, 0.0, 0.0);
 
   // Seed odom cache with current sensor readings to avoid first-loop jump.
   prev_left_in = read_left_inches();

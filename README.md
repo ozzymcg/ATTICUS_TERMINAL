@@ -1,8 +1,8 @@
-# <img width="597" height="596" alt="Screenshot 2026-01-02 235826" src="https://github.com/user-attachments/assets/96e6ef74-4857-4868-845e-cf7e54e407fc" />
+﻿# <img width="597" height="596" alt="Screenshot 2026-01-02 235826" src="https://github.com/user-attachments/assets/96e6ef74-4857-4868-845e-cf7e54e407fc" />
 
 # ATTICUS TERMINAL
 
-Atticus Terminal is a VEX Robotics autonomous editor that lets you express **intent in field geometry** (nodes, headings, paths, offsets, and action triggers), then compiles that intent into an **execution timeline**. That compiled timeline is used consistently for **simulation** (with overlays + collision checks), **conservative time estimation**, and **instant export/code generation** into your own library. Once you give the program your bot's geometry and sensor locations, you can can optionally export a customized MCL system into your own PROS code and tune it automatically using the terminal's algorithm.
+Atticus Terminal is a VEX Robotics autonomous editor that lets you express **intent in field geometry** (nodes, headings, paths, offsets, and action triggers), then compiles that intent into an **execution timeline**. That compiled timeline is used consistently for **simulation** (with overlays + collision checks), **conservative time estimation**, and **instant export/code generation** into your own library. Once you give the program your bot's geometry and sensor locations, you can optionally export a customized MCL system into your own PROS code and tune it automatically using the terminal's algorithm.
 
 ## Purpose
 
@@ -16,7 +16,7 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 
 ## Feature overview
 
-- **Nodes / edges / markers → compiled segments:** drive, turn/face, swing/arcline, boomerang, path-following, wait/buffer, marker actions waituntil();, and state toggles.
+- **Nodes / edges / markers -> compiled segments:** drive, turn/face, swing/arcline, boomerang, path-following, wait/buffer, marker actions waituntil();, and state toggles.
 - **Mechanism-first targeting:** per-node offsets so you can place a *mechanism contact point* (intake/clamp/etc) on the field target, making alignment easy.
 - **Footprint + reshape legality:** customized robot geometry and physics with a collision checker for field objects.
 - **Path file creation:** custom path file creation with tunable velocity curves and multiple Catmull-Rom Spline types.
@@ -28,6 +28,31 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 
 Atticus Terminal includes an **MCL tab** for configuring an optional **Monte Carlo Localization w/ Extended Kalman Filter** drift-correction system, plus an automatic tuning system via microSD that support importing logs and exporting configuration/runtime artifacts.
 See pre-exported docs/API of this system in the ProsMCL folder.
+
+## LemLib + Atticus Efficiency Pack (Export Target)
+
+The MCL tab now also includes:
+
+- **Export Atticus Pack...** to generate `atticus_generated/*` runtime artifacts:
+  - `atticus_config.hpp`
+  - `atticus_motion_schedule.hpp` (`FAST/NORMAL/PRECISE`)
+  - `atticus_auton_plan.hpp` (segments/triggers/corridors/finalize modes)
+  - `atticus_drive_ff.hpp` and optional `atticus_drive_lut.bin`
+  - `atticus_startup.cpp` bootstrap glue
+- **Import .atlrun...** to open replay + diagnostics (confidence/ESS/Neff, slip, watchdog pressure, trigger timing).
+  Replay also decodes correction gate reasons from runlog flags (blocked: stale/lost/safe-window/jump/confidence/etc., applied when gates pass).
+
+Key runtime contracts exported by this path:
+
+- localizer host interface is `ILocalizationSource` (externally ticked safe)
+- confidence lock is `peakedness = 1 - ESS_ratio`
+- bounded scheduling policy (`ESS`/`KLD`/watchdog/batch caps) is emitted from config
+- generated startup/bootstrap uses generated config builders directly (`buildAddonRuntimeConfig`, `buildDriveLimiterConfig`) so normal flow requires zero manual config edits
+- corridor defaults are spec-locked (`half_width_in = 8.0`, `soft_log_penalty = 0.25`) unless overridden per segment
+- edge marker fractions (`t` on segment) are converted at export to deterministic runtime units (in/deg/ms)
+- edge trigger actions accept both list-style (`actions: [...]`) and inline forms (`kind/code`, `action`, `action_id`) for backward compatibility
+- unsupported motion auto-conversion is off by default (safe export blocks until fixed unless explicitly enabled)
+- path-follow segments are explicitly rejected by Efficiency Pack export (`path_not_supported_in_efficiency_pack`) unless you explicitly convert them first
 
 ---
 
@@ -44,8 +69,9 @@ See pre-exported docs/API of this system in the ProsMCL folder.
    - `py main.py` (Windows) or `python3 main.py` (macOS/Linux)
 
 ### Notes by Platform
-- Windows Store Python works, but pip commands should usually use `py -m pip ...`.
+- On Windows, avoid the Microsoft Store "app execution alias" `python.exe` (it often breaks venv/build tooling). Prefer a python.org install and use `py ...`.
 - Linux may require a tkinter package from your distro (for example `python3-tk`).
+- On macOS, SDL (pygame) and Tk can conflict if SDL initializes first; this app now pre-initializes Tk on macOS to avoid `SDLApplication macOSVersion` crashes.
 - If pygame import fails, rerun dependency install using the exact Python executable you launch with.
 
 ---
@@ -58,6 +84,11 @@ The included `atticus_terminal.spec` bundles project data so exported builds are
 - Build:
   - Windows: `py -m PyInstaller atticus_terminal.spec`
   - macOS/Linux: `python3 -m PyInstaller atticus_terminal.spec`
+
+### Windows one-click build script
+
+- `export\\build_exe.bat` (wraps `export\\build_exe.ps1`)
+- Creates/uses a local `.venv`, installs build deps, runs PyInstaller, and outputs `ATTICUS_TERMINAL.exe` in the project root.
 
 ---
 
@@ -76,3 +107,4 @@ See `LICENSE`.
 ## Support / Bug Reporting
 
 Contact Ozzy of 15800A through most VEX Discord servers, or by @ozzymcgrath on Instragram.
+

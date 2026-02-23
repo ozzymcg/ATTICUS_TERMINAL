@@ -27,13 +27,16 @@ CONFIG_FILENAME = "config.json"
 APP_DIRNAME = "AtticusTerminal"
 
 DEFAULT_MCL = {
-    "enabled": {"value": 1},
-    "motion_ms": {"value": 20},
+    "config_version": {"value": 7},
+    "enabled": {"value": 0},
+    "loop_ms": {"value": 10},
+    "stall_ms": {"value": 20},
+    "motion_ms": {"value": 10},
     "sensor_ms": {"value": 50},
     "particles": {
-        "n": {"value": 200},
-        "n_min": {"value": 200},
-        "n_max": {"value": 400}
+        "n": {"value": 350},
+        "n_min": {"value": 250},
+        "n_max": {"value": 500}
     },
     "motion": {
         "enabled": {"value": 1},
@@ -46,7 +49,17 @@ DEFAULT_MCL = {
         "alpha1": {"value": 0.05},
         "alpha2": {"value": 0.05},
         "alpha3": {"value": 0.05},
-        "alpha4": {"value": 0.05}
+        "alpha4": {"value": 0.05},
+        "delta_guard_enabled": {"value": 1},
+        "max_dx_in_per_tick": {"value": 0.0},
+        "max_dy_in_per_tick": {"value": 0.0},
+        "max_dtheta_deg_per_tick": {"value": 0.0},
+        "guard_vmax_in_s": {"value": 60.0},
+        "guard_wmax_deg_s": {"value": 540.0},
+        "guard_margin_in": {"value": 0.5},
+        "guard_margin_deg": {"value": 8.0},
+        "fault_inflate_cycles": {"value": 2},
+        "fault_noise_scale": {"value": 2.5}
     },
     "set_pose_sigma_xy_in": {"value": 0.2},
     "set_pose_sigma_theta_deg": {"value": 2.0},
@@ -54,30 +67,46 @@ DEFAULT_MCL = {
         "distance": {
             "enabled": {"value": 1},
             "model": {"value": "likelihood_field"},
-            "sigma_hit_mm": {"value": 8.5},
+            "sigma_hit_mm": {"value": 15.0},
+            "sigma_far_scale": {"value": 0.05},
+            "sigma_min_mm": {"value": 8.0},
+            "sigma_max_mm": {"value": 120.0},
+            "min_sensor_weight": {"value": 0.000001},
+            "conf_sigma_scale": {"value": 1.0},
             "w_hit": {"value": 0.9},
             "w_rand": {"value": 0.1},
             "w_short": {"value": 0.0},
             "w_max": {"value": 0.0},
             "lambda_short": {"value": 0.1},
             "max_range_mm": {"value": 2000.0},
-            "min_range_mm": {"value": 0.0},
+            "min_range_mm": {"value": 20.0},
             "confidence_min": {"value": 0.0},
             "object_size_min": {"value": 0.0},
             "object_size_max": {"value": 0.0},
             "innovation_gate_mm": {"value": 0.0},
             "median_window": {"value": 3},
+            "batch_size": {"value": 3},
             "lf_ignore_max": {"value": 0},
+            "use_no_object_info": {"value": 0},
+            "fov_multi_ray": {"value": 1},
+            "rays_per_sensor": {"value": 3},
+            "fov_half_deg_near": {"value": 18.0},
+            "fov_half_deg_far": {"value": 12.0},
+            "fov_switch_mm": {"value": 203.0},
             "gate_mm": {"value": 150.0},
             "gate_mode": {"value": "hard"},
             "gate_penalty": {"value": 0.05},
+            "raycast_bucket_in": {"value": 12.0},
             "likelihood_field": {
-                "resolution_in": {"value": 2.0}
+                "resolution_in": {"value": 1.0},
+                "max_bytes": {"value": 262144}
             }
         },
         "imu": {
             "enabled": {"value": 1},
-            "sigma_deg": {"value": 1.0}
+            "sigma_deg": {"value": 1.0},
+            "check_calibrating": {"value": 1},
+            "fallback_noise_scale": {"value": 2.0}
         },
         "vision": {
             "enabled": {"value": 0},
@@ -93,7 +122,9 @@ DEFAULT_MCL = {
     "resample": {
         "method": {"value": "systematic"},
         "threshold": {"value": 0.5},
-        "always": {"value": 0}
+        "always": {"value": 0},
+        "roughen_xy_in": {"value": 0.12},
+        "roughen_theta_deg": {"value": 1.2}
     },
     "kld": {
         "enabled": {"value": 0},
@@ -108,6 +139,23 @@ DEFAULT_MCL = {
         "alpha_fast": {"value": 0.1}
     },
     "random_injection": {"value": 0.01},
+    "recovery": {
+        "enabled": {"value": 1},
+        "ess_ratio_min": {"value": 0.2},
+        "ess_streak": {"value": 3},
+        "ekf_gate_reject_streak": {"value": 3},
+        "cooldown_ms": {"value": 500},
+        "lost_exit_confidence": {"value": 0.55},
+        "lost_exit_streak": {"value": 3},
+        "lost_injection_fraction": {"value": 0.15},
+        "lost_force_reinit_ms": {"value": 0}
+    },
+    "frame_sign_self_test": {
+        "enabled": {"value": 1},
+        "min_delta_deg": {"value": 2.0},
+        "samples": {"value": 6},
+        "mismatch_threshold": {"value": 5}
+    },
     "map_objects": {
         "perimeter": {"value": 1},
         "long_goals": {"value": 1},
@@ -143,9 +191,28 @@ DEFAULT_MCL = {
         "sample_attempts": {"value": 50}
     },
     "confidence": {
+        "metric": {"value": "peakedness"},
         "threshold": {"value": 0.0},
         "auto_reinit": {"value": 0},
         "reinit_mode": {"value": "global"}
+    },
+    "mode_split": {
+        "enabled": {"value": 1},
+        "conf_max": {"value": 0.55},
+        "min_separation_in": {"value": 8.0},
+        "min_mass": {"value": 0.15}
+    },
+    "cgr_lite": {
+        "enabled": {"value": 1},
+        "top_k": {"value": 8},
+        "max_iters": {"value": 2},
+        "budget_ms": {"value": 1.5}
+    },
+    "interop": {
+        "pose_convention": {"value": "cw_zero_forward"},
+        "swap_xy": {"value": 0},
+        "invert_x": {"value": 0},
+        "invert_y": {"value": 0}
     },
     "correction": {
         "enabled": {"value": 1},
@@ -153,7 +220,10 @@ DEFAULT_MCL = {
         "max_trans_jump_in": {"value": 8.0},
         "max_theta_jump_deg": {"value": 15.0},
         "alpha_min": {"value": 0.05},
-        "alpha_max": {"value": 0.25}
+        "alpha_max": {"value": 0.25},
+        "safe_window_enabled": {"value": 1},
+        "safe_max_speed_in_s": {"value": 8.0},
+        "safe_max_turn_deg_s": {"value": 60.0}
     },
     "ekf": {
         "enabled": {"value": 1},
@@ -168,6 +238,7 @@ DEFAULT_MCL = {
         "mcl_sigma_y_max": {"value": 6.0},
         "mcl_sigma_theta_min": {"value": 2.0},
         "mcl_sigma_theta_max": {"value": 15.0},
+        "mcl_mahalanobis_gate": {"value": 11.34},
         "init_sigma_xy_in": {"value": 0.2},
         "init_sigma_theta_deg": {"value": 2.0}
     },
@@ -275,7 +346,33 @@ DEFAULT_CONFIG = {
             },
             "profiles": {}
         },
-        "motion_profiles": {}
+        "motion_profiles": {},
+        "atticus_pack": {
+            "enabled": {"value": 1},
+            "auto_convert_unsupported": {"value": 0},
+            "strict_validation": {"value": 1},
+            "emit_localizer_adapter": {"value": 1},
+            "corridor_defaults": {
+                "enabled": {"value": 1},
+                "half_width_in": {"value": 8.0},
+                "soft_log_penalty": {"value": 0.25}
+            },
+            "scheduling": {
+                "ess_resample_ratio": {"value": 0.5},
+                "batch_size": {"value": 3},
+                "watchdog_budget_ms": {"value": 8},
+                "kld_enabled": {"value": 1},
+                "kld_n_min": {"value": 250},
+                "kld_n_max": {"value": 500}
+            },
+            "cgr_lite": {
+                "enabled": {"value": 1},
+                "top_k": {"value": 8},
+                "max_iters": {"value": 2},
+                "budget_ms": {"value": 1.5},
+                "apply_on": {"value": "finalize_only"}
+            }
+        }
     },
     "physics_constants": {
         "load_factor": {"value": 0.9},
@@ -298,6 +395,15 @@ DEFAULT_CONFIG = {
     },
     "mcl": DEFAULT_MCL
 }
+MCL_CONFIG_VERSION = int(DEFAULT_MCL.get("config_version", {}).get("value", 1))
+_MCL_FUTURE_VERSION_WARNED = False
+
+
+def _raw_value(v, default=None):
+    """Extract possibly wrapped scalar value."""
+    if isinstance(v, dict):
+        return v.get("value", default)
+    return v if v is not None else default
 
 def _flatten(section: dict) -> dict:
     """Extract 'value' from nested dict structure."""
@@ -391,9 +497,11 @@ def load_config() -> dict:
     """Load config from root or mod directory, create default if missing."""
     candidates = _config_candidates()
     data = None
+    source_path = None
     for path in candidates:
         data = _load_json(path)
         if data is not None:
+            source_path = path
             break
     if data is None:
         data = DEFAULT_CONFIG
@@ -402,6 +510,20 @@ def load_config() -> dict:
             targets = [os.path.normpath(os.path.join(_user_config_root(), CONFIG_FILENAME))]
         for path in targets[:2]:
             _save_json(path, data)
+    else:
+        # Keep one schema source of truth by deep-filling defaults at load time.
+        merged = _merge_defaults(DEFAULT_CONFIG, data)
+        if merged != data:
+            targets = [p for p in candidates if _can_write_file(p)]
+            if not targets:
+                fallback = source_path or os.path.normpath(os.path.join(_user_config_root(), CONFIG_FILENAME))
+                targets = [fallback]
+            for path in targets[:2]:
+                try:
+                    _save_json(path, merged)
+                except Exception:
+                    pass
+        data = merged
     return data
 
 def save_config(cfg_dict: dict) -> bool:
@@ -459,7 +581,8 @@ def save_config(cfg_dict: dict) -> bool:
                 "path_columns": {"value": cfg_dict.get("codegen", {}).get("path_columns", "{X}, {Y}, {COMMAND}")},
                 "mech_presets": cfg_dict.get("codegen", {}).get("mech_presets", []),
                 "calibration": cfg_dict.get("codegen", {}).get("calibration", {}),
-                "motion_profiles": cfg_dict.get("codegen", {}).get("motion_profiles", {})
+                "motion_profiles": cfg_dict.get("codegen", {}).get("motion_profiles", {}),
+                "atticus_pack": _wrap_tree(cfg_dict.get("codegen", {}).get("atticus_pack", {}))
             },
             "physics_constants": {
                 k: wrap(float(v))
@@ -610,7 +733,11 @@ def reload_cfg() -> dict:
         "path_columns": path_cols_val,
         "mech_presets": codegen_raw.get("mech_presets", []),
         "calibration": codegen_raw.get("calibration", {}),
-        "motion_profiles": codegen_raw.get("motion_profiles", {})
+        "motion_profiles": codegen_raw.get("motion_profiles", {}),
+        "atticus_pack": _merge_defaults(
+            DEFAULT_CONFIG.get("codegen", {}).get("atticus_pack", {}),
+            codegen_raw.get("atticus_pack", {}),
+        ),
     }
     phys_raw = raw.get("physics_constants", {})
     phys_defaults = DEFAULT_CONFIG.get("physics_constants", {})
@@ -626,33 +753,79 @@ def reload_cfg() -> dict:
 
     mcl_defaults = DEFAULT_CONFIG.get("mcl", {})
     mcl_raw = raw.get("mcl", {})
+    if not isinstance(mcl_raw, dict):
+        mcl_raw = {}
+    loaded_mcl_version = _raw_value(mcl_raw.get("config_version", 1), 1)
+    try:
+        loaded_mcl_version = int(loaded_mcl_version)
+    except Exception:
+        loaded_mcl_version = 1
+    global _MCL_FUTURE_VERSION_WARNED
+    if loaded_mcl_version > MCL_CONFIG_VERSION and not _MCL_FUTURE_VERSION_WARNED:
+        print(
+            f"Warning: unsupported mcl.config_version={loaded_mcl_version} "
+            f"(supported={MCL_CONFIG_VERSION}); using compatibility fallback."
+        )
+        _MCL_FUTURE_VERSION_WARNED = True
     mcl = _unwrap_values(_merge_defaults(mcl_defaults, mcl_raw))
-    rates = mcl.get("rates", {})
-    if isinstance(rates, dict):
-        if "motion_ms" in rates:
-            mcl["motion_ms"] = rates.get("motion_ms", mcl.get("motion_ms", 20.0))
-        if "sensor_ms" in rates:
-            mcl["sensor_ms"] = rates.get("sensor_ms", mcl.get("sensor_ms", 50.0))
-    motion_noise = mcl.get("motion_noise", {})
-    if isinstance(motion_noise, dict):
-        motion_cfg = mcl.setdefault("motion", {})
-        for key in ("sigma_x_in", "sigma_y_in", "sigma_theta_deg", "alpha1", "alpha2", "alpha3", "alpha4"):
-            if key in motion_noise:
-                motion_cfg[key] = motion_noise.get(key, motion_cfg.get(key))
-    if "resample_method" in mcl or "resample_threshold" in mcl or "resample_always" in mcl:
-        resample_cfg = mcl.get("resample", {})
-        if not isinstance(resample_cfg, dict):
-            resample_cfg = {}
-        if "resample_method" in mcl:
-            resample_cfg["method"] = mcl.get("resample_method", resample_cfg.get("method", "systematic"))
-        if "resample_threshold" in mcl:
-            resample_cfg["threshold"] = mcl.get("resample_threshold", resample_cfg.get("threshold", 0.5))
-        if "resample_always" in mcl:
-            resample_cfg["always"] = mcl.get("resample_always", resample_cfg.get("always", 0))
-        mcl["resample"] = resample_cfg
-    parts_cfg = mcl.get("particles", {})
-    if isinstance(parts_cfg, dict) and "random_injection" in parts_cfg:
-        mcl["random_injection"] = parts_cfg.get("random_injection", mcl.get("random_injection", 0.01))
+    if loaded_mcl_version < 3:
+        rates = mcl.get("rates", {})
+        if isinstance(rates, dict):
+            if "motion_ms" in rates:
+                mcl["motion_ms"] = rates.get("motion_ms", mcl.get("motion_ms", 10.0))
+            if "sensor_ms" in rates:
+                mcl["sensor_ms"] = rates.get("sensor_ms", mcl.get("sensor_ms", 50.0))
+        motion_noise = mcl.get("motion_noise", {})
+        if isinstance(motion_noise, dict):
+            motion_cfg = mcl.setdefault("motion", {})
+            for key in ("sigma_x_in", "sigma_y_in", "sigma_theta_deg", "alpha1", "alpha2", "alpha3", "alpha4"):
+                if key in motion_noise:
+                    motion_cfg[key] = motion_noise.get(key, motion_cfg.get(key))
+        if "resample_method" in mcl or "resample_threshold" in mcl or "resample_always" in mcl:
+            resample_cfg = mcl.get("resample", {})
+            if not isinstance(resample_cfg, dict):
+                resample_cfg = {}
+            if "resample_method" in mcl:
+                resample_cfg["method"] = mcl.get("resample_method", resample_cfg.get("method", "systematic"))
+            if "resample_threshold" in mcl:
+                resample_cfg["threshold"] = mcl.get("resample_threshold", resample_cfg.get("threshold", 0.5))
+            if "resample_always" in mcl:
+                resample_cfg["always"] = mcl.get("resample_always", resample_cfg.get("always", 0))
+            mcl["resample"] = resample_cfg
+        parts_cfg = mcl.get("particles", {})
+        if isinstance(parts_cfg, dict) and "random_injection" in parts_cfg:
+            mcl["random_injection"] = parts_cfg.get("random_injection", mcl.get("random_injection", 0.01))
+    motion_cfg = mcl.get("motion", {})
+    if not isinstance(motion_cfg, dict):
+        motion_cfg = {}
+    # Runtime currently supports one deterministic odom model path.
+    # Normalize legacy/unused selectors to prevent no-op ambiguity.
+    motion_cfg["motion_model"] = "drive"
+    motion_cfg["motion_source"] = "encoders"
+    mcl["motion"] = motion_cfg
+    sensors_cfg = mcl.get("sensors", {})
+    if not isinstance(sensors_cfg, dict):
+        sensors_cfg = {}
+    dist_cfg = sensors_cfg.get("distance", {})
+    if not isinstance(dist_cfg, dict):
+        dist_cfg = {}
+    dist_model = str(dist_cfg.get("model", "likelihood_field")).strip().lower()
+    if dist_model not in ("likelihood_field", "beam"):
+        dist_model = "likelihood_field"
+    dist_cfg["model"] = dist_model
+    if dist_model != "likelihood_field":
+        # Beam mode is bounded to single-ray updates; LF mode is the multi-ray path.
+        dist_cfg["fov_multi_ray"] = 0
+        dist_cfg["rays_per_sensor"] = 1
+    sensors_cfg["distance"] = dist_cfg
+    mcl["sensors"] = sensors_cfg
+    conf_cfg = mcl.get("confidence", {})
+    if not isinstance(conf_cfg, dict):
+        conf_cfg = {}
+    # Runtime confidence is peakedness-based; lock metric naming to avoid stale variants.
+    conf_cfg["metric"] = "peakedness"
+    mcl["confidence"] = conf_cfg
+    mcl["config_version"] = MCL_CONFIG_VERSION
 
     return {
         "robot_physics": physics_flat(raw),

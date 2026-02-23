@@ -1,5 +1,16 @@
 // 03_mcl_intervenes_with_lemlib.cpp
 
+#include "api.h"
+#include "mcl_runtime.h"
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#include "lemlib/api.hpp"
+
 // LemLib + MCL practical autonomous example (distance-sensor based).
 // Flow:
 // 1) Use LemLib as normal.
@@ -18,7 +29,7 @@ extern lemlib::Chassis chassis;
 
 static constexpr int IMU_PORT = 10; // Change to your IMU smart port.
 // REQUIRED: set your real distance sensor smart ports in configured order.
-static ProsMCL localizer(IMU_PORT, { 1, 2, 3 });
+static ProsMCL localizer(IMU_PORT, { 1, 2 });
 static std::atomic_bool correction_running{false};
 static pros::Task* correction_task = nullptr;
 // Teams can toggle this to quickly enable/disable live tuning telemetry.
@@ -27,15 +38,17 @@ static constexpr bool MCL_DEBUG_TELEMETRY = true;
 // Pose adapters:
 // Edit these two helpers if your LemLib convention differs from MCL
 // (+x forward, +y left, theta CW+ with 0=left, 90=forward).
-// If LemLib already matches, leave identity mapping as-is.
+// By default they use generator-selected conversion from mcl.interop
+// (pose_convention + swap_xy/invert_x/invert_y).
 static MCLPose lemlib_to_mcl(const lemlib::Pose& p) {
-  return MCLPose{p.x, p.y, p.theta};
+  return ProsMCL::externalPoseToMCL(MCLPose{p.x, p.y, p.theta});
 }
 
 static void mcl_to_lemlib(const MCLPose& p, double& x, double& y, double& theta) {
-  x = p.x;
-  y = p.y;
-  theta = p.theta;
+  MCLPose out = ProsMCL::mclPoseToExternal(p);
+  x = out.x;
+  y = out.y;
+  theta = out.theta;
 }
 
 // Input adapter: runtime reads LemLib pose through this callback.
@@ -97,7 +110,7 @@ static void correction_task_fn(void*) {
 void initialize() {
   pros::lcd::initialize();
   // Start here so IMU calibration completes pre-autonomous.
-  localizer.start((int)pros::millis(), 90.0);
+  localizer.startExternal((int)pros::millis(), 0.0);
 }
 
 void autonomous() {

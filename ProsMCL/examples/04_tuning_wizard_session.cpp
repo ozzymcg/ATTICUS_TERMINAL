@@ -1,5 +1,10 @@
 // 04_tuning_wizard_session.cpp
 
+#include "api.h"
+#include "mcl_runtime.h"
+#include "mcl_tuning.h"
+#include <cmath>
+
 // Completed no-USB tuning session example:
 // - Logs compact telemetry to microSD (.mcllog)
 // - Uses explicit wizard markers for Atticus Terminal analysis
@@ -13,7 +18,7 @@ static constexpr int RIGHT_DRIVE_PORT = -12; // Negative reverses direction.
 static constexpr double WHEEL_DIAMETER_IN = 2.75; // Update to your wheel diameter.
 static constexpr double TRACK_WIDTH_IN = 12.0;    // Update to your measured track width.
 static constexpr double kPi = 3.14159265358979323846;
-static ProsMCL localizer(IMU_PORT, { 1, 2, 3 });
+static ProsMCL localizer(IMU_PORT, { 1, 2 });
 static MCLTuningWizard tuning(&localizer);
 static pros::Motor left_drive(LEFT_DRIVE_PORT);
 static pros::Motor right_drive(RIGHT_DRIVE_PORT);
@@ -96,6 +101,10 @@ void initialize() {
   pros::lcd::initialize();
   left_drive.tare_position();
   right_drive.tare_position();
+  // This provider emits internal MCL-frame pose directly, so this example
+  // keeps internal initialization (`startEasy`, 90 deg forward in internal frame).
+  // If your provider emits external library pose, convert with externalPoseToMCL
+  // and use startEasyExternal instead.
   reset_odom_seed(0.0, 0.0, 90.0);
   localizer.setFieldPoseProvider(diff_drive_pose_provider, nullptr);
   localizer.startEasy((int)pros::millis(), 90.0, 0.0, 0.0, 90.0);

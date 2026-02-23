@@ -12,18 +12,22 @@ This package is a practical localization stack for VEX/PROS:
 - `docs/`: setup, tuning, convention, and API references
 - `examples/`: templates for minimal odom, distance sensors, and LemLib integration
 
+Map/raycast blobs include deterministic hash + dimension metadata and are checked at runtime.
+On mismatch, map-dependent distance updates are disabled fail-safe while odom/IMU fusion continues.
+
 ## Current export profile
-- Particle budget: `300` (`n_min=200`, `n_max=400`)
-- Runtime cadence targets: motion `20 ms`, sensor `50 ms`
-- Distance sensors: enabled (`3` configured)
+- Particle budget: `350` (`n_min=250`, `n_max=500`)
+- Runtime cadence targets: loop `10 ms`, stall `20 ms`, motion `10 ms`, sensor `50 ms`
+- Distance sensors: enabled (`2` configured), model `likelihood_field`
 - EKF: enabled
 
 ## Fast-start integration checklist
 1. Create one global `ProsMCL` instance with your IMU + distance sensor ports.
-2. In `initialize()`, call `startEasy(seed, initial_heading_deg, x, y, theta)` so IMU calibration does not consume autonomous time.
+2. In `initialize()`, call `startEasyExternal(seed, initial_heading_deg, x, y, theta)` so IMU calibration does not consume autonomous time.
 3. Choose one odometry feed mode:
    - manual: call `setOdomDelta(...)` in your 10 ms control loop
    - automatic: set `setFieldPoseProvider(...)` once (best for LemLib)
+   Runtime treats these modes as exclusive; `setOdomDelta` is ignored while provider mode is active.
    Runtime updates happen in the built-in background task (no `update()` call needed).
    No global 15s timeout loop is required; competition mode exits autonomous automatically.
 4. Use `getFusedPose()` for auton/pathing decisions (not raw odometry pose).

@@ -15,25 +15,27 @@ This is an exact tuning workflow for VEX teams. Run steps in order.
 2. Distance sensors: verify port order matches `mcl.sensor_geometry.distance_sensors` exactly.
 3. Odom signs: forward => `dx>0`, left => `dy>0`, right turn => `dtheta>0`.
    - Standard diff-drive encoder signs (both sides forward-positive): `dtheta_cw = (dL - dR) / track_width * 180/pi`.
-4. Track width: run 360 deg in-place turn, compare measured vs expected heading.
+4. External frame adapter: run `runFrameSanityCheck(...)` and set `mcl.interop` (`pose_convention`, `swap_xy`, `invert_x`, `invert_y`) from the recommended result.
+5. Track width: run 360 deg in-place turn, compare measured vs expected heading.
    - If under-rotating, decrease track width by 2-5%.
    - If over-rotating, increase track width by 2-5%.
    - Repeat until 360 deg test error <= 3 deg.
 
 ## 3) Runtime integration baseline
 1. Create one global `ProsMCL` instance.
-2. Call `startEasy(...)` once with correct start tile pose.
+2. Call `startEasyExternal(...)` once with correct start tile pose.
 3. Feed odom one way only:
    - Manual `setOdomDelta(...)` every 10 ms, or
    - LemLib provider via `setFieldPoseProvider(...)`.
+   - Manual deltas are ignored while provider mode is active.
    - If provider heading already comes from IMU, set `mcl.ekf.use_imu_update=0` to avoid IMU double-counting.
 4. Use `getFusedPose()` for autonomous decisions.
 
 ## 4) Baseline values (good first pass)
-- Particles: `n=300`, `n_min=200`, `n_max=500`.
+- Particles: `n=350`, `n_min=250`, `n_max=500`.
 - Motion: `sigma_x_in=0.12`, `sigma_y_in=0.12`, `sigma_theta_deg=1.0`.
-- Distance: `sigma_hit_mm=8.5`, `gate_mm=120`, `innovation_gate_mm=0` (enable later after stable lock).
-- Correction: `alpha_min=0.03`, `alpha_max=0.12`, `min_confidence=0.6`.
+- Distance: `sigma_hit_mm=15`, `sigma_far_scale=0.05`, `gate_mm=150`, `innovation_gate_mm=0`.
+- Correction: `alpha_min=0.05`, `alpha_max=0.25`, `min_confidence=0.6`.
 
 ## 5) Exact tuning procedure
 1. **Motion noise first** (vision off during this step):
@@ -51,10 +53,10 @@ This is an exact tuning workflow for VEX teams. Run steps in order.
    - If CPU load is high, decrease `n` by -50.
    - Keep skills configs typically in 250-450.
 4. **Correction alpha last**:
-   - Start at `0.03/0.12`.
+   - Start at `0.05/0.25`.
    - If recovery after drift is too slow, raise both by +0.01.
    - If oscillation appears, lower `alpha_max` by -0.02 first.
-   - Keep `alpha_max <= 0.18` for most robots.
+   - Keep `alpha_max <= 0.25` for most robots.
 5. **Vision integration (optional final step)**:
    - Feed only trusted fixes (`confidence >= 0.7` recommended).
    - If vision causes jumps, raise confidence threshold or reduce vision update frequency.

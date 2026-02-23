@@ -14,10 +14,22 @@ function Get-PythonCmd {
     foreach ($cand in $candidates) {
         $cmd = Get-Command $cand[0] -ErrorAction SilentlyContinue
         if ($cmd) {
-            return ,@($cmd.Path) + $cand[1..($cand.Length - 1)]
+            # Skip the Microsoft Store "app execution alias" python.exe, which commonly breaks venv/build tooling.
+            if ($cand[0] -ne "py" -and $cmd.Path -match "Microsoft\\\\WindowsApps") {
+                continue
+            }
+            # IMPORTANT: PowerShell's array slice 1..0 returns a reversed range (including 0),
+            # which would accidentally append the command name as an argument (e.g. `python python -m venv ...`).
+            # That makes Python try to open a non-existent file named "python".
+            $extra = @()
+            if ($cand.Length -gt 1) { $extra = $cand[1..($cand.Length - 1)] }
+            return ,(@($cmd.Path) + $extra)
         }
     }
-    throw "Python 3.8+ not found. Install from https://www.python.org/downloads/ then re-run."
+    throw @(
+        "Python 3.8+ not found (or only the Microsoft Store alias is present).",
+        "Install Python from https://www.python.org/downloads/ and ensure `py` is available on PATH, then re-run."
+    ) -join "`n"
 }
 
 $root = Split-Path -Parent $PSScriptRoot  # project root
@@ -34,7 +46,25 @@ if ($Force -or -not (Test-Path $venvPath)) {
 }
 
 $venvPy = Join-Path $venvPath "Scripts/python.exe"
-if (-not (Test-Path $venvPy)) { throw "Virtual env python not found: $venvPy" }
+if (-not (Test-Path $venvPy)) {
+    # If the venv folder exists but is missing python.exe, recreate it once (common with broken aliases).
+    if (Test-Path $venvPath) {
+        Write-Warning "Venv appears incomplete. Recreating .venv..."
+        Remove-Item $venvPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    & $pyBin @pyArgs "-m" "venv" $venvPath
+}
+if (-not (Test-Path $venvPy)) {
+    $hint = @(
+        "Virtual env python not found: $venvPy",
+        "",
+        "Common fixes:",
+        "  - Install Python from https://www.python.org/downloads/ (not the Microsoft Store alias).",
+        "  - In Windows Settings -> Apps -> Advanced app settings -> App execution aliases: turn OFF python.exe/python3.exe.",
+        "  - Re-run: export\\build_exe.ps1 -Force"
+    ) -join "`n"
+    throw $hint
+}
 
 Write-Host "Upgrading pip and installing requirements..." -ForegroundColor Cyan
 & $venvPy "-m" "pip" "install" "--upgrade" "pip"

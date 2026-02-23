@@ -8,7 +8,7 @@
 - **Effective N (`Neff`):** degeneracy metric; low values indicate few particles dominate.
 - **KLD adaptive sampling:** adjusts particle count to match estimated posterior complexity.
 - **Fused pose:** final pose used by control (typically MCL + EKF blend).
-- **Confidence:** concentration of weights; higher means particles agree more strongly.
+- **Confidence (peakedness):** `1 - ESS/N`; higher means particles are more concentrated.
 
 ## Sensor + map terms
 - **Likelihood field:** precomputed nearest-obstacle distance grid used for fast sensor scoring.
