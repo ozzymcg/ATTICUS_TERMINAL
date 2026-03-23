@@ -40,6 +40,7 @@ Atticus Terminal includes an **Atticus tab** for configuring the simulator-side 
    - `py doctor.py` (Windows) or `python3 doctor.py` (macOS/Linux)
 5. Launch:
    - `py main.py` (Windows) or `python3 main.py` (macOS/Linux)
+   - Alternatively, open and run main.py inside VSCode.
 
 ### Notes by Platform
 - If installation fails, it may be because you aren't using python 3.12 or 3.11, as they hate pygame right now.
