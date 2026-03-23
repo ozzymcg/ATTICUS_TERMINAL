@@ -1,33 +1,10 @@
 {
-  "reshape_label": {
-    "value": "Reshape"
-  },
-  "field_objects": {
-    "enabled": {
-      "value": 1
-    },
-    "collide": {
-      "value": 1
-    },
-    "thickness_in": {
-      "value": 3.5
-    },
-    "long_goal_len_in": {
-      "value": 48.8
-    },
-    "center_goal_len_in": {
-      "value": 22.6
-    },
-    "matchloader_size_in": {
-      "value": 3.5
-    }
-  },
   "robot_physics": {
     "weight": {
-      "value": 12.0
+      "value": 11.5
     },
     "rpm": {
-      "value": 400.0
+      "value": 450.0
     },
     "diameter": {
       "value": 3.25
@@ -45,7 +22,7 @@
       "value": 0.0
     },
     "all_omni": {
-      "value": 0.0
+      "value": 1.0
     },
     "tracking_wheels": {
       "value": 0.0
@@ -57,46 +34,199 @@
       "value": 127.0
     },
     "point_density_per_in": {
-      "value": 4.0
+      "value": 1.0
     },
     "curvature_gain": {
-      "value": 0.05
+      "value": 0.12162162162162163
+    }
+  },
+  "bot_dimensions": {
+    "width": {
+      "value": 13.5
+    },
+    "length": {
+      "value": 17.5
+    },
+    "dt_width": {
+      "value": 11.375
+    },
+    "dt_length": {
+      "value": 10.0
+    },
+    "full_offset_x_in": {
+      "value": 0.75
+    },
+    "full_offset_y_in": {
+      "value": -0.0
+    },
+    "reshape": {
+      "width": {
+        "value": 13.5
+      },
+      "length": {
+        "value": 21.0
+      },
+      "offset_x_in": {
+        "value": 2.5
+      },
+      "offset_y_in": {
+        "value": -0.062
+      }
+    },
+    "advanced_geometry": {
+      "enabled": 1,
+      "symmetry": 1,
+      "points": [
+        [
+          -8.75,
+          -6.75
+        ],
+        [
+          7.0494,
+          -6.75
+        ],
+        [
+          7.1277,
+          -4.6996
+        ],
+        [
+          8.75,
+          -4.6124
+        ],
+        [
+          8.75,
+          4.6124
+        ],
+        [
+          7.1277,
+          4.6996
+        ],
+        [
+          7.0494,
+          6.75
+        ],
+        [
+          -8.75,
+          6.75
+        ],
+        [
+          -7.8246,
+          4.8595
+        ],
+        [
+          -5.8479,
+          4.7771
+        ],
+        [
+          -5.8479,
+          2.1415
+        ],
+        [
+          -7.6599,
+          0.0001
+        ],
+        [
+          -7.6599,
+          -0.0001
+        ],
+        [
+          -5.8479,
+          -2.1415
+        ],
+        [
+          -5.8479,
+          -4.7771
+        ],
+        [
+          -7.8246,
+          -4.8595
+        ]
+      ],
+      "reshape_points": [
+        [
+          -10.5,
+          -6.7442
+        ],
+        [
+          5.5265,
+          -6.75
+        ],
+        [
+          5.5265,
+          -4.5898
+        ],
+        [
+          10.5,
+          -4.4961
+        ],
+        [
+          10.5,
+          4.4961
+        ],
+        [
+          5.5265,
+          4.5898
+        ],
+        [
+          5.5265,
+          6.75
+        ],
+        [
+          -10.5,
+          6.7442
+        ],
+        [
+          -9.5543,
+          4.8708
+        ],
+        [
+          -7.7745,
+          4.8708
+        ],
+        [
+          -7.7745,
+          2.0607
+        ],
+        [
+          -9.4606,
+          0.0001
+        ],
+        [
+          -9.4606,
+          -0.0001
+        ],
+        [
+          -7.7745,
+          -2.0607
+        ],
+        [
+          -7.7745,
+          -4.8708
+        ],
+        [
+          -9.5543,
+          -4.8708
+        ]
+      ]
     }
   },
   "offsets": {
     "offset_1_in": {
-      "value": 5.0
+      "value": 5.25
     },
     "offset_2_in": {
-      "value": 15.125
+      "value": 13.0
+    },
+    "offset_3_in": {
+      "value": 12.5
     },
     "padding_in": {
-      "value": 1.5
-    }
-  },
-  "ui": {
-    "show_hitboxes": {
-      "value": 1
-    },
-    "show_hitbox_conflicts_only": {
-      "value": 1
-    },
-    "auto_oob_fix": {
-      "value": 1
-    },
-    "time_ms": {
-      "value": 0
-    },
-    "show_field_objects": {
-      "value": 1
-    },
-    "show_node_numbers": {
-      "value": 1
+      "value": 0.2
     }
   },
   "path_config": {
     "lookahead_in": {
-      "value": 10.35
+      "value": 10.2375
     },
     "min_speed_cmd": {
       "value": 30.0
@@ -105,7 +235,7 @@
       "value": 127.0
     },
     "simulate_pursuit": {
-      "value": 1.0
+      "value": 0.0
     }
   },
   "field_centric": {
@@ -121,101 +251,246 @@
     "value": 0.0
   },
   "gear_ratio": {
-    "value": 18.0
+    "value": 0.75
   },
-  "bot_dimensions": {
-    "width": {
-      "value": 14.0
+  "ui": {
+    "show_hitboxes": {
+      "value": 0
     },
-    "length": {
-      "value": 18.0
+    "show_hitbox_conflicts_only": {
+      "value": 0
     },
-    "dt_width": {
-      "value": 11.5
+    "auto_oob_fix": {
+      "value": 1
     },
-    "dt_length": {
-      "value": 10.0
+    "time_ms": {
+      "value": 0
     },
-    "full_offset_x_in": {
-      "value": 2.5
+    "show_field_objects": {
+      "value": 1
     },
-    "full_offset_y_in": {
-      "value": 0.0
-    },
-    "reshape": {
-      "width": {
-        "value": 14.0
-      },
-      "length": {
-        "value": 20.0
-      },
-      "offset_x_in": {
-        "value": 3.5
-      },
-      "offset_y_in": {
-        "value": 0.0
-      }
-    },
-    "dtposition_offset": {
-      "x": {
-        "value": 0.0
-      },
-      "y": {
-        "value": 1.5
-      }
+    "show_node_numbers": {
+      "value": 1
     }
+  },
+  "reshape_label": {
+    "value": "matchload_toggle"
   },
   "codegen": {
     "style": {
-      "value": "Action List"
+      "value": "Atticus"
     },
     "templates": {
+      "AttLib": {
+        "wait": "pros::delay({MS});",
+        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+        "turn": "turn({HEADING_DEG});",
+        "face": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+        "mech": "// MECH: {NAME}",
+        "tbuffer": "pros::delay({MS});",
+        "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+        "__optional__": [
+          "reshape_on",
+          "reshape_off",
+          "setpose",
+          "swing",
+          "path_follow",
+          "marker_wait",
+          "marker_wait_done"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+        "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+        "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, attlib::DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = attlib::AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+        "pose_angle": "",
+        "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+        "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+        "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+        "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+        "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
+        "reshape": "matchloadPistons.set_value({STATE});",
+        "reshape_on": "ml_mech.set_value(false);",
+        "reshape_off": "ml_mech.set_value(true);",
+        "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+        "marker_wait_done": "chassis.waitUntilDone();"
+      },
+      "Atticus": {
+        "wait": "pros::delay({MS});",
+        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+        "turn": "turn({HEADING_DEG});",
+        "face": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+        "mech": "// MECH: {NAME}",
+        "tbuffer": "pros::delay({MS});",
+        "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+        "__optional__": [
+          "reshape_on",
+          "reshape_off",
+          "setpose",
+          "swing",
+          "path_follow",
+          "marker_wait",
+          "marker_wait_done"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+        "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+        "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+        "pose_angle": "",
+        "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+        "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+        "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+        "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+        "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
+        "reshape": "matchloadPistons.set_value({STATE});",
+        "reshape_on": "ml_mech.set_value(true);",
+        "reshape_off": "ml_mech.set_value(false);",
+        "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+        "marker_wait_done": "chassis.waitUntilDone();"
+      },
       "LemLib": {
         "wait": "pros::delay({MS});",
-        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
-        "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
-        "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
-        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
-        "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
-        "reshape_on": "matchloadPistons.set_value({STATE});",
-        "reshape_off": "matchloadPistons.set_value({STATE});",
-        "reshape": "matchloadPistons.set_value({STATE});",
-        "reverse_on": "// reverse handled per-command",
-        "reverse_off": "// reverse handled per-command",
+        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+        "turn": "turn({HEADING_DEG});",
+        "face": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+        "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+        "mech": "// MECH: {NAME}",
         "tbuffer": "pros::delay({MS});",
-        "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
-        "marker_wait_done": "chassis.waitUntilDone();",
-        "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
+        "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+        "__optional__": [
+          "reshape_on",
+          "reshape_off",
+          "setpose",
+          "swing",
+          "path_follow",
+          "marker_wait",
+          "marker_wait_done"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
         "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+        "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+        "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+        "pose_angle": "",
+        "reshape": "matchloadPistons.set_value({STATE});",
+        "reshape_on": "ml_mech.set_value(true);",
+        "reshape_off": "ml_mech.set_value(false);",
+        "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+        "marker_wait_done": "chassis.waitUntilDone();"
+      },
+      "PROS": {
+        "wait": "pros::delay({MS});",
+        "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS});",
+        "turn": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+        "face": "face({HEADING_DEG});",
+        "mech": "// MECH: {NAME}",
+        "tbuffer": "pros::delay({MS});",
+        "__optional__": [],
+        "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {FORWARDS});",
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_local"
+        },
+        "turn_global": "turn_to({HEADING_DEG});",
+        "turn_local": "turn_angle({TURN_DELTA_DEG});",
+        "pose": "// move_to_pose x={X_IN}, y={Y_IN}, h={HEADING_DEG}",
+        "marker_wait": "",
+        "marker_wait_done": ""
+      },
+      "Custom": {
+        "wait": "wait({S}, seconds);",
+        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {.drive_timeout = {TIMEOUT_MS}});",
+        "turn": "",
+        "face": "face({HEADING_DEG});",
+        "mech": "// MECH: {NAME}",
+        "tbuffer": "wait ({S}, seconds);",
         "__optional__": [
           "setpose",
-          "path_follow"
-        ]
+          "path_follow",
+          "reshape_on",
+          "reshape_off"
+        ],
+        "path_follow": "follow_path(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD});",
+        "reshape": "MLadapter({STATE});",
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {.turn_timeout = {TIMEOUT_MS}});",
+        "turn_local": "turn_relative({TURN_DELTA_DEG});",
+        "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});",
+        "marker_wait": "waitUntil({MARKER_DIST_IN});",
+        "marker_wait_done": "waitUntilDone();",
+        "reshape_on": "MLadapter({STATE});",
+        "reshape_off": "MLadapter({STATE});",
+        "pose_angle": ""
+      },
+      "Action List": {
+        "__optional__": [],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn"
+        }
       },
       "JAR": {
         "wait": "task::sleep({MS});",
-        "move": "chassis.drive_settle_error = {DRIVE_EARLY_EXIT};\nchassis.drive_timeout =  {TIMEOUT_MS};\nchassis.drive_distance({DIST_IN});",
-        "turn_global": "chassis.turn_settle_error = {TURN_EARLY_EXIT};\nchassis.turn_timeout = {TIMEOUT_MS};\nchassis.turn_to_angle({HEADING_DEG});",
+        "move": "chassis.drive_settle_error = {DRIVE_EARLY_EXIT};\\nchassis.drive_timeout =  {TIMEOUT_MS};\\nchassis.drive_distance({DIST_IN});",
+        "turn_global": "chassis.turn_settle_error = {TURN_EARLY_EXIT};\\nchassis.turn_timeout = {TIMEOUT_MS};\\nchassis.turn_to_angle({HEADING_DEG});",
         "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
         "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-        "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-        "swing": "chassis.swing_settle_error = {SWING_EARLY_EXIT};\nchassis.swing_timeout = {TIMEOUT_MS};\nchassis.{SIDE_LC}_swing_to_angle({HEADING_DEG});",
-        "path_follow": "followPath(\"{PATH_FILE}\", {TIMEOUT_MS});",
-        "reshape_on": "MLmech.off();",
-        "reshape_off": "MLmech.on();",
-        "reshape": "MLmech.on();",
-        "reverse_on": "// reverse handled inline",
-        "reverse_off": "// reverse handled inline",
         "tbuffer": "task::sleep({MS});",
-        "marker_wait": "",
-        "marker_wait_done": "",
-        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});",
+        "__optional__": [
+          "reshape_on",
+          "reshape_off",
+          "setpose",
+          "swing"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "reshape": "MLToggle();",
+        "pose_angle": "chassis.drive_timeout = {TIMEOUT_MS};\nchassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG});",
+        "reshape_off": "MLmech.on();",
+        "reshape_on": "MLmech.off();",
+        "swing": "chassis.swing_settle_error = {SWING_EARLY_EXIT};\\nchassis.swing_timeout = {TIMEOUT_MS};\\nchassis.{SIDE}_swing_to_angle({HEADING_DEG});",
+        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});"
+      },
+      "EZ-Template": {
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_local"
+        },
+        "wait": "pros::delay({MS});",
+        "setpose": "chassis.odom_xyt_set({X_IN} _in, {Y_IN} _in, {HEADING_DEG} _deg);",
+        "move": "chassis.pid_odom_set({{{{{X_IN} _in, {Y_IN} _in}}, ({FORWARDS} ? fwd : rev), {DRIVE_MAX_V}}});\nchassis.pid_wait();",
+        "pose": "chassis.pid_odom_set({{{{{X_IN} _in, {Y_IN} _in, {HEADING_DEG} _deg}}, ({FORWARDS} ? fwd : rev), {DRIVE_MAX_V}}});\nchassis.pid_wait();",
+        "turn_global": "chassis.pid_turn_set({HEADING_DEG} _deg, {TURN_MAX_V});\nchassis.pid_wait();",
+        "turn_local": "chassis.pid_turn_relative_set({TURN_DELTA_DEG} _deg, {TURN_MAX_V});\nchassis.pid_wait();",
+        "swing": "chassis.pid_swing_set(ez::{SIDE}_SWING, {HEADING_DEG} _deg, {SWING_MAX_V});\nchassis.pid_wait();",
+        "reshape": "// user hook: reshape({STATE});",
+        "tbuffer": "pros::delay({MS});",
+        "path_follow": "// TODO: EZ-Template pure pursuit export not implemented.\n// LemLib-style path file: {PATH_FILE}\n// lookahead(in): {LOOKAHEAD}, min/max: {PATH_MIN_SPEED}/{PATH_MAX_SPEED}, forwards: {FORWARDS}",
         "__optional__": [
           "setpose",
           "path_follow",
           "pose",
           "swing"
-        ]
+        ],
+        "pose_angle": ""
       },
       "JAR (advanced)": {
         "wait": "task::sleep({MS});",
@@ -223,63 +498,49 @@
         "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {TURN_MAX_V}, {TIMEOUT_MS});",
         "turn_local": "turnToAngle({TURN_DELTA_DEG}, {TIMEOUT_MS});",
         "pose": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-        "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});",
-        "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
         "path_follow": "followPath(\"{PATH_FILE}\", {TIMEOUT_MS});",
-        "reshape_on": "matchload_state({STATE});",
-        "reshape_off": "matchload_state({STATE});",
-        "reshape": "matchload_state({STATE});",
-        "reverse_on": "// reverse handled inline",
-        "reverse_off": "// reverse handled inline",
         "tbuffer": "task::sleep({MS});",
-        "marker_wait": "",
-        "marker_wait_done": "",
         "setpose": "chassis.set_coordinates({X_IN}, {Y_IN}, {HEADING_DEG});",
         "__optional__": [
           "setpose",
-          "path_follow",
-          "pose",
-          "swing"
-        ]
-      },
-      "Custom": {
-        "wait": "wait({S}, seconds);",
-        "move": "chassis.drive_distance({DIST_IN}, {HEADING_DEG}, {.drive_timeout = {TIMEOUT_MS}});",
-        "turn_global": "chassis.turn_to_angle({HEADING_DEG}, {.turn_timeout = {TIMEOUT_MS}});",
-        "turn_local": "turn_relative({TURN_DELTA_DEG});",
-        "pose": "pose({X_IN}, {Y_IN}, {HEADING_DEG});",
-        "swing": "swing_to_heading({HEADING_DEG}, {DIR});",
-        "reshape_on": "MLadapter({STATE});",
-        "reshape_off": "MLadapter({STATE});",
-        "reshape": "MLadapter({STATE});",
-        "reverse_on": "// reverse ON",
-        "reverse_off": "// reverse OFF",
-        "tbuffer": "wait ({S}, seconds);",
-        "marker_wait": "waitUntil({MARKER_DIST_IN});",
-        "marker_wait_done": "waitUntilDone();",
-        "path_follow": "follow_path(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD});",
-        "setpose": "chassis.set_coordinates({X_IN},{Y_IN},{HEADING_DEG});",
-        "__optional__": [
-          "setpose",
-          "path_follow",
-          "pose",
-          "swing"
-        ]
+          "swing",
+          "reshape_on",
+          "reshape_off",
+          "path_follow"
+        ],
+        "__modes__": {
+          "motion": "move",
+          "turn": "turn_global"
+        },
+        "swing": "chassis.{SIDE}_swing_to_angle({HEADING_DEG}, {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}, {TIMEOUT_MS});",
+        "reshape": "matchload_state({STATE});",
+        "marker_wait": "",
+        "marker_wait_done": "",
+        "reshape_on": "matchload_state({STATE});",
+        "reshape_off": "matchload_state({STATE});",
+        "pose_angle": "chassis.holonomic_drive_to_point({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS});"
       }
     },
     "opts": {
       "ticks_per_rotation": 360.0,
-      "pad_factor": 1.0,
+      "pad_factor": 1.9,
       "min_timeout_s": 0.0,
-      "reshape_output": "1/2",
+      "reshape_output": "true/false",
+      "time_unit": "ms",
+      "path_lookahead": 15.0,
+      "pid_consider": 1,
+      "pid_style": "JAR",
+      "jar_pose_angle_overload": 0,
+      "path_follow_optional_migrated": true,
+      "omit_defaults": 1,
+      "reshape_split_templates_migrated": true,
       "default_drive_early_exit": 0.0,
       "default_turn_early_exit": 0.0,
       "default_swing_early_exit": 7.0,
       "default_swing_settle_early_exit": 0.0,
       "default_swing_early_exit_migrated": 1,
-      "path_follow_optional_migrated": true,
-      "reshape_split_templates_migrated": true,
-      "omit_defaults": 1
+      "async_template_syntax_migrated": true,
+      "turn_swing_forwards_template_migrated": true
     },
     "path_dir": {
       "value": "export/paths"
@@ -289,12 +550,73 @@
     },
     "mech_presets": [
       {
+        "name": "intake",
+        "mode": "toggle",
+        "template": "",
+        "on": "intake_motors.move(127);",
+        "off": "intake_motors.move(0);",
+        "default": false,
+        "cases": [],
+        "case_default": ""
+      },
+      {
         "name": "reshape",
         "mode": "toggle",
         "template": "",
         "on": "",
         "off": "",
         "default": false
+      },
+      {
+        "name": "wingmech",
+        "mode": "toggle",
+        "template": "",
+        "on": "wing.set_value(true);",
+        "off": "wing.set_value(false);",
+        "default": false,
+        "cases": [],
+        "case_default": ""
+      },
+      {
+        "name": "trap",
+        "mode": "cases",
+        "template": "",
+        "on": "",
+        "off": "",
+        "default": false,
+        "cases": [
+          {
+            "key": "store",
+            "template": "set_trap_pistons(false, true);"
+          },
+          {
+            "key": "mid",
+            "template": "set_trap_pistons(false, false);"
+          },
+          {
+            "key": "high",
+            "template": "set_trap_pistons(true, true);"
+          }
+        ],
+        "case_default": "set_trap_pistons(false, true);"
+      },
+      {
+        "name": "DSR",
+        "mode": "action",
+        "template": "",
+        "on": "",
+        "off": "",
+        "default": false
+      },
+      {
+        "name": "outtake",
+        "mode": "toggle",
+        "template": "",
+        "on": "intake_motors.move(-127);",
+        "off": "intake_motors.move(0);",
+        "default": false,
+        "cases": [],
+        "case_default": ""
       }
     ],
     "calibration": {
@@ -311,7 +633,210 @@
       },
       "profiles": {}
     },
-    "motion_profiles": {}
+    "motion_profiles": {
+      "voltage_shapes": {
+        "drive": {
+          "precise": [
+            4.0,
+            6.0,
+            8.0
+          ],
+          "normal": [
+            5.0,
+            7.0,
+            10.0
+          ],
+          "custom": [
+            5.0,
+            7.0,
+            10.0
+          ],
+          "fast": [
+            6.0,
+            8.5,
+            12.0
+          ],
+          "slam": [
+            7.0,
+            9.0,
+            12.0
+          ]
+        },
+        "turn": {
+          "precise": [
+            3.5,
+            5.5,
+            8.0
+          ],
+          "normal": [
+            4.5,
+            6.5,
+            10.0
+          ],
+          "custom": [
+            4.5,
+            6.5,
+            10.0
+          ],
+          "fast": [
+            5.0,
+            7.5,
+            11.0
+          ],
+          "slam": [
+            6.0,
+            9.0,
+            12.0
+          ]
+        },
+        "swing": {
+          "precise": [
+            3.0,
+            5.0,
+            7.0
+          ],
+          "normal": [
+            4.0,
+            6.0,
+            9.0
+          ],
+          "custom": [
+            4.0,
+            6.0,
+            9.0
+          ],
+          "fast": [
+            4.5,
+            7.0,
+            10.0
+          ],
+          "slam": [
+            5.5,
+            8.5,
+            12.0
+          ]
+        }
+      },
+      "settle_base": {
+        "drive": {
+          "precise": {
+            "err_min": 0.5,
+            "err_max": 1.2,
+            "t_min": 220,
+            "t_max": 400
+          },
+          "normal": {
+            "err_min": 0.8,
+            "err_max": 1.6,
+            "t_min": 180,
+            "t_max": 320
+          },
+          "custom": {
+            "err_min": 0.8,
+            "err_max": 1.6,
+            "t_min": 180,
+            "t_max": 320
+          },
+          "fast": {
+            "err_min": 1.0,
+            "err_max": 2.0,
+            "t_min": 150,
+            "t_max": 260
+          },
+          "slam": {
+            "err_min": 1.5,
+            "err_max": 2.0,
+            "t_min": 120,
+            "t_max": 200
+          }
+        },
+        "turn": {
+          "precise": {
+            "err_min": 0.5,
+            "err_max": 1.0,
+            "t_min": 200,
+            "t_max": 380
+          },
+          "normal": {
+            "err_min": 0.8,
+            "err_max": 1.5,
+            "t_min": 170,
+            "t_max": 320
+          },
+          "custom": {
+            "err_min": 0.8,
+            "err_max": 1.5,
+            "t_min": 170,
+            "t_max": 320
+          },
+          "fast": {
+            "err_min": 1.0,
+            "err_max": 2.0,
+            "t_min": 150,
+            "t_max": 280
+          },
+          "slam": {
+            "err_min": 1.5,
+            "err_max": 2.5,
+            "t_min": 120,
+            "t_max": 220
+          }
+        },
+        "swing": {
+          "precise": {
+            "err_min": 0.6,
+            "err_max": 1.2,
+            "t_min": 170,
+            "t_max": 320
+          },
+          "normal": {
+            "err_min": 0.9,
+            "err_max": 1.6,
+            "t_min": 150,
+            "t_max": 260
+          },
+          "custom": {
+            "err_min": 0.9,
+            "err_max": 1.6,
+            "t_min": 150,
+            "t_max": 260
+          },
+          "fast": {
+            "err_min": 1.2,
+            "err_max": 2.0,
+            "t_min": 120,
+            "t_max": 220
+          },
+          "slam": {
+            "err_min": 1.6,
+            "err_max": 2.6,
+            "t_min": 100,
+            "t_max": 180
+          }
+        }
+      },
+      "profile_rules": {
+        "drive": {
+          "precise_max": 12.0,
+          "fast_min": 36.0
+        },
+        "turn": {
+          "precise_max": 25.0,
+          "fast_min": 120.0
+        },
+        "swing": {
+          "precise_max": 25.0,
+          "fast_min": 120.0
+        }
+      }
+    },
+    "attlib_sim": {
+      "visual_run": 0,
+      "module_dir": "C:/Users/midwe/Downloads/Project Atticus/atticode/host/build313",
+      "source": "timeline",
+      "routine_script": "C:\\Users\\midwe\\Downloads\\Project Atticus\\atticode\\host\\run_attlibsim.py",
+      "routine_function": "run_routine"
+    }
   },
   "physics_constants": {
     "load_factor": {
@@ -321,7 +846,7 @@
       "value": 0.06
     },
     "accel_mu_scale": {
-      "value": 0.95
+      "value": 0.85
     },
     "accel_min": {
       "value": 60.0
@@ -330,7 +855,7 @@
       "value": 450.0
     },
     "t_to_v_base": {
-      "value": 0.2
+      "value": 0.25
     },
     "t_to_v_min": {
       "value": 0.12
@@ -366,35 +891,24 @@
       "value": 0.9
     }
   },
-  "mcl": {
+  "atticus": {
     "config_version": {
-      "value": 7
+      "value": 8
     },
     "enabled": {
-      "value": 0
+      "value": 1
     },
     "loop_ms": {
-      "value": 10.0
-    },
-    "stall_ms": {
       "value": 20.0
     },
+    "stall_ms": {
+      "value": 40.0
+    },
     "motion_ms": {
-      "value": 10.0
+      "value": 20.0
     },
     "sensor_ms": {
-      "value": 50.0
-    },
-    "particles": {
-      "n": {
-        "value": 350
-      },
-      "n_min": {
-        "value": 250
-      },
-      "n_max": {
-        "value": 500
-      }
+      "value": 20.0
     },
     "motion": {
       "enabled": {
@@ -406,29 +920,38 @@
       "motion_source": {
         "value": "encoders"
       },
-      "use_alpha_model": {
-        "value": 0
-      },
       "sigma_x_in": {
-        "value": 0.1275
+        "value": 0.08
       },
       "sigma_y_in": {
-        "value": 0.1275
+        "value": 0.08
       },
       "sigma_theta_deg": {
-        "value": 1.0
+        "value": 0.7
       },
-      "alpha1": {
+      "sigma_x_per_in": {
+        "value": 0.02
+      },
+      "sigma_y_per_in": {
+        "value": 0.03
+      },
+      "sigma_theta_per_deg": {
         "value": 0.05
       },
-      "alpha2": {
-        "value": 0.05
+      "no_horizontal_lateral_scale": {
+        "value": 2.5
       },
-      "alpha3": {
-        "value": 0.05
+      "turn_lateral_scale": {
+        "value": 2.0
       },
-      "alpha4": {
-        "value": 0.05
+      "rough_wall_sigma_x_scale": {
+        "value": 1.8
+      },
+      "rough_wall_sigma_y_scale": {
+        "value": 3.5
+      },
+      "rough_wall_sigma_theta_scale": {
+        "value": 1.25
       },
       "delta_guard_enabled": {
         "value": 1
@@ -482,22 +1005,22 @@
           "value": 0.05
         },
         "sigma_min_mm": {
-          "value": 8.0
+          "value": 15.0
         },
         "sigma_max_mm": {
-          "value": 120.0
-        },
-        "min_sensor_weight": {
-          "value": 1e-06
+          "value": 100.0
         },
         "conf_sigma_scale": {
           "value": 1.0
         },
+        "min_sensor_weight": {
+          "value": 1e-06
+        },
         "w_hit": {
-          "value": 0.9
+          "value": 0.95
         },
         "w_rand": {
-          "value": 0.1
+          "value": 0.05
         },
         "w_short": {
           "value": 0.0
@@ -515,7 +1038,7 @@
           "value": 20.0
         },
         "confidence_min": {
-          "value": 0.0
+          "value": 20.0
         },
         "object_size_min": {
           "value": 0.0
@@ -524,7 +1047,7 @@
           "value": 0.0
         },
         "innovation_gate_mm": {
-          "value": 0.0
+          "value": 180.0
         },
         "median_window": {
           "value": 3.0
@@ -539,10 +1062,10 @@
           "value": 0
         },
         "fov_multi_ray": {
-          "value": 1
+          "value": 0
         },
         "rays_per_sensor": {
-          "value": 3
+          "value": 1
         },
         "fov_half_deg_near": {
           "value": 18.0
@@ -553,8 +1076,11 @@
         "fov_switch_mm": {
           "value": 203.0
         },
+        "raycast_bucket_in": {
+          "value": 12.0
+        },
         "gate_mm": {
-          "value": 150.0
+          "value": 180.0
         },
         "gate_mode": {
           "value": "hard"
@@ -562,8 +1088,8 @@
         "gate_penalty": {
           "value": 0.05
         },
-        "raycast_bucket_in": {
-          "value": 12.0
+        "gate_reject_ratio": {
+          "value": 0.9
         },
         "likelihood_field": {
           "resolution_in": {
@@ -572,9 +1098,6 @@
           "max_bytes": {
             "value": 262144
           }
-        },
-        "gate_reject_ratio": {
-          "value": 0.9
         }
       },
       "imu": {
@@ -582,30 +1105,13 @@
           "value": 1
         },
         "sigma_deg": {
-          "value": 1.0
+          "value": 0.4
         },
         "check_calibrating": {
           "value": 1
         },
         "fallback_noise_scale": {
           "value": 2.0
-        }
-      },
-      "vision": {
-        "enabled": {
-          "value": 0
-        },
-        "sigma_xy_in": {
-          "value": 2.0
-        },
-        "sigma_theta_deg": {
-          "value": 5.0
-        },
-        "confidence_min": {
-          "value": 0.0
-        },
-        "sim_confidence": {
-          "value": 1.0
         }
       }
     },
@@ -616,10 +1122,10 @@
             "value": "front"
           },
           "x_in": {
-            "value": 7.0
+            "value": 5.0
           },
           "y_in": {
-            "value": 0.0
+            "value": 1.0
           },
           "angle_deg": {
             "value": 0.0
@@ -646,7 +1152,7 @@
             "value": 0.0
           },
           "innovation_gate_mm": {
-            "value": 0.0
+            "value": 180.0
           },
           "map_mode": {
             "value": "both"
@@ -657,13 +1163,13 @@
         },
         {
           "name": {
-            "value": "left"
+            "value": "right"
           },
           "x_in": {
-            "value": 0.0
+            "value": 5.75
           },
           "y_in": {
-            "value": 7.0
+            "value": 0.0
           },
           "angle_deg": {
             "value": 90.0
@@ -690,7 +1196,7 @@
             "value": 0.0
           },
           "innovation_gate_mm": {
-            "value": 0.0
+            "value": 180.0
           },
           "map_mode": {
             "value": "both"
@@ -701,16 +1207,16 @@
         },
         {
           "name": {
-            "value": "sensor_3"
+            "value": "back"
           },
           "x_in": {
-            "value": 0.0
+            "value": 5.0
           },
           "y_in": {
-            "value": 0.0
+            "value": -1.0
           },
           "angle_deg": {
-            "value": 0.0
+            "value": 180.0
           },
           "bias_mm": {
             "value": 0.0
@@ -734,27 +1240,27 @@
             "value": 0.0
           },
           "innovation_gate_mm": {
-            "value": 0.0
+            "value": 180.0
           },
           "map_mode": {
-            "value": "both"
+            "value": "perimeter"
           },
           "enabled": {
-            "value": 0
+            "value": 1
           }
         },
         {
           "name": {
-            "value": "sensor_4"
+            "value": "left"
           },
           "x_in": {
-            "value": 0.0
+            "value": -5.75
           },
           "y_in": {
             "value": 0.0
           },
           "angle_deg": {
-            "value": 0.0
+            "value": -90.0
           },
           "bias_mm": {
             "value": 0.0
@@ -778,106 +1284,20 @@
             "value": 0.0
           },
           "innovation_gate_mm": {
-            "value": 0.0
+            "value": 180.0
           },
           "map_mode": {
             "value": "both"
           },
           "enabled": {
-            "value": 0
+            "value": 1
           }
         }
       ]
     },
-    "resample": {
-      "method": {
-        "value": "systematic"
-      },
-      "threshold": {
-        "value": 0.5
-      },
-      "always": {
+    "tracking": {
+      "horizontal_enabled": {
         "value": 0
-      },
-      "roughen_xy_in": {
-        "value": 0.12
-      },
-      "roughen_theta_deg": {
-        "value": 1.2
-      }
-    },
-    "kld": {
-      "enabled": {
-        "value": 0
-      },
-      "epsilon": {
-        "value": 0.05
-      },
-      "delta": {
-        "value": 0.99
-      },
-      "bin_xy_in": {
-        "value": 2.0
-      },
-      "bin_theta_deg": {
-        "value": 10.0
-      }
-    },
-    "augmented": {
-      "enabled": {
-        "value": 0
-      },
-      "alpha_slow": {
-        "value": 0.001
-      },
-      "alpha_fast": {
-        "value": 0.1
-      }
-    },
-    "random_injection": {
-      "value": 0.01
-    },
-    "recovery": {
-      "enabled": {
-        "value": 1
-      },
-      "ess_ratio_min": {
-        "value": 0.2
-      },
-      "ess_streak": {
-        "value": 3
-      },
-      "ekf_gate_reject_streak": {
-        "value": 3
-      },
-      "cooldown_ms": {
-        "value": 500
-      },
-      "lost_exit_confidence": {
-        "value": 0.55
-      },
-      "lost_exit_streak": {
-        "value": 3
-      },
-      "lost_injection_fraction": {
-        "value": 0.15
-      },
-      "lost_force_reinit_ms": {
-        "value": 0
-      }
-    },
-    "frame_sign_self_test": {
-      "enabled": {
-        "value": 1
-      },
-      "min_delta_deg": {
-        "value": 2.0
-      },
-      "samples": {
-        "value": 6
-      },
-      "mismatch_threshold": {
-        "value": 5
       }
     },
     "map_objects": {
@@ -947,7 +1367,7 @@
     "sensor_object_visibility": {
       "0": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -956,7 +1376,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -965,10 +1385,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -991,7 +1411,7 @@
       },
       "front": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -1000,7 +1420,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -1009,10 +1429,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -1035,7 +1455,7 @@
       },
       "1": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -1044,7 +1464,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -1053,10 +1473,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -1077,9 +1497,9 @@
           "value": 0
         }
       },
-      "left": {
+      "right": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -1088,7 +1508,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -1097,10 +1517,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -1123,7 +1543,7 @@
       },
       "2": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -1132,7 +1552,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -1141,10 +1561,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -1165,9 +1585,9 @@
           "value": 0
         }
       },
-      "sensor_3": {
+      "back": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -1176,7 +1596,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -1185,10 +1605,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -1211,7 +1631,7 @@
       },
       "3": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -1220,7 +1640,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -1229,10 +1649,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -1253,9 +1673,9 @@
           "value": 0
         }
       },
-      "sensor_4": {
+      "left": {
         "long_goal_left": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_left_top": {
           "value": 1
@@ -1264,7 +1684,7 @@
           "value": 1
         },
         "long_goal_right": {
-          "value": 1
+          "value": 0
         },
         "long_goal_brace_right_top": {
           "value": 1
@@ -1273,10 +1693,10 @@
           "value": 1
         },
         "center_goal_pos45": {
-          "value": 1
+          "value": 0
         },
         "center_goal_neg45": {
-          "value": 1
+          "value": 0
         },
         "matchloader_left_bottom": {
           "value": 1
@@ -1296,121 +1716,11 @@
         "park_zone_top": {
           "value": 0
         }
-      }
-    },
-    "region": {
-      "enabled": {
-        "value": 1
-      },
-      "mode": {
-        "value": "hard"
-      },
-      "type": {
-        "value": "segment_path"
-      },
-      "update_mode": {
-        "value": "segment_path"
-      },
-      "penalty": {
-        "value": 0.2
-      },
-      "perimeter_gate": {
-        "value": 1
-      },
-      "object_gate": {
-        "value": 0
-      },
-      "object_mode": {
-        "value": 1
-      },
-      "object_clip_free_in": {
-        "value": 0.5
-      },
-      "object_clip_max_in": {
-        "value": 2.0
-      },
-      "object_clip_sigma_in": {
-        "value": 0.75
-      },
-      "grid_type": {
-        "value": "quadrant"
-      },
-      "grid_x": {
-        "value": 2
-      },
-      "grid_y": {
-        "value": 2
-      },
-      "x_min_in": {
-        "value": 0.0
-      },
-      "x_max_in": {
-        "value": 144.0
-      },
-      "y_min_in": {
-        "value": 0.0
-      },
-      "y_max_in": {
-        "value": 144.0
-      },
-      "radius_in": {
-        "value": 12.0
-      },
-      "slope_enabled": {
-        "value": 0
-      },
-      "slope_sigma_deg": {
-        "value": 20.0
-      },
-      "sample_attempts": {
-        "value": 50
-      }
-    },
-    "confidence": {
-      "metric": {
-        "value": "peakedness"
-      },
-      "threshold": {
-        "value": 0.0
-      },
-      "auto_reinit": {
-        "value": 0
-      },
-      "reinit_mode": {
-        "value": "global"
-      }
-    },
-    "mode_split": {
-      "enabled": {
-        "value": 1
-      },
-      "conf_max": {
-        "value": 0.55
-      },
-      "min_separation_in": {
-        "value": 8.0
-      },
-      "min_mass": {
-        "value": 0.15
-      }
-    },
-    "cgr_lite": {
-      "enabled": {
-        "value": 1
-      },
-      "top_k": {
-        "value": 8
-      },
-      "max_iters": {
-        "value": 2
-      },
-      "budget_ms": {
-        "value": 1.5
       }
     },
     "interop": {
       "pose_convention": {
-        "value": "cw_zero_forward"
+        "value": "atticus"
       },
       "swap_xy": {
         "value": 0
@@ -1430,16 +1740,19 @@
         "value": 0.6
       },
       "max_trans_jump_in": {
-        "value": 8.0
+        "value": 4.0
       },
       "max_theta_jump_deg": {
-        "value": 15.0
+        "value": 8.0
       },
-      "alpha_min": {
-        "value": 0.05
+      "writeback_alpha": {
+        "value": 0.35
       },
-      "alpha_max": {
-        "value": 0.25
+      "teleport_reset_trans_in": {
+        "value": 10.0
+      },
+      "teleport_reset_theta_deg": {
+        "value": 30.0
       },
       "safe_window_enabled": {
         "value": 1
@@ -1455,40 +1768,43 @@
       "enabled": {
         "value": 1
       },
-      "mcl_min_conf": {
+      "localizer_min_conf": {
         "value": 0.6
       },
+      "use_imu_update": {
+        "value": 1
+      },
       "sigma_dx_in": {
-        "value": 0.1275
+        "value": 0.08
       },
       "sigma_dy_in": {
-        "value": 0.1275
+        "value": 0.08
       },
       "sigma_dtheta_deg": {
-        "value": 1.0
+        "value": 0.7
       },
       "imu_sigma_deg": {
         "value": 1.0
       },
-      "mcl_sigma_x_min": {
+      "pose_sigma_x_min": {
         "value": 0.2
       },
-      "mcl_sigma_x_max": {
+      "pose_sigma_x_max": {
         "value": 6.0
       },
-      "mcl_sigma_y_min": {
+      "pose_sigma_y_min": {
         "value": 0.2
       },
-      "mcl_sigma_y_max": {
+      "pose_sigma_y_max": {
         "value": 6.0
       },
-      "mcl_sigma_theta_min": {
+      "pose_sigma_theta_min": {
         "value": 2.0
       },
-      "mcl_sigma_theta_max": {
+      "pose_sigma_theta_max": {
         "value": 15.0
       },
-      "mcl_mahalanobis_gate": {
+      "pose_mahalanobis_gate": {
         "value": 11.34
       },
       "init_sigma_xy_in": {
@@ -1499,9 +1815,6 @@
       }
     },
     "ui": {
-      "show_particles": {
-        "value": 1
-      },
       "show_estimate": {
         "value": 1
       },
@@ -1509,27 +1822,10 @@
         "value": 1
       },
       "show_rays": {
-        "value": 1
-      },
-      "show_region": {
-        "value": 1
+        "value": 0
       },
       "show_gating": {
         "value": 1
-      },
-      "max_particles_draw": {
-        "value": 500
-      }
-    },
-    "tuning": {
-      "enabled": {
-        "value": 0
-      },
-      "log_rate_hz": {
-        "value": 20
-      },
-      "particle_subsample": {
-        "value": 0
       }
     }
   }

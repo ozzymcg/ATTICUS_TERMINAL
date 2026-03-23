@@ -19,6 +19,7 @@ TEXT_COLOR  = (255, 255, 255)
 RED         = (255, 0, 0)
 ORANGE      = (255, 165, 0)
 GOLD        = (255, 215, 0)
+DARK_RED    = (255, 245, 140)
 SELECTED    = TEXT_COLOR
 WHITE       = (255, 255, 255)
 GREY        = (130, 130, 130)
@@ -26,30 +27,28 @@ GREY        = (130, 130, 130)
 CONFIG_FILENAME = "config.json"
 APP_DIRNAME = "AtticusTerminal"
 
-DEFAULT_MCL = {
-    "config_version": {"value": 7},
+DEFAULT_ATTICUS = {
+    "config_version": {"value": 8},
     "enabled": {"value": 0},
-    "loop_ms": {"value": 10},
-    "stall_ms": {"value": 20},
-    "motion_ms": {"value": 10},
-    "sensor_ms": {"value": 50},
-    "particles": {
-        "n": {"value": 350},
-        "n_min": {"value": 250},
-        "n_max": {"value": 500}
-    },
+    "loop_ms": {"value": 20},
+    "stall_ms": {"value": 40},
+    "motion_ms": {"value": 20},
+    "sensor_ms": {"value": 20},
     "motion": {
         "enabled": {"value": 1},
         "motion_model": {"value": "drive"},
         "motion_source": {"value": "encoders"},
-        "use_alpha_model": {"value": 0},
-        "sigma_x_in": {"value": 0.1275},
-        "sigma_y_in": {"value": 0.1275},
-        "sigma_theta_deg": {"value": 1.0},
-        "alpha1": {"value": 0.05},
-        "alpha2": {"value": 0.05},
-        "alpha3": {"value": 0.05},
-        "alpha4": {"value": 0.05},
+        "sigma_x_in": {"value": 0.08},
+        "sigma_y_in": {"value": 0.08},
+        "sigma_theta_deg": {"value": 0.7},
+        "sigma_x_per_in": {"value": 0.02},
+        "sigma_y_per_in": {"value": 0.03},
+        "sigma_theta_per_deg": {"value": 0.05},
+        "no_horizontal_lateral_scale": {"value": 2.5},
+        "turn_lateral_scale": {"value": 2.0},
+        "rough_wall_sigma_x_scale": {"value": 1.8},
+        "rough_wall_sigma_y_scale": {"value": 3.5},
+        "rough_wall_sigma_theta_scale": {"value": 1.25},
         "delta_guard_enabled": {"value": 1},
         "max_dx_in_per_tick": {"value": 0.0},
         "max_dy_in_per_tick": {"value": 0.0},
@@ -69,8 +68,8 @@ DEFAULT_MCL = {
             "model": {"value": "likelihood_field"},
             "sigma_hit_mm": {"value": 15.0},
             "sigma_far_scale": {"value": 0.05},
-            "sigma_min_mm": {"value": 8.0},
-            "sigma_max_mm": {"value": 120.0},
+            "sigma_min_mm": {"value": 15.0},
+            "sigma_max_mm": {"value": 100.0},
             "min_sensor_weight": {"value": 0.000001},
             "conf_sigma_scale": {"value": 1.0},
             "w_hit": {"value": 0.9},
@@ -83,7 +82,7 @@ DEFAULT_MCL = {
             "confidence_min": {"value": 0.0},
             "object_size_min": {"value": 0.0},
             "object_size_max": {"value": 0.0},
-            "innovation_gate_mm": {"value": 0.0},
+            "innovation_gate_mm": {"value": 180.0},
             "median_window": {"value": 3},
             "batch_size": {"value": 3},
             "lf_ignore_max": {"value": 0},
@@ -93,7 +92,7 @@ DEFAULT_MCL = {
             "fov_half_deg_near": {"value": 18.0},
             "fov_half_deg_far": {"value": 12.0},
             "fov_switch_mm": {"value": 203.0},
-            "gate_mm": {"value": 150.0},
+            "gate_mm": {"value": 180.0},
             "gate_mode": {"value": "hard"},
             "gate_penalty": {"value": 0.05},
             "raycast_bucket_in": {"value": 12.0},
@@ -107,54 +106,13 @@ DEFAULT_MCL = {
             "sigma_deg": {"value": 1.0},
             "check_calibrating": {"value": 1},
             "fallback_noise_scale": {"value": 2.0}
-        },
-        "vision": {
-            "enabled": {"value": 0},
-            "sigma_xy_in": {"value": 2.0},
-            "sigma_theta_deg": {"value": 5.0},
-            "confidence_min": {"value": 0.0},
-            "sim_confidence": {"value": 1.0}
         }
     },
     "sensor_geometry": {
         "distance_sensors": []
     },
-    "resample": {
-        "method": {"value": "systematic"},
-        "threshold": {"value": 0.5},
-        "always": {"value": 0},
-        "roughen_xy_in": {"value": 0.12},
-        "roughen_theta_deg": {"value": 1.2}
-    },
-    "kld": {
-        "enabled": {"value": 0},
-        "epsilon": {"value": 0.05},
-        "delta": {"value": 0.99},
-        "bin_xy_in": {"value": 2.0},
-        "bin_theta_deg": {"value": 10.0}
-    },
-    "augmented": {
-        "enabled": {"value": 0},
-        "alpha_slow": {"value": 0.001},
-        "alpha_fast": {"value": 0.1}
-    },
-    "random_injection": {"value": 0.01},
-    "recovery": {
-        "enabled": {"value": 1},
-        "ess_ratio_min": {"value": 0.2},
-        "ess_streak": {"value": 3},
-        "ekf_gate_reject_streak": {"value": 3},
-        "cooldown_ms": {"value": 500},
-        "lost_exit_confidence": {"value": 0.55},
-        "lost_exit_streak": {"value": 3},
-        "lost_injection_fraction": {"value": 0.15},
-        "lost_force_reinit_ms": {"value": 0}
-    },
-    "frame_sign_self_test": {
-        "enabled": {"value": 1},
-        "min_delta_deg": {"value": 2.0},
-        "samples": {"value": 6},
-        "mismatch_threshold": {"value": 5}
+    "tracking": {
+        "horizontal_enabled": {"value": 0}
     },
     "map_objects": {
         "perimeter": {"value": 1},
@@ -166,48 +124,6 @@ DEFAULT_MCL = {
     },
     "object_selection": {},
     "sensor_object_visibility": {},
-    "region": {
-        "enabled": {"value": 1},
-        "mode": {"value": "hard"},
-        "type": {"value": "segment_path"},
-        "update_mode": {"value": "segment_path"},
-        "penalty": {"value": 0.2},
-        "perimeter_gate": {"value": 1},
-        "object_gate": {"value": 0},
-        "object_mode": {"value": 1},
-        "object_clip_free_in": {"value": 0.5},
-        "object_clip_max_in": {"value": 2.0},
-        "object_clip_sigma_in": {"value": 0.75},
-        "grid_type": {"value": "quadrant"},
-        "grid_x": {"value": 2},
-        "grid_y": {"value": 2},
-        "x_min_in": {"value": 0.0},
-        "x_max_in": {"value": 144.0},
-        "y_min_in": {"value": 0.0},
-        "y_max_in": {"value": 144.0},
-        "radius_in": {"value": 12.0},
-        "slope_enabled": {"value": 0},
-        "slope_sigma_deg": {"value": 20.0},
-        "sample_attempts": {"value": 50}
-    },
-    "confidence": {
-        "metric": {"value": "peakedness"},
-        "threshold": {"value": 0.0},
-        "auto_reinit": {"value": 0},
-        "reinit_mode": {"value": "global"}
-    },
-    "mode_split": {
-        "enabled": {"value": 1},
-        "conf_max": {"value": 0.55},
-        "min_separation_in": {"value": 8.0},
-        "min_mass": {"value": 0.15}
-    },
-    "cgr_lite": {
-        "enabled": {"value": 1},
-        "top_k": {"value": 8},
-        "max_iters": {"value": 2},
-        "budget_ms": {"value": 1.5}
-    },
     "interop": {
         "pose_convention": {"value": "cw_zero_forward"},
         "swap_xy": {"value": 0},
@@ -217,37 +133,37 @@ DEFAULT_MCL = {
     "correction": {
         "enabled": {"value": 1},
         "min_confidence": {"value": 0.6},
-        "max_trans_jump_in": {"value": 8.0},
-        "max_theta_jump_deg": {"value": 15.0},
-        "alpha_min": {"value": 0.05},
-        "alpha_max": {"value": 0.25},
+        "max_trans_jump_in": {"value": 4.0},
+        "max_theta_jump_deg": {"value": 8.0},
+        "writeback_alpha": {"value": 0.35},
+        "teleport_reset_trans_in": {"value": 18.0},
+        "teleport_reset_theta_deg": {"value": 45.0},
         "safe_window_enabled": {"value": 1},
         "safe_max_speed_in_s": {"value": 8.0},
         "safe_max_turn_deg_s": {"value": 60.0}
     },
     "ekf": {
         "enabled": {"value": 1},
-        "mcl_min_conf": {"value": 0.6},
-        "sigma_dx_in": {"value": 0.1275},
-        "sigma_dy_in": {"value": 0.1275},
-        "sigma_dtheta_deg": {"value": 1.0},
+        "localizer_min_conf": {"value": 0.6},
+        "use_imu_update": {"value": 1},
+        "sigma_dx_in": {"value": 0.08},
+        "sigma_dy_in": {"value": 0.08},
+        "sigma_dtheta_deg": {"value": 0.7},
         "imu_sigma_deg": {"value": 1.0},
-        "mcl_sigma_x_min": {"value": 0.2},
-        "mcl_sigma_x_max": {"value": 6.0},
-        "mcl_sigma_y_min": {"value": 0.2},
-        "mcl_sigma_y_max": {"value": 6.0},
-        "mcl_sigma_theta_min": {"value": 2.0},
-        "mcl_sigma_theta_max": {"value": 15.0},
-        "mcl_mahalanobis_gate": {"value": 11.34},
+        "pose_sigma_x_min": {"value": 0.2},
+        "pose_sigma_x_max": {"value": 6.0},
+        "pose_sigma_y_min": {"value": 0.2},
+        "pose_sigma_y_max": {"value": 6.0},
+        "pose_sigma_theta_min": {"value": 2.0},
+        "pose_sigma_theta_max": {"value": 15.0},
+        "pose_mahalanobis_gate": {"value": 11.34},
         "init_sigma_xy_in": {"value": 0.2},
         "init_sigma_theta_deg": {"value": 2.0}
     },
     "ui": {
-        "show_particles": {"value": 1},
         "show_estimate": {"value": 1},
         "show_covariance": {"value": 1},
         "show_rays": {"value": 1},
-        "show_region": {"value": 1},
         "show_gating": {"value": 1}
     }
 }
@@ -280,6 +196,7 @@ DEFAULT_CONFIG = {
     "offsets": {
         "offset_1_in": {"value": 5.0},
         "offset_2_in": {"value": 15.0},
+        "offset_3_in": {"value": 25.0},
         "padding_in":  {"value": 2.5},
     },
     "ui": {
@@ -316,11 +233,127 @@ DEFAULT_CONFIG = {
         "dtposition_offset": {
             "x": {"value": 0.0},
             "y": {"value": 1.5},
-        }
+        },
+        "advanced_geometry": {
+            "enabled": 0,
+            "symmetry": 0,
+            "points": [],
+            "reshape_points": [],
+        },
     },
     "codegen": {
         "style": {"value": "Action List"},
-        "templates": {},
+        "templates": {
+            "AttLib": {
+                "wait": "pros::delay({MS});",
+                "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+                "turn": "turn({HEADING_DEG});",
+                "face": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+                "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+                "mech": "// MECH: {NAME}",
+                "tbuffer": "pros::delay({MS});",
+                "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+                "__optional__": [
+                    "reshape_on",
+                    "reshape_off",
+                    "setpose",
+                    "swing",
+                    "path_follow",
+                    "marker_wait",
+                    "marker_wait_done"
+                ],
+                "__modes__": {
+                    "motion": "move",
+                    "turn": "turn_global"
+                },
+                "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+                "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, attlib::DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = attlib::AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+                "pose_angle": "",
+                "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+                "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+                "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+                "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+                "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
+                "reshape": "matchloadPistons.set_value({STATE});",
+                "reshape_on": "ml_mech.set_value(false);",
+                "reshape_off": "ml_mech.set_value(true);",
+                "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+                "marker_wait_done": "chassis.waitUntilDone();"
+            },
+            "Atticus": {
+                "wait": "pros::delay({MS});",
+                "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+                "turn": "turn({HEADING_DEG});",
+                "face": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+                "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+                "mech": "// MECH: {NAME}",
+                "tbuffer": "pros::delay({MS});",
+                "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+                "__optional__": [
+                    "reshape_on",
+                    "reshape_off",
+                    "setpose",
+                    "swing",
+                    "path_follow",
+                    "marker_wait",
+                    "marker_wait_done"
+                ],
+                "__modes__": {
+                    "motion": "move",
+                    "turn": "turn_global"
+                },
+                "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+                "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+                "pose_angle": "",
+                "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+                "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+                "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+                "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+                "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
+                "reshape": "matchloadPistons.set_value({STATE});",
+                "reshape_on": "ml_mech.set_value(true);",
+                "reshape_off": "ml_mech.set_value(false);",
+                "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+                "marker_wait_done": "chassis.waitUntilDone();"
+            },
+            "LemLib": {
+                "wait": "pros::delay({MS});",
+                "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+                "turn": "turn({HEADING_DEG});",
+                "face": "turnToHeading({HEADING_DEG}, {TIMEOUT_MS});",
+                "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+                "mech": "// MECH: {NAME}",
+                "tbuffer": "pros::delay({MS});",
+                "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+                "__optional__": [
+                    "reshape_on",
+                    "reshape_off",
+                    "setpose",
+                    "swing",
+                    "path_follow",
+                    "marker_wait",
+                    "marker_wait_done"
+                ],
+                "__modes__": {
+                    "motion": "move",
+                    "turn": "turn_global"
+                },
+                "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});",
+                "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+                "pose_angle": "",
+                "reshape": "matchloadPistons.set_value({STATE});",
+                "reshape_on": "ml_mech.set_value(false);",
+                "reshape_off": "ml_mech.set_value(true);",
+                "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+                "marker_wait_done": "chassis.waitUntilDone();"
+            }
+        },
         "opts": {
             "ticks_per_rotation": 360,
             "pad_factor": 1.0,
@@ -330,7 +363,8 @@ DEFAULT_CONFIG = {
         "path_dir": {"value": "export/paths"},
         "path_columns": {"value": "{X}, {Y}, {COMMAND}"},
         "mech_presets": [
-            {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False}
+            {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False},
+            {"name": "DSR", "mode": "action", "template": "", "on": "", "off": "", "default": False},
         ],
         "calibration": {
             "enabled": 0,
@@ -346,7 +380,14 @@ DEFAULT_CONFIG = {
             },
             "profiles": {}
         },
-        "motion_profiles": {}
+        "motion_profiles": {},
+        "attlib_sim": {
+            "visual_run": 0,
+            "module_dir": "",
+            "source": "timeline",
+            "routine_script": "",
+            "routine_function": "run_routine"
+        }
     },
     "physics_constants": {
         "load_factor": {"value": 0.9},
@@ -367,10 +408,12 @@ DEFAULT_CONFIG = {
         "turn_accel_max": {"value": 0.30},
         "omni_scale": {"value": 0.9}
     },
-    "mcl": DEFAULT_MCL
+    "atticus": DEFAULT_ATTICUS
 }
-MCL_CONFIG_VERSION = int(DEFAULT_MCL.get("config_version", {}).get("value", 1))
-_MCL_FUTURE_VERSION_WARNED = False
+DEFAULT_MCL = DEFAULT_ATTICUS
+ATTICUS_CONFIG_VERSION = int(DEFAULT_ATTICUS.get("config_version", {}).get("value", 1))
+MCL_CONFIG_VERSION = ATTICUS_CONFIG_VERSION
+_ATTICUS_FUTURE_VERSION_WARNED = False
 
 
 def _raw_value(v, default=None):
@@ -478,15 +521,24 @@ def load_config() -> dict:
             source_path = path
             break
     if data is None:
-        data = DEFAULT_CONFIG
+        data = _merge_defaults(DEFAULT_CONFIG, {})
+        if isinstance(data, dict):
+            data["atticus"] = _sanitize_atticus_cfg(data.get("atticus", {}))
         targets = [p for p in candidates if _can_write_file(p)]
         if not targets:
             targets = [os.path.normpath(os.path.join(_user_config_root(), CONFIG_FILENAME))]
         for path in targets[:2]:
             _save_json(path, data)
     else:
+        if isinstance(data, dict):
+            if "atticus" not in data and isinstance(data.get("mcl"), dict):
+                data["atticus"] = data.get("mcl", {})
+            data.pop("mcl", None)
+            data["atticus"] = _sanitize_atticus_cfg(data.get("atticus", {}))
         # Keep one schema source of truth by deep-filling defaults at load time.
         merged = _merge_defaults(DEFAULT_CONFIG, data)
+        if isinstance(merged, dict):
+            merged["atticus"] = _sanitize_atticus_cfg(merged.get("atticus", {}))
         if merged != data:
             targets = [p for p in candidates if _can_write_file(p)]
             if not targets:
@@ -505,6 +557,27 @@ def save_config(cfg_dict: dict) -> bool:
     try:
         """Handle wrap."""
         def wrap(v): return {"value": v}
+        def _sanitize_poly_points(raw_points):
+            """Sanitize advanced geometry points for serialization."""
+            if isinstance(raw_points, dict):
+                raw_points = raw_points.get("value", [])
+            if not isinstance(raw_points, (list, tuple)):
+                return []
+            out = []
+            for pt in raw_points:
+                x = y = None
+                if isinstance(pt, dict):
+                    x = pt.get("x", pt.get("x_in"))
+                    y = pt.get("y", pt.get("y_in"))
+                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    x, y = pt[0], pt[1]
+                if x is None or y is None:
+                    continue
+                try:
+                    out.append([round(float(x), 4), round(float(y), 4)])
+                except Exception:
+                    continue
+            return out
         def _wrap_tree(obj):
             """Handle wrap tree."""
             if isinstance(obj, dict):
@@ -522,6 +595,9 @@ def save_config(cfg_dict: dict) -> bool:
             path_cfg["max_speed_cmd"] = path_cfg.pop("max_speed_ips")
         path_cfg.pop("min_speed_ips", None)
         path_cfg.pop("max_speed_ips", None)
+        adv_cfg = bd.get("advanced_geometry", {})
+        if not isinstance(adv_cfg, dict):
+            adv_cfg = {}
         raw = {
             "robot_physics": {k: wrap(float(v)) for k, v in cfg_dict["robot_physics"].items()},
             "bot_dimensions": {
@@ -536,6 +612,12 @@ def save_config(cfg_dict: dict) -> bool:
                     "length":      wrap(float(bd.get("reshape_length", 0.0))),
                     "offset_x_in": wrap(float(bd.get("reshape_offset_x_in", 0.0))),
                     "offset_y_in": wrap(float(bd.get("reshape_offset_y_in", 0.0))),
+                },
+                "advanced_geometry": {
+                    "enabled": int(bool(adv_cfg.get("enabled", 0))),
+                    "symmetry": int(bool(adv_cfg.get("symmetry", 0))),
+                    "points": _sanitize_poly_points(adv_cfg.get("points", [])),
+                    "reshape_points": _sanitize_poly_points(adv_cfg.get("reshape_points", [])),
                 },
             },
             "offsets": {k: wrap(float(v)) for k, v in cfg_dict["offsets"].items()},
@@ -555,13 +637,18 @@ def save_config(cfg_dict: dict) -> bool:
                 "path_columns": {"value": cfg_dict.get("codegen", {}).get("path_columns", "{X}, {Y}, {COMMAND}")},
                 "mech_presets": cfg_dict.get("codegen", {}).get("mech_presets", []),
                 "calibration": cfg_dict.get("codegen", {}).get("calibration", {}),
-                "motion_profiles": cfg_dict.get("codegen", {}).get("motion_profiles", {})
+                "motion_profiles": cfg_dict.get("codegen", {}).get("motion_profiles", {}),
+                "attlib_sim": cfg_dict.get("codegen", {}).get("attlib_sim", {})
             },
             "physics_constants": {
                 k: wrap(float(v))
                 for k, v in cfg_dict.get("physics_constants", {}).items()
             },
-            "mcl": _wrap_tree(cfg_dict.get("mcl", DEFAULT_MCL)),
+            "atticus": _wrap_tree(
+                _sanitize_atticus_cfg(
+                    cfg_dict.get("atticus", cfg_dict.get("mcl", DEFAULT_ATTICUS))
+                )
+            ),
         }
         
         targets = []
@@ -652,9 +739,125 @@ def _unwrap_values(obj):
     return obj
 
 
+def _sanitize_atticus_cfg(raw_atticus):
+    """Strip config branches that only existed for the removed particle-filter path."""
+    if not isinstance(raw_atticus, dict):
+        raw_atticus = {}
+    atticus = dict(raw_atticus)
+    for key in (
+        "particles",
+        "resample",
+        "kld",
+        "augmented",
+        "random_injection",
+        "recovery",
+        "frame_sign_self_test",
+        "region",
+        "confidence",
+        "mode_split",
+        "cgr_lite",
+        "tuning",
+    ):
+        atticus.pop(key, None)
+    sensors = atticus.get("sensors", {})
+    if isinstance(sensors, dict):
+        sensors = dict(sensors)
+        sensors.pop("vision", None)
+        atticus["sensors"] = sensors
+    motion_cfg = atticus.get("motion", {})
+    if isinstance(motion_cfg, dict):
+        motion_cfg = dict(motion_cfg)
+        keep_motion = {
+            "enabled": motion_cfg.get("enabled", 1),
+            "motion_model": motion_cfg.get("motion_model", "drive"),
+            "motion_source": motion_cfg.get("motion_source", "encoders"),
+            "sigma_x_in": motion_cfg.get("sigma_x_in", 0.08),
+            "sigma_y_in": motion_cfg.get("sigma_y_in", 0.08),
+            "sigma_theta_deg": motion_cfg.get("sigma_theta_deg", 0.7),
+            "sigma_x_per_in": motion_cfg.get("sigma_x_per_in", 0.02),
+            "sigma_y_per_in": motion_cfg.get("sigma_y_per_in", 0.03),
+            "sigma_theta_per_deg": motion_cfg.get("sigma_theta_per_deg", 0.05),
+            "no_horizontal_lateral_scale": motion_cfg.get("no_horizontal_lateral_scale", 2.5),
+            "turn_lateral_scale": motion_cfg.get("turn_lateral_scale", 2.0),
+            "rough_wall_sigma_x_scale": motion_cfg.get("rough_wall_sigma_x_scale", 1.8),
+            "rough_wall_sigma_y_scale": motion_cfg.get("rough_wall_sigma_y_scale", 3.5),
+            "rough_wall_sigma_theta_scale": motion_cfg.get("rough_wall_sigma_theta_scale", 1.25),
+            "delta_guard_enabled": motion_cfg.get("delta_guard_enabled", 1),
+            "max_dx_in_per_tick": motion_cfg.get("max_dx_in_per_tick", 0.0),
+            "max_dy_in_per_tick": motion_cfg.get("max_dy_in_per_tick", 0.0),
+            "max_dtheta_deg_per_tick": motion_cfg.get("max_dtheta_deg_per_tick", 0.0),
+            "guard_vmax_in_s": motion_cfg.get("guard_vmax_in_s", 60.0),
+            "guard_wmax_deg_s": motion_cfg.get("guard_wmax_deg_s", 540.0),
+            "guard_margin_in": motion_cfg.get("guard_margin_in", 0.5),
+            "guard_margin_deg": motion_cfg.get("guard_margin_deg", 8.0),
+            "fault_inflate_cycles": motion_cfg.get("fault_inflate_cycles", 2),
+            "fault_noise_scale": motion_cfg.get("fault_noise_scale", 2.5),
+        }
+        atticus["motion"] = keep_motion
+    tracking_cfg = atticus.get("tracking", {})
+    if isinstance(tracking_cfg, dict):
+        tracking_cfg = dict(tracking_cfg)
+    else:
+        tracking_cfg = {}
+    atticus["tracking"] = {
+        "horizontal_enabled": tracking_cfg.get("horizontal_enabled", 0),
+    }
+    corr_cfg = atticus.get("correction", {})
+    if isinstance(corr_cfg, dict):
+        corr_cfg = dict(corr_cfg)
+    else:
+        corr_cfg = {}
+    legacy_alpha = corr_cfg.get("alpha_max", corr_cfg.get("alpha_min", 0.35))
+    atticus["correction"] = {
+        "enabled": corr_cfg.get("enabled", 1),
+        "min_confidence": corr_cfg.get("min_confidence", 0.6),
+        "max_trans_jump_in": corr_cfg.get("max_trans_jump_in", 4.0),
+        "max_theta_jump_deg": corr_cfg.get("max_theta_jump_deg", 8.0),
+        "writeback_alpha": corr_cfg.get("writeback_alpha", legacy_alpha),
+        "teleport_reset_trans_in": corr_cfg.get("teleport_reset_trans_in", 18.0),
+        "teleport_reset_theta_deg": corr_cfg.get("teleport_reset_theta_deg", 45.0),
+        "safe_window_enabled": corr_cfg.get("safe_window_enabled", 1),
+        "safe_max_speed_in_s": corr_cfg.get("safe_max_speed_in_s", 8.0),
+        "safe_max_turn_deg_s": corr_cfg.get("safe_max_turn_deg_s", 60.0),
+    }
+    ekf_cfg = atticus.get("ekf", {})
+    if isinstance(ekf_cfg, dict):
+        ekf_cfg = dict(ekf_cfg)
+        keep = {
+            "enabled": ekf_cfg.get("enabled", 1),
+            "localizer_min_conf": ekf_cfg.get("localizer_min_conf", ekf_cfg.get("mcl_min_conf", 0.6)),
+            "use_imu_update": ekf_cfg.get("use_imu_update", 1),
+            "sigma_dx_in": ekf_cfg.get("sigma_dx_in", 0.08),
+            "sigma_dy_in": ekf_cfg.get("sigma_dy_in", 0.08),
+            "sigma_dtheta_deg": ekf_cfg.get("sigma_dtheta_deg", 0.7),
+            "imu_sigma_deg": ekf_cfg.get("imu_sigma_deg", 1.0),
+            "pose_sigma_x_min": ekf_cfg.get("pose_sigma_x_min", ekf_cfg.get("mcl_sigma_x_min", 0.2)),
+            "pose_sigma_x_max": ekf_cfg.get("pose_sigma_x_max", ekf_cfg.get("mcl_sigma_x_max", 6.0)),
+            "pose_sigma_y_min": ekf_cfg.get("pose_sigma_y_min", ekf_cfg.get("mcl_sigma_y_min", 0.2)),
+            "pose_sigma_y_max": ekf_cfg.get("pose_sigma_y_max", ekf_cfg.get("mcl_sigma_y_max", 6.0)),
+            "pose_sigma_theta_min": ekf_cfg.get("pose_sigma_theta_min", ekf_cfg.get("mcl_sigma_theta_min", 2.0)),
+            "pose_sigma_theta_max": ekf_cfg.get("pose_sigma_theta_max", ekf_cfg.get("mcl_sigma_theta_max", 15.0)),
+            "pose_mahalanobis_gate": ekf_cfg.get("pose_mahalanobis_gate", ekf_cfg.get("mcl_mahalanobis_gate", 11.34)),
+            "init_sigma_xy_in": ekf_cfg.get("init_sigma_xy_in", 0.2),
+            "init_sigma_theta_deg": ekf_cfg.get("init_sigma_theta_deg", 2.0),
+        }
+        atticus["ekf"] = keep
+    ui_cfg = atticus.get("ui", {})
+    if isinstance(ui_cfg, dict):
+        ui_cfg = dict(ui_cfg)
+        atticus["ui"] = {
+            "show_estimate": ui_cfg.get("show_estimate", 1),
+            "show_covariance": ui_cfg.get("show_covariance", 1),
+            "show_rays": ui_cfg.get("show_rays", 1),
+            "show_gating": ui_cfg.get("show_gating", 1),
+        }
+    return atticus
+
+
 def reload_cfg() -> dict:
     """Reload configuration from disk and normalize nested values."""
     raw = load_config()
+    robot_physics = physics_flat(raw)
     dims = dims_flat(raw)
     bd_raw = raw.get("bot_dimensions", {})
     reshape_raw = bd_raw.get("reshape", {})
@@ -664,6 +867,58 @@ def reload_cfg() -> dict:
     dims["reshape_length"] = _num(reshape_raw.get("length", {"value": dims.get("length", 0.0)}), dims.get("length", 0.0))
     dims["reshape_offset_x_in"] = _num(reshape_raw.get("offset_x_in", {"value": 0.0}), 0.0)
     dims["reshape_offset_y_in"] = _num(reshape_raw.get("offset_y_in", {"value": 0.0}), 0.0)
+    adv_raw = bd_raw.get("advanced_geometry", {})
+    if not isinstance(adv_raw, dict):
+        adv_raw = {}
+    adv_enabled_raw = adv_raw.get("enabled", 0)
+    if isinstance(adv_enabled_raw, dict):
+        adv_enabled_raw = adv_enabled_raw.get("value", 0)
+    try:
+        adv_enabled = int(bool(int(adv_enabled_raw)))
+    except Exception:
+        adv_enabled = int(bool(adv_enabled_raw))
+    adv_sym_raw = adv_raw.get("symmetry", 0)
+    if isinstance(adv_sym_raw, dict):
+        adv_sym_raw = adv_sym_raw.get("value", 0)
+    try:
+        adv_symmetry = int(bool(int(adv_sym_raw)))
+    except Exception:
+        adv_symmetry = int(bool(adv_sym_raw))
+    def _adv_points(raw_points):
+        """Normalize advanced geometry points."""
+        if isinstance(raw_points, dict):
+            raw_points = raw_points.get("value", [])
+        if not isinstance(raw_points, (list, tuple)):
+            return []
+        out = []
+        for pt in raw_points:
+            x = y = None
+            if isinstance(pt, dict):
+                x = pt.get("x", pt.get("x_in"))
+                y = pt.get("y", pt.get("y_in"))
+            elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                x, y = pt[0], pt[1]
+            if x is None or y is None:
+                continue
+            try:
+                out.append([float(x), float(y)])
+            except Exception:
+                continue
+        return out
+    adv_points = _adv_points(adv_raw.get("points", []))
+    adv_reshape_points = _adv_points(adv_raw.get("reshape_points", []))
+    legacy_normal = _adv_points(adv_raw.get("normal", []))
+    legacy_reshape = _adv_points(adv_raw.get("reshape", []))
+    if not adv_points:
+        adv_points = legacy_normal if legacy_normal else legacy_reshape
+    if not adv_reshape_points:
+        adv_reshape_points = legacy_reshape if legacy_reshape else adv_points
+    dims["advanced_geometry"] = {
+        "enabled": adv_enabled,
+        "symmetry": adv_symmetry,
+        "points": adv_points,
+        "reshape_points": adv_reshape_points,
+    }
 
     ui_raw = raw.get("ui", {})
     ui = {k: v.get("value", v) if isinstance(v, dict) else v for k, v in ui_raw.items()}
@@ -707,6 +962,7 @@ def reload_cfg() -> dict:
         "mech_presets": codegen_raw.get("mech_presets", []),
         "calibration": codegen_raw.get("calibration", {}),
         "motion_profiles": codegen_raw.get("motion_profiles", {}),
+        "attlib_sim": codegen_raw.get("attlib_sim", {}),
     }
     phys_raw = raw.get("physics_constants", {})
     phys_defaults = DEFAULT_CONFIG.get("physics_constants", {})
@@ -720,50 +976,131 @@ def reload_cfg() -> dict:
     else:
         reshape_label = reshape_raw
 
-    mcl_defaults = DEFAULT_CONFIG.get("mcl", {})
-    mcl_raw = raw.get("mcl", {})
-    if not isinstance(mcl_raw, dict):
-        mcl_raw = {}
-    loaded_mcl_version = _raw_value(mcl_raw.get("config_version", 1), 1)
+    atticus_defaults = DEFAULT_CONFIG.get("atticus", {})
+    atticus_raw = raw.get("atticus", raw.get("mcl", {}))
+    if not isinstance(atticus_raw, dict):
+        atticus_raw = {}
+    loaded_atticus_version = _raw_value(atticus_raw.get("config_version", 1), 1)
     try:
-        loaded_mcl_version = int(loaded_mcl_version)
+        loaded_atticus_version = int(loaded_atticus_version)
     except Exception:
-        loaded_mcl_version = 1
-    global _MCL_FUTURE_VERSION_WARNED
-    if loaded_mcl_version > MCL_CONFIG_VERSION and not _MCL_FUTURE_VERSION_WARNED:
+        loaded_atticus_version = 1
+    global _ATTICUS_FUTURE_VERSION_WARNED
+    if loaded_atticus_version > ATTICUS_CONFIG_VERSION and not _ATTICUS_FUTURE_VERSION_WARNED:
         print(
-            f"Warning: unsupported mcl.config_version={loaded_mcl_version} "
-            f"(supported={MCL_CONFIG_VERSION}); using compatibility fallback."
+            f"Warning: unsupported atticus.config_version={loaded_atticus_version} "
+            f"(supported={ATTICUS_CONFIG_VERSION}); using compatibility fallback."
         )
-        _MCL_FUTURE_VERSION_WARNED = True
-    mcl = _unwrap_values(_merge_defaults(mcl_defaults, mcl_raw))
-    if loaded_mcl_version < 3:
+        _ATTICUS_FUTURE_VERSION_WARNED = True
+    mcl = _sanitize_atticus_cfg(_unwrap_values(_merge_defaults(atticus_defaults, atticus_raw)))
+    if loaded_atticus_version < 3:
         rates = mcl.get("rates", {})
         if isinstance(rates, dict):
             if "motion_ms" in rates:
-                mcl["motion_ms"] = rates.get("motion_ms", mcl.get("motion_ms", 10.0))
+                mcl["motion_ms"] = rates.get("motion_ms", mcl.get("motion_ms", 20.0))
             if "sensor_ms" in rates:
-                mcl["sensor_ms"] = rates.get("sensor_ms", mcl.get("sensor_ms", 50.0))
+                mcl["sensor_ms"] = rates.get("sensor_ms", mcl.get("sensor_ms", 20.0))
         motion_noise = mcl.get("motion_noise", {})
         if isinstance(motion_noise, dict):
             motion_cfg = mcl.setdefault("motion", {})
-            for key in ("sigma_x_in", "sigma_y_in", "sigma_theta_deg", "alpha1", "alpha2", "alpha3", "alpha4"):
+            for key in ("sigma_x_in", "sigma_y_in", "sigma_theta_deg"):
                 if key in motion_noise:
                     motion_cfg[key] = motion_noise.get(key, motion_cfg.get(key))
-        if "resample_method" in mcl or "resample_threshold" in mcl or "resample_always" in mcl:
-            resample_cfg = mcl.get("resample", {})
-            if not isinstance(resample_cfg, dict):
-                resample_cfg = {}
-            if "resample_method" in mcl:
-                resample_cfg["method"] = mcl.get("resample_method", resample_cfg.get("method", "systematic"))
-            if "resample_threshold" in mcl:
-                resample_cfg["threshold"] = mcl.get("resample_threshold", resample_cfg.get("threshold", 0.5))
-            if "resample_always" in mcl:
-                resample_cfg["always"] = mcl.get("resample_always", resample_cfg.get("always", 0))
-            mcl["resample"] = resample_cfg
-        parts_cfg = mcl.get("particles", {})
-        if isinstance(parts_cfg, dict) and "random_injection" in parts_cfg:
-            mcl["random_injection"] = parts_cfg.get("random_injection", mcl.get("random_injection", 0.01))
+    if loaded_atticus_version < 8:
+        def _legacy_num(value, default):
+            """Coerce old scalar values without breaking config reload."""
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+        if _legacy_num(mcl.get("loop_ms", 20.0), 20.0) == 10.0:
+            mcl["loop_ms"] = 20.0
+        if _legacy_num(mcl.get("motion_ms", 20.0), 20.0) == 10.0:
+            mcl["motion_ms"] = 20.0
+        if _legacy_num(mcl.get("sensor_ms", 20.0), 20.0) == 50.0:
+            mcl["sensor_ms"] = 20.0
+        motion_legacy = mcl.get("motion", {})
+        if isinstance(motion_legacy, dict):
+            if _legacy_num(motion_legacy.get("sigma_x_in", 0.08), 0.08) == 0.1275:
+                motion_legacy["sigma_x_in"] = 0.08
+            if _legacy_num(motion_legacy.get("sigma_y_in", 0.08), 0.08) == 0.1275:
+                motion_legacy["sigma_y_in"] = 0.08
+            if _legacy_num(motion_legacy.get("sigma_theta_deg", 0.7), 0.7) == 1.0:
+                motion_legacy["sigma_theta_deg"] = 0.7
+            motion_legacy.setdefault("sigma_x_per_in", 0.02)
+            motion_legacy.setdefault("sigma_y_per_in", 0.03)
+            motion_legacy.setdefault("sigma_theta_per_deg", 0.05)
+            motion_legacy.setdefault("no_horizontal_lateral_scale", 2.5)
+            motion_legacy.setdefault("turn_lateral_scale", 2.0)
+            motion_legacy.setdefault("rough_wall_sigma_x_scale", 1.8)
+            motion_legacy.setdefault("rough_wall_sigma_y_scale", 3.5)
+            motion_legacy.setdefault("rough_wall_sigma_theta_scale", 1.25)
+            mcl["motion"] = motion_legacy
+        sensors_legacy = mcl.get("sensors", {})
+        if isinstance(sensors_legacy, dict):
+            dist_legacy = sensors_legacy.get("distance", {})
+            if isinstance(dist_legacy, dict):
+                if _legacy_num(dist_legacy.get("sigma_hit_mm", 15.0), 15.0) in (22.0, 15.0):
+                    dist_legacy["sigma_hit_mm"] = 15.0
+                if _legacy_num(dist_legacy.get("sigma_min_mm", 15.0), 15.0) in (8.0, 12.0, 15.0):
+                    dist_legacy["sigma_min_mm"] = 15.0
+                if _legacy_num(dist_legacy.get("sigma_max_mm", 100.0), 100.0) in (120.0, 90.0, 100.0):
+                    dist_legacy["sigma_max_mm"] = 100.0
+                if _legacy_num(dist_legacy.get("innovation_gate_mm", 180.0), 180.0) == 0.0:
+                    dist_legacy["innovation_gate_mm"] = 180.0
+                if _legacy_num(dist_legacy.get("gate_mm", 180.0), 180.0) == 150.0:
+                    dist_legacy["gate_mm"] = 180.0
+                sensors_legacy["distance"] = dist_legacy
+            mcl["sensors"] = sensors_legacy
+        tracking_cfg = mcl.get("tracking", {})
+        if not isinstance(tracking_cfg, dict):
+            tracking_cfg = {}
+        if "horizontal_enabled" not in tracking_cfg:
+            try:
+                tracking_cfg["horizontal_enabled"] = 1 if int(robot_physics.get("tracking_wheels", 0)) >= 2 else 0
+            except Exception:
+                tracking_cfg["horizontal_enabled"] = 0
+        mcl["tracking"] = tracking_cfg
+        corr_cfg = mcl.get("correction", {})
+        if not isinstance(corr_cfg, dict):
+            corr_cfg = {}
+        if "writeback_alpha" not in corr_cfg:
+            alpha_max = corr_cfg.get("alpha_max", 0.25)
+            alpha_min = corr_cfg.get("alpha_min", 0.05)
+            if _legacy_num(alpha_max, 0.25) == 0.25 and _legacy_num(alpha_min, 0.05) == 0.05:
+                corr_cfg["writeback_alpha"] = 0.35
+            else:
+                corr_cfg["writeback_alpha"] = alpha_max
+        if _legacy_num(corr_cfg.get("max_trans_jump_in", 4.0), 4.0) == 8.0:
+            corr_cfg["max_trans_jump_in"] = 4.0
+        if _legacy_num(corr_cfg.get("max_theta_jump_deg", 8.0), 8.0) == 15.0:
+            corr_cfg["max_theta_jump_deg"] = 8.0
+        corr_cfg.setdefault("teleport_reset_trans_in", 18.0)
+        corr_cfg.setdefault("teleport_reset_theta_deg", 45.0)
+        mcl["correction"] = corr_cfg
+        geom_cfg = mcl.get("sensor_geometry", {})
+        if not isinstance(geom_cfg, dict):
+            geom_cfg = {}
+        sensors = geom_cfg.get("distance_sensors", [])
+        if isinstance(sensors, list):
+            migrated = []
+            for sensor in sensors:
+                if not isinstance(sensor, dict):
+                    continue
+                entry = dict(sensor)
+                try:
+                    legacy_x = float(entry.get("x_in", 0.0))
+                except Exception:
+                    legacy_x = 0.0
+                try:
+                    legacy_y = float(entry.get("y_in", 0.0))
+                except Exception:
+                    legacy_y = 0.0
+                entry["x_in"] = -legacy_y
+                entry["y_in"] = legacy_x
+                migrated.append(entry)
+            geom_cfg["distance_sensors"] = migrated
+            mcl["sensor_geometry"] = geom_cfg
     motion_cfg = mcl.get("motion", {})
     if not isinstance(motion_cfg, dict):
         motion_cfg = {}
@@ -778,26 +1115,25 @@ def reload_cfg() -> dict:
     dist_cfg = sensors_cfg.get("distance", {})
     if not isinstance(dist_cfg, dict):
         dist_cfg = {}
-    dist_model = str(dist_cfg.get("model", "likelihood_field")).strip().lower()
-    if dist_model not in ("likelihood_field", "beam"):
-        dist_model = "likelihood_field"
-    dist_cfg["model"] = dist_model
-    if dist_model != "likelihood_field":
-        # Beam mode is bounded to single-ray updates; LF mode is the multi-ray path.
-        dist_cfg["fov_multi_ray"] = 0
-        dist_cfg["rays_per_sensor"] = 1
+    try:
+        sigma_hit = float(dist_cfg.get("sigma_hit_mm", 15.0))
+        sigma_min = float(dist_cfg.get("sigma_min_mm", 15.0))
+        sigma_max = float(dist_cfg.get("sigma_max_mm", 100.0))
+        sigma_far = float(dist_cfg.get("sigma_far_scale", 0.05))
+    except Exception:
+        sigma_hit = sigma_min = sigma_max = sigma_far = None
+    if sigma_hit == 22.0 and sigma_min == 12.0 and sigma_max == 90.0 and sigma_far == 0.05:
+        dist_cfg["sigma_hit_mm"] = 15.0
+        dist_cfg["sigma_min_mm"] = 15.0
+        dist_cfg["sigma_max_mm"] = 100.0
+    # The terminal only ships the Atticus likelihood-field path now.
+    dist_cfg["model"] = "likelihood_field"
     sensors_cfg["distance"] = dist_cfg
     mcl["sensors"] = sensors_cfg
-    conf_cfg = mcl.get("confidence", {})
-    if not isinstance(conf_cfg, dict):
-        conf_cfg = {}
-    # Runtime confidence is peakedness-based; lock metric naming to avoid stale variants.
-    conf_cfg["metric"] = "peakedness"
-    mcl["confidence"] = conf_cfg
-    mcl["config_version"] = MCL_CONFIG_VERSION
+    mcl["config_version"] = ATTICUS_CONFIG_VERSION
 
     return {
-        "robot_physics": physics_flat(raw),
+        "robot_physics": robot_physics,
         "bot_dimensions": dims,
         "offsets": offsets_flat(raw),
         "ui": ui,
@@ -810,6 +1146,7 @@ def reload_cfg() -> dict:
         "path_config": path_cfg,
         "physics_constants": physics_constants,
         "reshape_label": str(reshape_label) if reshape_label is not None else "Reshape",
+        "atticus": mcl,
         "mcl": mcl,
     }
 

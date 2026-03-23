@@ -2,7 +2,7 @@
 
 # ATTICUS TERMINAL
 
-Atticus Terminal is a VEX Robotics autonomous editor that lets you express **intent in field geometry** (nodes, headings, paths, offsets, and action triggers), then compiles that intent into an **execution timeline**. That compiled timeline is used consistently for **simulation** (with overlays + collision checks), **conservative time estimation**, and **instant export/code generation** into your own library. Once you give the program your bot's geometry and sensor locations, you can optionally export a customized MCL system into your own PROS code and tune it automatically using the terminal's algorithm.
+Atticus Terminal is a VEX Robotics autonomous editor that lets you express **intent in field geometry** (nodes, headings, paths, offsets, and action triggers), then compiles that intent into an **execution timeline**. That compiled timeline is used consistently for **simulation** (with overlays + collision checks), **conservative time estimation**, and **instant export/code generation** into your own library. Once you give the program your bot's geometry and sensor locations, the terminal can also simulate the Atticus localization layer against the field map so you can validate sensor placement, gating, and writeback behavior before the robot touches the field.
 
 ## Purpose
 
@@ -10,7 +10,7 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 - Verifying clearances using a footprint of the robot's geometry and collision sampling before running on field.
 - Estimating whether an auton fits inside a time window through physics-based, tunable time estimation.
 - Exporting the same routine into different library styles (LemLib / JAR / Custom) using templates + mechanism presets.
-- Customizable **MCL + EKF localization** tools for drift correction/recovery, with import-based (microSD) tuning automation.
+- Built-in **Atticus localization** simulation tools for map-based drift correction around odometry using distance sensors and IMU heading.
 
 ---
 
@@ -24,18 +24,18 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 
 ---
 
-## Custom PROS MCL + EKF localization
+## Atticus localization
 
-Atticus Terminal includes an **MCL tab** for configuring an optional **Monte Carlo Localization w/ Extended Kalman Filter** drift-correction system, plus an automatic tuning system via microSD that support importing logs and exporting configuration/runtime artifacts.
-See pre-exported docs/API of this system in the ProsMCL folder.
+Atticus Terminal includes an **Atticus tab** for configuring the simulator-side Atticus localizer used by the app. The localizer is an odometry-centered, map-based correction layer: distance sensors raycast against the field, translation is trimmed conservatively, heading remains IMU-dominant, and bounded writeback can be visualized directly in sim.
 
 ## Quick Start (git clone)
 
 1. Clone this repository.
 2. Open a terminal in this folder.
 3. Install dependencies:
-   - Windows: `py -m pip install -r requirements.txt`
-   - macOS/Linux: `python3 -m pip install -r requirements.txt`
+   - Windows: `py -m pip install .`
+   - macOS/Linux: `python3 -m pip install .`
+   - Alternate: `py -m pip install -r requirements.txt`
 4. Run environment checks:
    - `py doctor.py` (Windows) or `python3 doctor.py` (macOS/Linux)
 5. Launch:

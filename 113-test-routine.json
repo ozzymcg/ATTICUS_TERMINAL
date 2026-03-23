@@ -1,0 +1,1845 @@
+{
+    "initial": {
+        "position": [
+            300,
+            300
+        ],
+        "heading": 180.0
+    },
+    "nodes": [
+        {
+            "pos": [
+                377.0,
+                570.0
+            ],
+            "path_to_next": {},
+            "edge_events": [
+                {
+                    "t": 0.31746031746031744,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "reshape",
+                            "state": null,
+                            "value": null,
+                            "values": []
+                        }
+                    ]
+                }
+            ],
+            "reverse": false,
+            "actions": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "atticus_correction_mode": "rough_wall",
+            "custom_lateral_cmd": 70.0,
+            "profile_override": "custom"
+        },
+        {
+            "pos": [
+                219.5,
+                570.0
+            ],
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "cw",
+            "swing_settle": false,
+            "move_to_pose": false,
+            "reshape_toggle": false,
+            "atticus_correction_mode": "rough_wall",
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        219.5,
+                        570.0
+                    ],
+                    "end_pos": [
+                        196.18869082259212,
+                        550.5651947294353
+                    ],
+                    "pivot": [
+                        219.5,
+                        546.3020833333334
+                    ],
+                    "start_heading": 180.0,
+                    "target_heading": 100.36358167477243,
+                    "diff_geom": {
+                        "center": [
+                            219.5,
+                            546.3020833333334
+                        ],
+                        "r0": [
+                            0.0,
+                            23.69791666666663
+                        ],
+                        "delta_deg": 79.63641832522757,
+                        "cw": true
+                    },
+                    "reverse_start": false,
+                    "reverse_end": false,
+                    "swing_dir": "cw"
+                },
+                "start_override": [
+                    196.18869082259212,
+                    550.5651947294353
+                ]
+            },
+            "edge_events": [
+                {
+                    "t": 0.5352317011867264,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "reshape",
+                            "state": null,
+                            "value": null,
+                            "values": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "pos": [
+                173.5,
+                426.5
+            ],
+            "path_to_next": {},
+            "reverse": true,
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 0.3
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "wait",
+                    "s": 0.3
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "edge_events": [
+                {
+                    "t": 0.8642654706077616,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "trap",
+                            "state": null,
+                            "value": "mid",
+                            "values": [
+                                "mid"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "pos": [
+                300,
+                300
+            ],
+            "offset": 3,
+            "reverse": false,
+            "path_to_next": {},
+            "edge_events": [
+                {
+                    "t": 0.8299002768623782,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "trap",
+                            "state": null,
+                            "value": "store",
+                            "values": [
+                                "store"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                106.99999999999994,
+                493.00000000000006
+            ],
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        106.99999999999994,
+                        493.00000000000006
+                    ],
+                    "end_pos": [
+                        100.05904611394774,
+                        509.7412501020399
+                    ],
+                    "pivot": [
+                        123.75695757499365,
+                        509.75695757499375
+                    ],
+                    "start_heading": 225.0,
+                    "target_heading": 269.962023160701,
+                    "diff_geom": {
+                        "center": [
+                            123.75695757499365,
+                            509.75695757499375
+                        ],
+                        "r0": [
+                            -16.756957574993706,
+                            -16.75695757499369
+                        ],
+                        "delta_deg": -44.962023160700994,
+                        "cw": false
+                    },
+                    "reverse_start": false,
+                    "reverse_end": false,
+                    "swing_dir": "ccw"
+                },
+                "start_override": [
+                    100.05904611394774,
+                    509.7412501020399
+                ]
+            },
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "ccw",
+            "swing_settle": true,
+            "move_to_pose": false,
+            "reshape_toggle": false
+        },
+        {
+            "pos": [
+                100,
+                600
+            ],
+            "offset": 2,
+            "reverse": true,
+            "path_to_next": {},
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "atticus_correction_mode": "immediate",
+            "offset_ghost_angle": 269.96251784290087
+        },
+        {
+            "pos": [
+                100,
+                500
+            ],
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        100,
+                        500
+                    ],
+                    "end_pos": [
+                        95.74485156940959,
+                        486.4695100624492
+                    ],
+                    "pivot": [
+                        76.30209041580619,
+                        500.01832156251106
+                    ],
+                    "start_heading": 270.04429707156595,
+                    "target_heading": 304.87095695954264,
+                    "diff_geom": {
+                        "center": [
+                            76.30209041580619,
+                            500.01832156251106
+                        ],
+                        "r0": [
+                            23.69790958419381,
+                            -0.018321562511061984
+                        ],
+                        "delta_deg": -34.82665988797669,
+                        "cw": false
+                    },
+                    "reverse_start": true,
+                    "reverse_end": true,
+                    "swing_dir": "ccw"
+                },
+                "start_override": [
+                    95.74485156940959,
+                    486.4695100624492
+                ]
+            },
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "ccw",
+            "swing_settle": false,
+            "move_to_pose": false,
+            "reshape_toggle": true,
+            "chain_through": true,
+            "chain_looseness": 0.3
+        },
+        {
+            "pos": [
+                55,
+                428
+            ],
+            "offset": 0,
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        55,
+                        428
+                    ],
+                    "end_pos": [
+                        50.74496793566713,
+                        414.5277960405054
+                    ],
+                    "pivot": [
+                        74.44276077681933,
+                        414.45118795924697
+                    ],
+                    "start_heading": 304.87095855290283,
+                    "target_heading": 270.1852199684652,
+                    "diff_geom": {
+                        "center": [
+                            74.44276077681933,
+                            414.45118795924697
+                        ],
+                        "r0": [
+                            -19.442760776819327,
+                            13.548812040753035
+                        ],
+                        "delta_deg": 34.685738584437615,
+                        "cw": true
+                    },
+                    "reverse_start": true,
+                    "reverse_end": true,
+                    "swing_dir": "cw"
+                },
+                "start_override": [
+                    50.74496793566713,
+                    414.5277960405054
+                ]
+            },
+            "reverse": false,
+            "actions": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "turn_mode": "swing",
+            "swing_dir": "cw",
+            "swing_settle": false,
+            "move_to_pose": false,
+            "atticus_correction_mode": "wall_trim",
+            "chain_through": true,
+            "chain_looseness": 0.1
+        },
+        {
+            "pos": [
+                50.0,
+                183.0
+            ],
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        50.0,
+                        183.0
+                    ],
+                    "end_pos": [
+                        60.24451263446935,
+                        163.41476509015277
+                    ],
+                    "pivot": [
+                        73.69779399459887,
+                        182.92374955848095
+                    ],
+                    "start_heading": 270.18435527835294,
+                    "target_heading": 214.58991883028978,
+                    "diff_geom": {
+                        "center": [
+                            73.69779399459887,
+                            182.92374955848095
+                        ],
+                        "r0": [
+                            -23.697793994598868,
+                            0.07625044151905058
+                        ],
+                        "delta_deg": 55.59443644806316,
+                        "cw": true
+                    },
+                    "reverse_start": true,
+                    "reverse_end": true,
+                    "swing_dir": "cw"
+                },
+                "start_override": [
+                    60.24451263446935,
+                    163.41476509015277
+                ]
+            },
+            "offset": 0,
+            "atticus_correction_mode": "wall_trim",
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "cw",
+            "move_to_pose": false,
+            "swing_settle": false,
+            "chain_through": true,
+            "chain_looseness": 0.1
+        },
+        {
+            "pos": [
+                100.0,
+                136.0
+            ],
+            "path_to_next": {
+                "pose_end_heading": 270.0,
+                "pose_end_heading_travel": 90.0
+            },
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "chain_through": false
+        },
+        {
+            "pos": [
+                100,
+                200
+            ],
+            "reverse": false,
+            "path_to_next": {},
+            "offset": 1,
+            "reshape_toggle": true,
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "trap",
+                    "state": null,
+                    "value": "high",
+                    "values": [
+                        "high"
+                    ]
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "trap",
+                    "state": null,
+                    "value": "high",
+                    "values": [
+                        "high"
+                    ]
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "edge_events": [
+                {
+                    "t": 0.5289416006136959,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "trap",
+                            "state": null,
+                            "value": "store",
+                            "values": [
+                                "store"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "atticus_correction_mode": "immediate"
+        },
+        {
+            "pos": [
+                100,
+                0
+            ],
+            "offset": 2,
+            "reverse": true,
+            "path_to_next": {},
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "edge_events": [
+                {
+                    "t": 0.9135087766360879,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "trap",
+                            "state": null,
+                            "value": "high",
+                            "values": [
+                                "high"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "atticus_correction_mode": "immediate"
+        },
+        {
+            "pos": [
+                100,
+                200
+            ],
+            "offset": 1,
+            "reverse": false,
+            "path_to_next": {
+                "pose_end_heading": 0.0,
+                "pose_end_heading_travel": 0.0,
+                "pose_preview_points": [
+                    [
+                        100.0,
+                        178.125
+                    ],
+                    [
+                        99.66764912980636,
+                        173.9716420059489
+                    ],
+                    [
+                        99.39160539286463,
+                        169.81417310281424
+                    ],
+                    [
+                        99.17491430354735,
+                        165.65318648341074
+                    ],
+                    [
+                        99.02202418670804,
+                        161.48936724991177
+                    ],
+                    [
+                        98.93539128569154,
+                        157.32365338465533
+                    ],
+                    [
+                        98.91790835978273,
+                        153.15708553982705
+                    ],
+                    [
+                        98.97326730225117,
+                        148.99085599092166
+                    ],
+                    [
+                        99.10532840472634,
+                        144.82635864543312
+                    ],
+                    [
+                        99.31811515134727,
+                        140.66521238615522
+                    ],
+                    [
+                        99.61580559732352,
+                        136.50928577633843
+                    ],
+                    [
+                        100.0027197158954,
+                        132.36072285545626
+                    ],
+                    [
+                        100.4833020607704,
+                        128.22196963491493
+                    ],
+                    [
+                        101.06280720737385,
+                        124.09590884211117
+                    ],
+                    [
+                        101.74737299307954,
+                        119.9859896047005
+                    ],
+                    [
+                        102.54007738640651,
+                        115.89557204023963
+                    ],
+                    [
+                        103.44703097306366,
+                        111.82897276436265
+                    ],
+                    [
+                        104.47479176953267,
+                        107.79122881368501
+                    ],
+                    [
+                        105.62669893405585,
+                        103.78715791041661
+                    ],
+                    [
+                        106.90995716925303,
+                        99.82324089006633
+                    ],
+                    [
+                        108.32882070808857,
+                        95.90585538720919
+                    ],
+                    [
+                        109.88700709544871,
+                        92.04178458877406
+                    ],
+                    [
+                        111.59048143626799,
+                        88.23953161744093
+                    ],
+                    [
+                        113.44254557823552,
+                        84.50744124062464
+                    ],
+                    [
+                        115.44499062311897,
+                        80.85387819336712
+                    ],
+                    [
+                        117.59967711809199,
+                        77.28800876628206
+                    ],
+                    [
+                        119.90720480506997,
+                        73.81910817569171
+                    ],
+                    [
+                        122.3668062168913,
+                        70.45633989870633
+                    ],
+                    [
+                        124.97628872524314,
+                        67.20851421131033
+                    ],
+                    [
+                        127.73203359123397,
+                        64.08383982526769
+                    ],
+                    [
+                        130.6290560918092,
+                        61.08968480491472
+                    ],
+                    [
+                        133.66112536835712,
+                        58.23236343334658
+                    ],
+                    [
+                        136.82093705013455,
+                        55.51696412731177
+                    ],
+                    [
+                        140.1003268212079,
+                        52.94722999636727
+                    ],
+                    [
+                        143.49050969408202,
+                        50.52549871370019
+                    ],
+                    [
+                        146.98232830592622,
+                        48.25270279621092
+                    ],
+                    [
+                        150.56680245298236,
+                        46.12897247678604
+                    ],
+                    [
+                        154.23508084482194,
+                        44.153502021909524
+                    ],
+                    [
+                        157.97763665397915,
+                        42.32265394635288
+                    ],
+                    [
+                        161.7859297219604,
+                        40.63273226811813
+                    ],
+                    [
+                        165.65249661660508,
+                        39.080661573015924
+                    ],
+                    [
+                        169.57023904862191,
+                        37.66269550999768
+                    ],
+                    [
+                        173.53153020835506,
+                        36.37127862626038
+                    ],
+                    [
+                        177.53159576082354,
+                        35.20543045400881
+                    ],
+                    [
+                        181.563752485114,
+                        34.15589464622898
+                    ],
+                    [
+                        185.623825379601,
+                        33.22007237759529
+                    ],
+                    [
+                        189.7072767198767,
+                        32.39214946459461
+                    ],
+                    [
+                        193.81009573925655,
+                        31.666205080022323
+                    ],
+                    [
+                        197.9289918879231,
+                        31.037734489208457
+                    ],
+                    [
+                        202.06106418228273,
+                        30.502564407624646
+                    ],
+                    [
+                        206.2037008305709,
+                        30.05639978789832
+                    ],
+                    [
+                        210.35452439071335,
+                        29.69418023320385
+                    ],
+                    [
+                        214.5115526936843,
+                        29.411834013284412
+                    ],
+                    [
+                        218.6730597063161,
+                        29.2055762064419
+                    ],
+                    [
+                        222.8375524951121,
+                        29.072511236652534
+                    ],
+                    [
+                        227.00367356691217,
+                        29.00836558091214
+                    ],
+                    [
+                        229.0,
+                        29.0
+                    ]
+                ],
+                "start_override": [
+                    100.0,
+                    178.125
+                ]
+            },
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.2
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.2
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": true,
+            "pose_heading_deg": 0.0,
+            "pose_lead_in": 0.72,
+            "reshape_toggle": true,
+            "edge_events": [
+                {
+                    "t": 0.7705055562257105,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "trap",
+                            "state": null,
+                            "value": "store",
+                            "values": [
+                                "store"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "atticus_correction_mode": "immediate"
+        },
+        {
+            "pos": [
+                229,
+                29
+            ],
+            "path_to_next": {},
+            "reshape_toggle": false,
+            "reverse": false,
+            "custom_lateral_cmd": 70.0,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "profile_override": "custom",
+            "atticus_correction_mode": "rough_wall",
+            "edge_events": [
+                {
+                    "t": 0.25287356321839083,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "reshape",
+                            "state": null,
+                            "value": null,
+                            "values": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "pos": [
+                403,
+                29
+            ],
+            "path_to_next": {},
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "reshape_toggle": false,
+            "chain_through": true,
+            "chain_looseness": 0.5,
+            "atticus_correction_mode": "rough_wall"
+        },
+        {
+            "pos": [
+                425,
+                50
+            ],
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        425,
+                        50
+                    ],
+                    "end_pos": [
+                        421.8813141186194,
+                        86.79357718840049
+                    ],
+                    "pivot": [
+                        408.63716329476364,
+                        67.14201940548568
+                    ],
+                    "start_heading": 316.3322198538696,
+                    "target_heading": 213.97796697771756,
+                    "diff_geom": {
+                        "center": [
+                            408.63716329476364,
+                            67.14201940548568
+                        ],
+                        "r0": [
+                            16.36283670523636,
+                            -17.142019405485684
+                        ],
+                        "delta_deg": 102.35425287615206,
+                        "cw": true
+                    },
+                    "reverse_start": false,
+                    "reverse_end": false,
+                    "swing_dir": "cw"
+                },
+                "start_override": [
+                    421.8813141186194,
+                    86.79357718840049
+                ]
+            },
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "cw",
+            "swing_settle": false,
+            "move_to_pose": false,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                279.5720735396393,
+                182.702739914072
+            ],
+            "path_to_next": {},
+            "reverse": false,
+            "chain_through": true,
+            "actions": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "custom_lateral_cmd": 60.0,
+            "profile_override": "custom",
+            "chain_looseness": 0.99
+        },
+        {
+            "pos": [
+                225,
+                225
+            ],
+            "path_to_next": {},
+            "actions": [],
+            "actions_out": []
+        },
+        {
+            "pos": [
+                300,
+                300
+            ],
+            "reverse": false,
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "outtake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "outtake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "offset": 0,
+            "offset_custom_in": 18.0,
+            "path_to_next": {}
+        },
+        {
+            "pos": [
+                225,
+                225
+            ],
+            "path_to_next": {},
+            "reverse": false,
+            "edge_events": [
+                {
+                    "t": 0.7553978663012626,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "reshape",
+                            "state": null,
+                            "value": null,
+                            "values": []
+                        }
+                    ]
+                }
+            ],
+            "chain_through": false,
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "outtake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "outtake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false
+        },
+        {
+            "pos": [
+                485,
+                136
+            ],
+            "path_to_next": {
+                "pose_end_heading": 90.0,
+                "pose_end_heading_travel": 90.0,
+                "swing_vis": {
+                    "start_pos": [
+                        485,
+                        136
+                    ],
+                    "end_pos": [
+                        501.02216898347035,
+                        113.36584966375764
+                    ],
+                    "pivot": [
+                        477.3252134000434,
+                        113.57927510125052
+                    ],
+                    "start_heading": 18.896469861126516,
+                    "target_heading": 90.51601760160958,
+                    "diff_geom": {
+                        "center": [
+                            477.3252134000434,
+                            113.57927510125052
+                        ],
+                        "r0": [
+                            7.674786599956576,
+                            22.420724898749484
+                        ],
+                        "delta_deg": -71.61954774048306,
+                        "cw": false
+                    },
+                    "reverse_start": false,
+                    "reverse_end": false,
+                    "swing_dir": "ccw"
+                },
+                "start_override": [
+                    501.02216898347035,
+                    113.36584966375764
+                ]
+            },
+            "reverse": false,
+            "actions": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "preset",
+                    "name": "intake",
+                    "state": null,
+                    "value": null,
+                    "values": []
+                }
+            ],
+            "turn_mode": "swing",
+            "swing_dir": "ccw",
+            "swing_settle": true,
+            "move_to_pose": false,
+            "chain_through": true,
+            "chain_looseness": 0.1
+        },
+        {
+            "pos": [
+                500,
+                0
+            ],
+            "offset": 2,
+            "reverse": true,
+            "path_to_next": {},
+            "actions": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "atticus_correction_mode": "immediate",
+            "offset_ghost_angle": 90.51659632817672
+        },
+        {
+            "pos": [
+                501.0,
+                100.0
+            ],
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        501.0,
+                        100.0
+                    ],
+                    "end_pos": [
+                        505.33701145645256,
+                        113.40311392348035
+                    ],
+                    "pivot": [
+                        524.6964404990886,
+                        99.7354966664958
+                    ],
+                    "start_heading": 90.63951779263505,
+                    "target_heading": 125.22181587485443,
+                    "diff_geom": {
+                        "center": [
+                            524.6964404990886,
+                            99.7354966664958
+                        ],
+                        "r0": [
+                            -23.696440499088567,
+                            0.2645033335041944
+                        ],
+                        "delta_deg": -34.58229808221938,
+                        "cw": false
+                    },
+                    "reverse_start": true,
+                    "reverse_end": true,
+                    "swing_dir": "ccw"
+                },
+                "start_override": [
+                    505.33701145645256,
+                    113.40311392348035
+                ]
+            },
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "ccw",
+            "move_to_pose": false,
+            "swing_settle": false,
+            "reshape_toggle": true
+        },
+        {
+            "pos": [
+                546.0,
+                171.0
+            ],
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        546.0,
+                        171.0
+                    ],
+                    "end_pos": [
+                        550.3384631965846,
+                        184.7019119783482
+                    ],
+                    "pivot": [
+                        526.6405713441446,
+                        184.66761780483805
+                    ],
+                    "start_heading": 125.22181749627077,
+                    "target_heading": 89.91708502829675,
+                    "diff_geom": {
+                        "center": [
+                            526.6405713441446,
+                            184.66761780483805
+                        ],
+                        "r0": [
+                            19.359428655855368,
+                            -13.667617804838045
+                        ],
+                        "delta_deg": 35.30473246797402,
+                        "cw": true
+                    },
+                    "reverse_start": true,
+                    "reverse_end": true,
+                    "swing_dir": "cw"
+                },
+                "start_override": [
+                    550.3384631965846,
+                    184.7019119783482
+                ]
+            },
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "cw",
+            "swing_settle": false,
+            "move_to_pose": false,
+            "chain_through": true,
+            "chain_looseness": 0.1,
+            "reshape_toggle": false,
+            "atticus_correction_mode": "wall_trim"
+        },
+        {
+            "pos": [
+                550.0,
+                416.0
+            ],
+            "path_to_next": {
+                "swing_vis": {
+                    "start_pos": [
+                        550.0,
+                        416.0
+                    ],
+                    "end_pos": [
+                        539.7922084856777,
+                        435.4488657639744
+                    ],
+                    "pivot": [
+                        526.3021087055431,
+                        415.96532239367633
+                    ],
+                    "start_heading": 89.91615798034081,
+                    "target_heading": 34.69812107131486,
+                    "diff_geom": {
+                        "center": [
+                            526.3021087055431,
+                            415.96532239367633
+                        ],
+                        "r0": [
+                            23.697891294456895,
+                            0.0346776063236689
+                        ],
+                        "delta_deg": 55.218036909025955,
+                        "cw": true
+                    },
+                    "reverse_start": true,
+                    "reverse_end": true,
+                    "swing_dir": "cw"
+                },
+                "start_override": [
+                    539.7922084856777,
+                    435.4488657639744
+                ]
+            },
+            "reverse": false,
+            "actions": [],
+            "actions_out": [],
+            "turn_mode": "swing",
+            "swing_dir": "cw",
+            "swing_settle": false,
+            "move_to_pose": false,
+            "chain_through": true,
+            "chain_looseness": 0.1,
+            "atticus_correction_mode": "wall_trim"
+        },
+        {
+            "pos": [
+                500.0,
+                463.0
+            ],
+            "path_to_next": {},
+            "actions": [],
+            "actions_out": []
+        },
+        {
+            "pos": [
+                500,
+                400
+            ],
+            "reverse": false,
+            "offset": 1,
+            "reshape_toggle": true,
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "trap",
+                    "state": null,
+                    "value": "high",
+                    "values": [
+                        "high"
+                    ]
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                },
+                {
+                    "type": "preset",
+                    "name": "trap",
+                    "state": null,
+                    "value": "store",
+                    "values": [
+                        "store"
+                    ]
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "preset",
+                    "name": "trap",
+                    "state": null,
+                    "value": "high",
+                    "values": [
+                        "high"
+                    ]
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                },
+                {
+                    "type": "preset",
+                    "name": "trap",
+                    "state": null,
+                    "value": "store",
+                    "values": [
+                        "store"
+                    ]
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "atticus_correction_mode": "immediate",
+            "path_to_next": {}
+        },
+        {
+            "pos": [
+                500,
+                600
+            ],
+            "offset": 2,
+            "reverse": false,
+            "path_to_next": {},
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.0
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": false,
+            "edge_events": [
+                {
+                    "t": 0.8377618944121121,
+                    "enabled": true,
+                    "actions": [
+                        {
+                            "kind": "preset",
+                            "name": "trap",
+                            "state": null,
+                            "value": "high",
+                            "values": [
+                                "high"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "atticus_correction_mode": "immediate"
+        },
+        {
+            "pos": [
+                500,
+                400
+            ],
+            "offset": 1,
+            "reverse": false,
+            "path_to_next": {
+                "pose_end_heading": 180.0,
+                "pose_end_heading_travel": 180.0,
+                "pose_preview_points": [
+                    [
+                        500.0,
+                        421.875
+                    ],
+                    [
+                        499.9651792483273,
+                        426.0414396027394
+                    ],
+                    [
+                        499.84150294445925,
+                        430.20617889893674
+                    ],
+                    [
+                        499.6220782035104,
+                        434.36696660215824
+                    ],
+                    [
+                        499.30476926677085,
+                        438.52141767297576
+                    ],
+                    [
+                        498.88552855321046,
+                        442.66682383257665
+                    ],
+                    [
+                        498.3583702498145,
+                        446.7998867217085
+                    ],
+                    [
+                        497.7204317228583,
+                        450.91728301391487
+                    ],
+                    [
+                        496.96773400091496,
+                        455.0152364084584
+                    ],
+                    [
+                        496.09616594783665,
+                        459.08955126936934
+                    ],
+                    [
+                        495.10186601418815,
+                        463.13565377979603
+                    ],
+                    [
+                        493.9812974767467,
+                        467.14860808714593
+                    ],
+                    [
+                        492.7313262366844,
+                        471.12314417736854
+                    ],
+                    [
+                        491.3492987226221,
+                        475.053698432003
+                    ],
+                    [
+                        489.83311699757957,
+                        478.9344673052006
+                    ],
+                    [
+                        488.1813078425343,
+                        482.75947390136065
+                    ],
+                    [
+                        486.3928905732162,
+                        486.52255097525045
+                    ],
+                    [
+                        484.4665430055545,
+                        490.2169090151375
+                    ],
+                    [
+                        482.40435025522805,
+                        493.83716733559083
+                    ],
+                    [
+                        480.20785677302365,
+                        497.37754573120606
+                    ],
+                    [
+                        477.87937572193056,
+                        500.83256479707535
+                    ],
+                    [
+                        475.42040993754455,
+                        504.1959681384881
+                    ],
+                    [
+                        472.83619636822675,
+                        507.46410577328965
+                    ],
+                    [
+                        470.1313555256991,
+                        510.63313301589665
+                    ],
+                    [
+                        467.3108408088604,
+                        513.6996864026407
+                    ],
+                    [
+                        464.37942676801293,
+                        516.66042889168
+                    ],
+                    [
+                        461.34319861113096,
+                        519.513588507963
+                    ],
+                    [
+                        458.20869155781077,
+                        522.2584147131514
+                    ],
+                    [
+                        454.9820344258568,
+                        524.8943120428736
+                    ],
+                    [
+                        451.6693976109374,
+                        527.4213270211557
+                    ],
+                    [
+                        448.27690790856997,
+                        529.8401048580234
+                    ],
+                    [
+                        444.81057357014635,
+                        532.1518364005714
+                    ],
+                    [
+                        441.27622081935135,
+                        534.3581982923865
+                    ],
+                    [
+                        437.67944233524463,
+                        536.4612891940787
+                    ],
+                    [
+                        434.02555758284643,
+                        538.4635646595099
+                    ],
+                    [
+                        430.31906962488745,
+                        540.366734874189
+                    ],
+                    [
+                        426.5648132389146,
+                        542.1738508467803
+                    ],
+                    [
+                        422.76751452924003,
+                        543.8886954265874
+                    ],
+                    [
+                        418.93071993080383,
+                        545.513289665405
+                    ],
+                    [
+                        415.05809200758347,
+                        547.0505194738228
+                    ],
+                    [
+                        411.1533721390547,
+                        548.5043342523386
+                    ],
+                    [
+                        407.2191582341245,
+                        549.8763475643261
+                    ],
+                    [
+                        403.25865467467054,
+                        551.1705335037371
+                    ],
+                    [
+                        399.27446305220906,
+                        552.389876652652
+                    ],
+                    [
+                        395.26848572186486,
+                        553.5356387468346
+                    ],
+                    [
+                        391.24334675693666,
+                        554.6121531459129
+                    ],
+                    [
+                        387.200911512556,
+                        555.6218051241816
+                    ],
+                    [
+                        383.1428980846624,
+                        556.5669413780455
+                    ],
+                    [
+                        379.0707478692042,
+                        557.4492039765573
+                    ],
+                    [
+                        374.98610490979564,
+                        558.2716934944114
+                    ],
+                    [
+                        370.89030091764465,
+                        559.0366759207943
+                    ],
+                    [
+                        366.7845361498688,
+                        559.7462700750544
+                    ],
+                    [
+                        362.6699068584511,
+                        560.4025322366805
+                    ],
+                    [
+                        358.5474128316329,
+                        561.0074543318665
+                    ],
+                    [
+                        354.4179366503921,
+                        561.5627451371969
+                    ],
+                    [
+                        350.2822599505772,
+                        562.0697973394505
+                    ],
+                    [
+                        346.1412116512189,
+                        562.5309116023352
+                    ],
+                    [
+                        341.99548029109235,
+                        562.9478295700354
+                    ],
+                    [
+                        337.84568919861204,
+                        563.3222273788429
+                    ],
+                    [
+                        333.69233313620293,
+                        563.6547952207277
+                    ],
+                    [
+                        329.5359558016074,
+                        563.9471698994678
+                    ],
+                    [
+                        325.3770790252424,
+                        564.2015516163289
+                    ],
+                    [
+                        321.2160599172966,
+                        564.4181370691379
+                    ],
+                    [
+                        317.0533197833569,
+                        564.5986192110311
+                    ],
+                    [
+                        312.88922707997216,
+                        564.74468337043
+                    ],
+                    [
+                        308.72406400245114,
+                        564.8561259467928
+                    ],
+                    [
+                        304.5581696286439,
+                        564.9357454860224
+                    ],
+                    [
+                        300.3917784565273,
+                        564.982676087429
+                    ],
+                    [
+                        296.2251570423449,
+                        564.9996693855281
+                    ],
+                    [
+                        296.0,
+                        565.0
+                    ]
+                ],
+                "start_override": [
+                    500.0,
+                    421.875
+                ]
+            },
+            "actions": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "actions_out": [
+                {
+                    "type": "reverse",
+                    "state": null
+                },
+                {
+                    "type": "wait",
+                    "s": 2.5
+                }
+            ],
+            "turn_mode": "turn",
+            "swing_dir": "auto",
+            "move_to_pose": true,
+            "pose_heading_deg": 180.0,
+            "pose_lead_in": 0.82,
+            "reshape_toggle": true,
+            "atticus_correction_mode": "immediate"
+        },
+        {
+            "pos": [
+                296,
+                565
+            ],
+            "actions": [],
+            "actions_out": []
+        }
+    ]
+}

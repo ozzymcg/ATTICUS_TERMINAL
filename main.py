@@ -1,5 +1,6 @@
-import os, math, json, copy, re, random, sys, subprocess
+import os, math, json, copy, re, random, sys, subprocess, importlib, importlib.machinery, threading, traceback, time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -32,10 +33,11 @@ try:
     import pygame
 except ModuleNotFoundError:
     py_cmd = "py" if os.name == "nt" else "python3"
-    exe_hint = f"\"{sys.executable}\" -m pip install -r requirements.txt"
+    exe_hint = f"\"{sys.executable}\" -m pip install ."
     msg = (
         "Missing dependency: pygame.\n\n"
         "Install it with one of:\n"
+        f"  {py_cmd} -m pip install .\n"
         f"  {py_cmd} -m pip install -r requirements.txt\n"
         f"  {exe_hint}\n\n"
         "Tip (Windows Store Python): use the `py -m pip ...` form."
@@ -60,7 +62,8 @@ from mod.geom import (
 from mod.sim import (
     snap_to_grid, compile_timeline,
     sample_turn_heading_trap, sample_move_profile, vmax_straight, accel_straight, _turn_accel_deg_s2,
-    correct_nodes_inbounds, sample_path_position, path_time_with_curvature, turn_rate
+    correct_nodes_inbounds, sample_path_position, path_time_with_curvature, turn_rate,
+    boomerang_curve_points
 )
 from mod.draw import (
     draw_grid, draw_robot, draw_chevron, draw_nodes,
@@ -77,9 +80,7 @@ from mod.util import (
 )
 from mod.codegen import build_export_lines, pick_profile, SETTLE_BASE, VOLTAGE_SHAPES
 from mod import ui
-from mod import mcl as mcl_mod
-from mod import mcl_codegen
-from mod import mcl_tuning as mcl_tuning_mod
+from mod import localizer_sim as mcl_mod
 
 # macOS Tk/SDL guard:
 # If SDL (pygame) initializes NSApp first, modern Tk can crash with
@@ -126,12 +127,13 @@ CONTROLS = [
     ("Shift+Click Line", "Insert a node along a straight segment."),
     ("RightClick", "Node commands: turn X, wait Y,\n offset Z, reshape"),
     ("M", "Add/Edit a mechanism marker on the hovered segment."),
+    ("B", "Cycle Atticus correction: off -> immediate -> wall trim -> rough wall"),
     ("P", "Toggle path edit mode for \n hovered/selected node"),
     ("U", "Toggle spline type in path edit mode\n(uniform/centripetal)."),
     ("T", "Toggle path look-ahead simulation \n(Pure Pursuit)"),
     ("SPACE / CTRL+SPACE", "Start-Pause / Reset"),
     ("Q", "Toggle Snap-to-Grid"),
-    ("F", "Cycle offset: none → 1 → 2"),
+    ("F", "Cycle offset: none -> 1 -> 2 -> 3"),
     ("R / G", "Toggle Reverse / Reshape Geometry at node"),
     ("Hold Backspace/Delete + Click", "Delete clicked node(s)"),
     ("Delete / Backspace", "Delete currently selected node\n(node 0 is protected)."),
@@ -156,8 +158,78 @@ font = pygame.font.SysFont(None, 20)
 font_small = pygame.font.SysFont(None, 16)
 
 TEMPLATE_BG = "#f2f4f7"
+ATTICUS_DSR_RECOMMENDED_STILL_MS = 20.0
+ATTICUS_IMMEDIATE_HIGHLIGHT_MS = 220.0
+
+_LOCKED_MECH_PRESET_SPECS = {
+    "reshape": {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False},
+    "dsr": {"name": "DSR", "mode": "action", "template": "", "on": "", "off": "", "default": False},
+}
+
+
+def _locked_mech_preset_key(name: object) -> Optional[str]:
+    """Return the normalized locked-preset key for a built-in mechanism command."""
+    key = str(name or "").strip().lower()
+    return key if key in _LOCKED_MECH_PRESET_SPECS else None
+
+
+def _locked_mech_preset_spec(key: str) -> dict:
+    """Return a fresh locked-preset payload for the requested built-in command."""
+    spec = _LOCKED_MECH_PRESET_SPECS.get(str(key or "").strip().lower())
+    return dict(spec) if isinstance(spec, dict) else {}
+
+
+def _ensure_locked_mech_presets(cfg: dict) -> list[dict]:
+    """Keep built-in mechanism commands present, deduplicated, and uneditable."""
+    codegen = cfg.setdefault("codegen", {}) if isinstance(cfg, dict) else {}
+    presets = codegen.get("mech_presets", [])
+    if not isinstance(presets, list):
+        presets = []
+        codegen["mech_presets"] = presets
+    merged = []
+    seen_locked = set()
+    for item in presets:
+        if not isinstance(item, dict):
+            continue
+        locked_key = _locked_mech_preset_key(item.get("name", ""))
+        if locked_key is None:
+            merged.append(item)
+            continue
+        if locked_key in seen_locked:
+            continue
+        merged.append(_locked_mech_preset_spec(locked_key))
+        seen_locked.add(locked_key)
+    for locked_key in ("reshape", "dsr"):
+        if locked_key not in seen_locked:
+            merged.append(_locked_mech_preset_spec(locked_key))
+    presets[:] = merged
+    return presets
+
+def _default_attlib_sim_module_dir() -> str:
+    """Best-effort default directory for the built attlib_sim module."""
+    base = Path(APP_ROOT).resolve().parent
+    candidates = [
+        base / "Project Atticus" / "atticode" / "host" / "build313",
+        base / "Project Atticus" / "atticode" / "host" / "build",
+    ]
+    ext_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES or ())
+    for path in candidates:
+        if not path.exists():
+            continue
+        if any((path / f"attlib_sim{sfx}").exists() for sfx in ext_suffixes):
+            return str(path)
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return str(candidates[-1])
+
+def _default_attlib_sim_routine_script() -> str:
+    """Best-effort default script used for external AttLibSim routine mode."""
+    base = Path(APP_ROOT).resolve().parent
+    return str(base / "Project Atticus" / "atticode" / "host" / "run_attlibsim.py")
 
 CFG = reload_cfg()
+_ensure_locked_mech_presets(CFG)
 
 initial_state = {"position": (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2), "heading": 0.0}
 try:
@@ -195,6 +267,37 @@ last_path_sig = None
 history_freeze = False
 total_estimate_s = 0.0
 log_lines = []
+_ESTIMATE_CACHE_VERSION = 1
+_estimate_total_cache = {}
+_path_duration_cache = {}
+
+_attlib_cfg = CFG.setdefault("codegen", {}).setdefault("attlib_sim", {})
+def _attlib_cfg_get(name: str, default):
+    """Read an AttLibSim config field with compatibility for wrapped values."""
+    value = _attlib_cfg.get(name, default)
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value", default)
+    return value
+
+attlib_sim_visual_run = bool(_attlib_cfg_get("visual_run", 0))
+attlib_sim_module_dir = str(_attlib_cfg_get("module_dir", _default_attlib_sim_module_dir()))
+attlib_sim_source = str(_attlib_cfg_get("source", "timeline"))
+attlib_sim_routine_script = str(_attlib_cfg_get("routine_script", _default_attlib_sim_routine_script()))
+attlib_sim_routine_func = str(_attlib_cfg_get("routine_function", "run_routine"))
+attlib_sim_status = "idle"
+attlib_sim_runtime = {
+    "running": False,
+    "module": None,
+    "chassis": None,
+    "mode": "timeline",
+    "plan": [],
+    "index": 0,
+    "wait_elapsed_s": 0.0,
+    "external_thread": None,
+    "external_done": False,
+    "external_error": None,
+    "external_result": None,
+}
 
 path_lookahead_enabled = bool(CFG.get("path_config", {}).get("simulate_pursuit", 1))
 path_lookahead_px = float(CFG.get("path_config", {}).get("lookahead_in", auto_lookahead_in(CFG))) * PPI
@@ -240,6 +343,174 @@ tutorial_state = {
 
 mcl_state = mcl_mod.MCLState()
 mcl_enabled = bool(CFG.get("mcl", {}).get("enabled", 0))
+atticus_runtime = {
+    "wall_trim_ctx": None,
+    "rough_wall_ctx": None,
+    "highlight_mode": None,
+    "highlight_sensors": [],
+    "highlight_ms": 0.0,
+    "sticky": False,
+}
+
+def _atticus_style_selected() -> bool:
+    """True when the current export style is the Atticus localizer surface."""
+    style = CFG.get("codegen", {}).get("style", "")
+    if isinstance(style, dict):
+        style = style.get("value", "")
+    style = str(style).strip()
+    if style == "AttLib":
+        style = "Atticus"
+    return style == "Atticus"
+
+
+def _node_atticus_correction_mode(node: dict):
+    """Return normalized per-node Atticus correction mode."""
+    mode = str(node.get("atticus_correction_mode", "") or "").strip().lower()
+    if mode in ("immediate", "wall_trim", "rough_wall"):
+        return mode
+    return None
+
+
+def _set_node_atticus_correction_mode(node: dict, mode):
+    """Store or clear the per-node Atticus correction mode."""
+    if mode in ("immediate", "wall_trim", "rough_wall"):
+        node["atticus_correction_mode"] = str(mode)
+    else:
+        node.pop("atticus_correction_mode", None)
+
+
+def _clear_atticus_runtime():
+    """Clear any active manual Atticus correction state/highlights."""
+    atticus_runtime["wall_trim_ctx"] = None
+    atticus_runtime["rough_wall_ctx"] = None
+    atticus_runtime["highlight_mode"] = None
+    atticus_runtime["highlight_sensors"] = []
+    atticus_runtime["highlight_ms"] = 0.0
+    atticus_runtime["sticky"] = False
+    try:
+        mcl_state.rough_wall_ctx = None
+    except Exception:
+        pass
+
+
+def _set_atticus_ray_highlight(mode: str, sensor_names, hold_ms: float = 0.0, sticky: bool = False):
+    """Track a temporary or sticky ray highlight for manual Atticus corrections."""
+    names = sorted({str(name).strip() for name in (sensor_names or []) if str(name).strip()})
+    if not names:
+        if not sticky:
+            atticus_runtime["highlight_mode"] = None
+            atticus_runtime["highlight_sensors"] = []
+            atticus_runtime["highlight_ms"] = 0.0
+            atticus_runtime["sticky"] = False
+        return
+    atticus_runtime["highlight_mode"] = str(mode or "").strip().lower() or None
+    atticus_runtime["highlight_sensors"] = names
+    atticus_runtime["highlight_ms"] = max(0.0, float(hold_ms or 0.0))
+    atticus_runtime["sticky"] = bool(sticky)
+
+
+def _apply_atticus_ray_highlight(dt_ms: float = 0.0):
+    """Project the active manual-correction highlight onto the latest sensor rays."""
+    if not atticus_runtime.get("sticky"):
+        try:
+            atticus_runtime["highlight_ms"] = max(0.0, float(atticus_runtime.get("highlight_ms", 0.0)) - float(dt_ms or 0.0))
+        except Exception:
+            atticus_runtime["highlight_ms"] = 0.0
+        if atticus_runtime.get("highlight_ms", 0.0) <= 1e-6:
+            atticus_runtime["highlight_mode"] = None
+            atticus_runtime["highlight_sensors"] = []
+    mode = atticus_runtime.get("highlight_mode")
+    names = set(atticus_runtime.get("highlight_sensors", []))
+    for ray in mcl_state.last_rays:
+        if not isinstance(ray, dict):
+            continue
+        if mode and ray.get("name") in names:
+            ray["highlight_mode"] = mode
+        else:
+            ray.pop("highlight_mode", None)
+
+
+def _atticus_sim_measurements():
+    """Capture a fresh Atticus-localizer measurement snapshot at the current true pose."""
+    if mcl_state.lf is None or not mcl_state.map_segments:
+        mcl_mod.update_map_segments(mcl_state, CFG)
+    mcl_pose = (robot_pos[0], robot_pos[1], _mcl_heading_from_internal(robot_heading))
+    return mcl_mod.simulate_measurements(mcl_state, CFG, mcl_pose, add_noise=True)
+
+
+def _atticus_apply_immediate_correction(sensor_tokens: Optional[object] = None):
+    """Run a one-shot Atticus translation cleanup in the simulator."""
+    if not mcl_enabled:
+        return
+    measurements = _atticus_sim_measurements()
+    resolved_names = []
+    if sensor_tokens is not None and str(sensor_tokens).strip() != "":
+        resolved_names = mcl_mod.resolve_distance_sensor_names(CFG, sensor_tokens, max_sensors=2)
+    if sensor_tokens is None or str(sensor_tokens).strip() == "" or not resolved_names:
+        accepted = mcl_mod.apply_immediate_correction_auto(mcl_state, CFG, measurements)
+        fallback_names = []
+    else:
+        accepted = mcl_mod.apply_immediate_correction_sensors(mcl_state, CFG, measurements, sensor_tokens)
+        fallback_names = list(resolved_names)
+    names = accepted
+    if not names and fallback_names:
+        names = list(fallback_names)
+    if not names and isinstance(measurements, dict) and (sensor_tokens is None or str(sensor_tokens).strip() == ""):
+        dist_meas = measurements.get("distance", {})
+        if isinstance(dist_meas, dict):
+            names = list(dist_meas.keys())
+    _set_atticus_ray_highlight("immediate", names, hold_ms=ATTICUS_IMMEDIATE_HIGHLIGHT_MS, sticky=False)
+
+
+def _atticus_start_wall_trim():
+    """Arm a simulated theta-wall-alignment segment and highlight the chosen sensor ray."""
+    if not mcl_enabled:
+        return
+    measurements = _atticus_sim_measurements()
+    ctx = mcl_mod.start_theta_wall_alignment_auto(mcl_state, CFG, measurements)
+    if ctx is None:
+        _set_atticus_ray_highlight("wall_trim", [], hold_ms=0.0, sticky=False)
+        atticus_runtime["wall_trim_ctx"] = None
+        return
+    atticus_runtime["wall_trim_ctx"] = ctx
+    atticus_runtime["rough_wall_ctx"] = None
+    mcl_state.rough_wall_ctx = None
+    _set_atticus_ray_highlight("wall_trim", [ctx.get("sensor_name", "")], sticky=True)
+
+
+def _atticus_end_wall_trim():
+    """Stop the active simulated theta-wall-alignment segment."""
+    atticus_runtime["wall_trim_ctx"] = None
+    if atticus_runtime.get("highlight_mode") == "wall_trim":
+        _set_atticus_ray_highlight("wall_trim", [], hold_ms=0.0, sticky=False)
+
+
+def _atticus_start_rough_wall():
+    """Arm a simulated rough wall-traverse segment and highlight the chosen sensors."""
+    if not mcl_enabled:
+        return
+    measurements = _atticus_sim_measurements()
+    ctx = mcl_mod.start_rough_wall_traverse_auto(mcl_state, CFG, measurements)
+    if ctx is None:
+        _set_atticus_ray_highlight("rough_wall", [], hold_ms=0.0, sticky=False)
+        atticus_runtime["rough_wall_ctx"] = None
+        mcl_state.rough_wall_ctx = None
+        return
+    atticus_runtime["rough_wall_ctx"] = ctx
+    atticus_runtime["wall_trim_ctx"] = None
+    mcl_state.rough_wall_ctx = ctx
+    highlight_names = list(ctx.get("selected_sensor_names", []))
+    if not highlight_names:
+        highlight_names = [ctx.get("sensor_name", "")]
+    _set_atticus_ray_highlight("rough_wall", highlight_names, sticky=True)
+
+
+def _atticus_end_rough_wall():
+    """Stop the active simulated rough wall-traverse segment."""
+    atticus_runtime["rough_wall_ctx"] = None
+    mcl_state.rough_wall_ctx = None
+    if atticus_runtime.get("highlight_mode") == "rough_wall":
+        _set_atticus_ray_highlight("rough_wall", [], hold_ms=0.0, sticky=False)
 
 def _mcl_heading_from_internal(heading_deg: float) -> float:
     """Convert internal math-frame heading to MCL/UI convention (0=left, clockwise+)."""
@@ -255,66 +526,25 @@ def _internal_heading_from_mcl(heading_deg: float) -> float:
     except Exception:
         return float(heading_deg or 0.0)
 
-def _mcl_particle_target(cfg):
-    """Handle mcl particle target."""
-    mcl_cfg = cfg.get("mcl", {})
-    parts = mcl_cfg.get("particles", {})
-    try:
-        n = int(parts.get("n", parts.get("n_min", 200)))
-    except Exception:
-        n = 200
-    return max(1, n)
-
-def _mcl_build_path_polyline():
-    """Handle mcl build path polyline."""
-    pts = []
-    for i in range(len(display_nodes) - 1):
-        seg_pts = _edge_polyline(i)
-        if not seg_pts:
-            continue
-        if pts and seg_pts[0] == pts[-1]:
-            pts.extend(seg_pts[1:])
-        else:
-            pts.extend(seg_pts)
-    return pts
-
-def _mcl_update_region_gate():
-    """Handle mcl update region gate."""
-    region = CFG.get("mcl", {}).get("region", {})
-    if int(region.get("enabled", 0)) != 1:
-        mcl_state.region_gate = None
-        return
-    region_type = str(region.get("type", "segment_path")).strip().lower()
-    if region_type in ("segment_path", "segment_band", "segment", "band", "path"):
-        radius_in = float(region.get("radius_in", 12.0))
-        pts = _mcl_build_path_polyline()
-        if pts and radius_in > 0.0:
-            gate = {"points": pts, "radius_px": radius_in * PPI}
-            if int(region.get("slope_enabled", 0)) == 1:
-                gate["slope_field"] = [{"points": pts}]
-            mcl_state.region_gate = gate
-        else:
-            mcl_state.region_gate = None
-    else:
-        mcl_state.region_gate = None
-
 def _mcl_apply_cfg(reset_particles=False):
-    """Handle mcl apply cfg."""
+    """Apply the current Atticus config and optionally reset the live estimate."""
     global mcl_enabled
     mcl_cfg = CFG.get("mcl", {})
     mcl_enabled = int(mcl_cfg.get("enabled", 0)) == 1
     if not mcl_enabled:
+        _clear_atticus_runtime()
         mcl_state.particles = []
         mcl_state.estimate = None
         mcl_state.ekf_pose = None
         mcl_state.ekf_P = None
         return
-    if reset_particles or not mcl_state.particles:
+    if reset_particles:
+        _clear_atticus_runtime()
+    if reset_particles or mcl_state.estimate is None:
         mcl_state.particles = []
         mcl_heading = _mcl_heading_from_internal(robot_heading)
         mcl_mod.reset_state_to_pose(mcl_state, CFG, (robot_pos[0], robot_pos[1], mcl_heading))
     mcl_mod.update_map_segments(mcl_state, CFG)
-    _mcl_update_region_gate()
     mcl_state.last_true_pose = (robot_pos[0], robot_pos[1], _mcl_heading_from_internal(robot_heading))
     mcl_state.motion_accum = 0.0
     mcl_state.sensor_accum = 0.0
@@ -363,89 +593,15 @@ def _draw_covariance_ellipse(surface, mean, cov, color=(200, 80, 200), n_sigma=2
         pygame.draw.lines(surface, color, True, pts, 2)
 
 def _draw_mcl_overlay(surface):
-    """Draw mcl overlay."""
+    """Draw the live Atticus localization overlay used by the simulator."""
     if not mcl_enabled:
         return
     mcl_cfg = CFG.get("mcl", {})
     ui_cfg = mcl_cfg.get("ui", {})
-    region_cfg = mcl_cfg.get("region", {})
-    show_particles = int(ui_cfg.get("show_particles", 1)) == 1
     show_estimate = int(ui_cfg.get("show_estimate", 1)) == 1
     show_cov = int(ui_cfg.get("show_covariance", 1)) == 1
-    show_rays = int(ui_cfg.get("show_rays", 1)) == 1
-    show_region = int(ui_cfg.get("show_region", 1)) == 1
+    show_pred_rays = int(ui_cfg.get("show_rays", 1)) == 1
     show_gating = int(ui_cfg.get("show_gating", 1)) == 1
-
-    if show_region and int(region_cfg.get("enabled", 0)) == 1:
-        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        region_type = str(region_cfg.get("type", "segment_path")).strip().lower()
-        if region_type in ("segment_path", "segment_band", "segment", "band", "path"):
-            gate = mcl_state.region_gate or {}
-            pts = gate.get("points", [])
-            radius_px = float(gate.get("radius_px", 0.0))
-            if pts:
-                pygame.draw.lines(overlay, (40, 200, 90, 120), False, pts, 2)
-                if radius_px > 0.0:
-                    step = max(1, int(len(pts) / 50))
-                    for p in pts[::step]:
-                        pygame.draw.circle(overlay, (40, 200, 90, 40), (int(p[0]), int(p[1])), int(radius_px), 1)
-        elif region_type == "grid":
-            grid_type = str(region_cfg.get("grid_type", "quadrant")).strip().lower()
-            if grid_type == "quadrant":
-                gx, gy = 2, 2
-            else:
-                gx = max(1, int(region_cfg.get("grid_x", 2)))
-                gy = max(1, int(region_cfg.get("grid_y", 2)))
-            x_min = float(region_cfg.get("x_min_in", 0.0)) * PPI
-            y_min = float(region_cfg.get("y_min_in", 0.0)) * PPI
-            x_max = float(region_cfg.get("x_max_in", WINDOW_WIDTH / PPI)) * PPI
-            y_max = float(region_cfg.get("y_max_in", WINDOW_HEIGHT / PPI)) * PPI
-            if x_max <= x_min:
-                x_max = x_min + WINDOW_WIDTH
-            if y_max <= y_min:
-                y_max = y_min + WINDOW_HEIGHT
-            cell_w = (x_max - x_min) / max(1, gx)
-            cell_h = (y_max - y_min) / max(1, gy)
-            for i in range(gx + 1):
-                x = x_min + i * cell_w
-                pygame.draw.line(overlay, (40, 200, 90, 80), (x, y_min), (x, y_max), 1)
-            for j in range(gy + 1):
-                y = y_min + j * cell_h
-                pygame.draw.line(overlay, (40, 200, 90, 80), (x_min, y), (x_max, y), 1)
-            cur = region_cfg.get("current_region", None)
-            if cur is not None:
-                allowed = set(cur) if isinstance(cur, (list, tuple, set)) else {cur}
-                for j in range(gy):
-                    for i in range(gx):
-                        rid = j * gx + i
-                        if rid not in allowed:
-                            continue
-                        rx0 = x_min + i * cell_w
-                        ry0 = y_min + j * cell_h
-                        pygame.draw.rect(overlay, (40, 200, 90, 40),
-                                         (rx0, ry0, cell_w, cell_h))
-        elif region_type in ("manual", "bounds", "rect", "rectangle"):
-            x_min = float(region_cfg.get("x_min_in", 0.0)) * PPI
-            y_min = float(region_cfg.get("y_min_in", 0.0)) * PPI
-            x_max = float(region_cfg.get("x_max_in", WINDOW_WIDTH / PPI)) * PPI
-            y_max = float(region_cfg.get("y_max_in", WINDOW_HEIGHT / PPI)) * PPI
-            if x_max <= x_min:
-                x_max = x_min + WINDOW_WIDTH
-            if y_max <= y_min:
-                y_max = y_min + WINDOW_HEIGHT
-            rect = (x_min, y_min, x_max - x_min, y_max - y_min)
-            pygame.draw.rect(overlay, (40, 200, 90, 40), rect)
-            pygame.draw.rect(overlay, (40, 200, 90, 120), rect, 2)
-        surface.blit(overlay, (0, 0))
-
-    if show_particles and mcl_state.particles:
-        max_draw = max(1, int(ui_cfg.get("max_particles_draw", 500)))
-        step = max(1, int(len(mcl_state.particles) / max_draw))
-        for p in mcl_state.particles[::step]:
-            try:
-                pygame.draw.circle(surface, (80, 160, 255), (int(p["x"]), int(p["y"])), 2)
-            except Exception:
-                continue
 
     if show_cov and mcl_state.estimate is not None:
         _draw_covariance_ellipse(surface, mcl_state.estimate, mcl_state.cov_xy, color=(200, 80, 200), n_sigma=2.0)
@@ -453,13 +609,24 @@ def _draw_mcl_overlay(surface):
     if show_estimate and mcl_state.estimate is not None:
         _draw_heading_marker(surface, mcl_state.estimate, mcl_state.estimate[2], (255, 220, 60), size=12, width=2)
 
-    if show_rays and mcl_state.last_rays:
+    if mcl_state.last_rays:
         for ray in mcl_state.last_rays:
             if not isinstance(ray, dict):
                 continue
             gated = bool(ray.get("gated", False))
-            meas_color = (200, 40, 40) if (gated and show_gating) else (80, 200, 80)
-            pred_color = (80, 160, 255)
+            highlight_mode = str(ray.get("highlight_mode", "") or "").strip().lower()
+            if highlight_mode == "immediate":
+                meas_color = (255, 170, 40)
+                pred_color = (255, 220, 120)
+            elif highlight_mode == "wall_trim":
+                meas_color = (255, 90, 220)
+                pred_color = (120, 245, 255)
+            elif highlight_mode == "rough_wall":
+                meas_color = (255, 120, 120)
+                pred_color = (255, 210, 120)
+            else:
+                meas_color = (80, 200, 80)
+                pred_color = (80, 160, 255)
             origin = ray.get("origin")
             meas_end = ray.get("meas_end")
             pred_origin = ray.get("pred_origin")
@@ -467,18 +634,11 @@ def _draw_mcl_overlay(surface):
             if origin is not None and meas_end is not None:
                 pygame.draw.line(surface, meas_color, origin, meas_end, 2)
                 pygame.draw.circle(surface, meas_color, (int(meas_end[0]), int(meas_end[1])), 4, 1)
-            if pred_origin is not None and pred_end is not None:
+                if gated and show_gating and highlight_mode not in ("immediate", "wall_trim", "rough_wall"):
+                    pygame.draw.circle(surface, (200, 40, 40), (int(meas_end[0]), int(meas_end[1])), 6, 1)
+            if show_pred_rays and pred_origin is not None and pred_end is not None:
                 pygame.draw.line(surface, pred_color, pred_origin, pred_end, 1)
                 pygame.draw.circle(surface, pred_color, (int(pred_end[0]), int(pred_end[1])), 3, 1)
-
-    vis_meas = mcl_state.last_measurements.get("vision") if isinstance(mcl_state.last_measurements, dict) else None
-    if show_rays and isinstance(vis_meas, dict):
-        try:
-            vx = float(vis_meas.get("x_in", 0.0)) * PPI
-            vy = float(vis_meas.get("y_in", 0.0)) * PPI
-            pygame.draw.circle(surface, (120, 200, 255), (int(vx), int(vy)), 5, 2)
-        except Exception:
-            pass
 
 def _edge_events_sig(node):
     """Handle edge events sig."""
@@ -556,6 +716,170 @@ def path_sig_for_node(node):
         spline_type
     )
 
+def _round_sig_scalar(value, digits=4):
+    """Round a scalar for cache keys without throwing on bad values."""
+    try:
+        return round(float(value), digits)
+    except Exception:
+        return None if value is None else str(value)
+
+def _sig_point(point, digits=2):
+    """Convert a 2D point into a compact cache-key tuple."""
+    if not isinstance(point, (list, tuple)) or len(point) < 2:
+        return None
+    try:
+        return (round(float(point[0]), digits), round(float(point[1]), digits))
+    except Exception:
+        return None
+
+def _cache_store(cache: dict, key, value, max_size: int):
+    """Store a cache entry and hard-reset oversized caches."""
+    if len(cache) >= max(8, int(max_size)):
+        cache.clear()
+    cache[key] = value
+
+def _timing_actions_sig(node):
+    """Keep only action fields that can change motion timing or chaining."""
+    acts = node.get("actions")
+    if not isinstance(acts, list):
+        acts = node.get("actions_out")
+    if not isinstance(acts, list):
+        acts = []
+    sig = []
+    for act in acts:
+        if not isinstance(act, dict):
+            continue
+        kind = str(act.get("type", "")).strip().lower()
+        if kind == "geom":
+            kind = "reshape"
+        if kind in ("preset", "code"):
+            continue
+        if kind == "wait":
+            sig.append(("wait", _round_sig_scalar(act.get("s", 0.0), 4)))
+        elif kind == "turn":
+            sig.append(("turn", _round_sig_scalar(act.get("deg", 0.0), 3)))
+        elif kind == "swing":
+            sig.append((
+                "swing",
+                _round_sig_scalar(act.get("deg", 0.0), 3),
+                str(act.get("dir", "auto")).strip().lower(),
+                bool(act.get("settle", False)),
+            ))
+        elif kind == "reverse":
+            state = act.get("state", None)
+            sig.append(("reverse", "toggle" if state is None else bool(state)))
+        else:
+            sig.append((kind,))
+    return tuple(sig)
+
+def _timing_sig_for_node(node):
+    """Signature for fields that actually change estimate/runtime timing."""
+    pd = node.get("path_to_next")
+    if not isinstance(pd, dict):
+        pd = {}
+    cps = []
+    for cp in pd.get("control_points") or []:
+        pt_sig = _sig_point(cp)
+        if pt_sig is not None:
+            cps.append(pt_sig)
+    path_sig = (
+        bool(pd.get("use_path", False)),
+        tuple(cps),
+        _normalize_spline_type(pd.get("spline_type")),
+        _round_sig_scalar(pd.get("lookahead_in_override"), 3),
+        _round_sig_scalar(pd.get("speed_mult", 1.0), 3),
+        _round_sig_scalar(pd.get("min_speed_cmd", pd.get("min_speed_ips")), 3),
+        _round_sig_scalar(pd.get("max_speed_cmd", pd.get("max_speed_ips")), 3),
+    )
+    return (
+        _sig_point(node.get("pos")),
+        _round_sig_scalar(node.get("offset", 0.0), 3),
+        _round_sig_scalar(node.get("offset_custom_in"), 3),
+        bool(node.get("reverse", False)),
+        bool(node.get("reshape_toggle", False)),
+        str(node.get("atticus_correction_mode", "") or "").strip().lower(),
+        bool(node.get("move_to_pose", False)),
+        _round_sig_scalar(node.get("pose_heading_deg"), 3),
+        _round_sig_scalar(node.get("pose_lead_in"), 3),
+        str(node.get("turn_mode", "") or "").strip().lower(),
+        str(node.get("swing_dir", "") or "").strip().lower(),
+        bool(node.get("swing_settle", False)),
+        _round_sig_scalar(node.get("swing_target_heading_deg"), 3),
+        str(node.get("profile_override", "") or "").strip().lower(),
+        _round_sig_scalar(_node_lateral_cmd(node), 3),
+        bool(_node_lateral_reset(node)),
+        _round_sig_scalar(node.get("custom_turn_dps"), 3),
+        bool(node.get("chain_through", False) or node.get("chain", False)),
+        _round_sig_scalar(node.get("chain_looseness"), 4),
+        path_sig,
+        _timing_actions_sig(node),
+    )
+
+def _estimate_cfg_sig():
+    """Compact signature for config values that change time estimation."""
+    rp = CFG.get("robot_physics", {})
+    bd = CFG.get("bot_dimensions", {})
+    pc = CFG.get("path_config", {})
+    cal = CFG.get("codegen", {}).get("calibration", {})
+    payload = {
+        "version": _ESTIMATE_CACHE_VERSION,
+        "fps": int(fps),
+        "heading": _round_sig_scalar(initial_state.get("heading"), 3),
+        "gear_ratio": _round_sig_scalar(CFG.get("gear_ratio"), 4),
+        "robot_physics": {k: _round_sig_scalar(rp.get(k), 4) for k in (
+            "rpm", "diameter", "volts_straight", "volts_turn", "weight",
+            "t_buffer", "advanced_motion", "all_omni", "tracking_wheels",
+            "point_density_per_in", "curvature_gain", "mu", "max_cmd"
+        )},
+        "bot_dimensions": {k: _round_sig_scalar(bd.get(k), 4) for k in ("dt_width", "width")},
+        "path_config": {k: _round_sig_scalar(pc.get(k), 4) for k in (
+            "lookahead_in", "min_speed_cmd", "max_speed_cmd", "simulate_pursuit", "curvature_gain"
+        )},
+        "physics_constants": {
+            str(k): _round_sig_scalar(v, 5) if isinstance(v, (int, float)) else v
+            for k, v in sorted((CFG.get("physics_constants", {}) or {}).items())
+        },
+        "calibration": json.loads(json.dumps(cal, sort_keys=True, default=str)),
+        "lookahead_enabled": bool(path_lookahead_enabled),
+        "lookahead_px": _round_sig_scalar(path_lookahead_px, 3),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+def _estimate_graph_sig():
+    """Signature for the current routine's timing-relevant state."""
+    return (
+        _estimate_cfg_sig(),
+        tuple(_timing_sig_for_node(node) for node in display_nodes),
+    )
+
+def _path_duration_cache_key(seg, cfg_sig: str, use_pursuit: bool):
+    """Key for offline pursuit-duration estimates."""
+    pts = []
+    for pt in seg.get("path_points", []) or []:
+        pt_sig = _sig_point(pt)
+        if pt_sig is not None:
+            pts.append(pt_sig)
+    speeds = []
+    for speed in seg.get("path_speeds", []) or []:
+        speeds.append(_round_sig_scalar(speed, 4))
+    meta = seg.get("path_meta") or {}
+    return (
+        cfg_sig,
+        str(seg.get("type", "")).strip().lower(),
+        bool(use_pursuit),
+        bool(seg.get("move_to_pose", False)),
+        bool(seg.get("reverse", False)),
+        _sig_point(seg.get("p0")),
+        _sig_point(seg.get("p1")),
+        _round_sig_scalar(seg.get("lookahead_px"), 3),
+        _round_sig_scalar(seg.get("pose_heading"), 3),
+        _round_sig_scalar(seg.get("pose_lead_in"), 3),
+        _round_sig_scalar(seg.get("facing"), 3),
+        tuple(pts),
+        tuple(speeds),
+        _round_sig_scalar(meta.get("total_px"), 3),
+    )
+
 def _path_speed_override_cmd(path_data, key):
     """Handle path speed override cmd."""
     if not path_data:
@@ -581,6 +905,11 @@ def _node_lateral_cmd(node):
     if val is None:
         val = node.get("custom_lateral_ips")
     return val
+
+
+def _node_lateral_reset(node):
+    """Return whether this node explicitly clears any carried latspeed override."""
+    return bool(node.get("custom_lateral_reset", False))
 
 def _clamp_cmd(val, default=0.0):
     """Handle clamp cmd."""
@@ -623,6 +952,10 @@ def normalize_speed_units(nodes):
             node["custom_lateral_cmd"] = node.pop("custom_lateral_ips")
         else:
             node.pop("custom_lateral_ips", None)
+        if node.get("custom_lateral_cmd") is not None:
+            node.pop("custom_lateral_reset", None)
+        elif not bool(node.get("custom_lateral_reset", False)):
+            node.pop("custom_lateral_reset", None)
         pd = node.get("path_to_next")
         if isinstance(pd, dict):
             if "min_speed_cmd" not in pd and pd.get("min_speed_ips") is not None:
@@ -807,7 +1140,9 @@ def annotate_motion_profiles(timeline_list):
 def build_timeline_with_buffers():
     """Generate timeline with buffers, ensuring paths are synced first."""
     sync_all_path_endpoints()
-    tl = apply_tbuffer(CFG, compile_timeline(display_nodes, CFG, initial_state["heading"], fps))
+    tl = compile_timeline(display_nodes, CFG, initial_state["heading"], fps)
+    _retime_dynamic_motion_segments(tl, cfg_sig=_estimate_cfg_sig())
+    tl = apply_tbuffer(CFG, tl)
     annotate_motion_profiles(tl)
     return tl
 
@@ -819,6 +1154,1077 @@ def compute_total_from_timeline(tl):
         if total < 0.0:
             total = 0.0
     return total
+
+def _path_length_in(path_points):
+    """Return polyline length in inches."""
+    if not path_points or len(path_points) < 2:
+        return 0.0
+    total_px = 0.0
+    for idx in range(len(path_points) - 1):
+        dx = path_points[idx + 1][0] - path_points[idx][0]
+        dy = path_points[idx + 1][1] - path_points[idx][1]
+        total_px += math.hypot(dx, dy)
+    return total_px / PPI
+
+def _closest_path_progress_px(path_points, pos):
+    """Project a pose onto a path and return (distance_px, seg_idx, point)."""
+    if not path_points:
+        return 0.0, 0, (0.0, 0.0)
+    best_d2 = float("inf")
+    best_s = 0.0
+    best_seg = 0
+    best_pt = path_points[0]
+    accum = 0.0
+    for seg_idx in range(len(path_points) - 1):
+        a = path_points[seg_idx]
+        b = path_points[seg_idx + 1]
+        abx = b[0] - a[0]
+        aby = b[1] - a[1]
+        seg_len = math.hypot(abx, aby)
+        if seg_len <= 1e-9:
+            continue
+        apx = pos[0] - a[0]
+        apy = pos[1] - a[1]
+        t_proj = max(0.0, min(1.0, (apx * abx + apy * aby) / max(1e-9, seg_len * seg_len)))
+        proj = (a[0] + abx * t_proj, a[1] + aby * t_proj)
+        d2 = (proj[0] - pos[0]) ** 2 + (proj[1] - pos[1]) ** 2
+        if d2 < best_d2:
+            best_d2 = d2
+            best_s = accum + seg_len * t_proj
+            best_seg = seg_idx
+            best_pt = proj
+        accum += seg_len
+    return best_s, best_seg, best_pt
+
+def _speed_at_path_progress_ips(seg, path_points, progress_px):
+    """Look up the commanded path speed at the current path progress."""
+    speeds = seg.get("path_speeds")
+    if not path_points or not speeds or len(speeds) != len(path_points):
+        speed_ips = seg.get("drive_speed_ips")
+        if speed_ips is not None:
+            try:
+                return float(speed_ips)
+            except Exception:
+                pass
+        try:
+            cfg_cmd = float(CFG.get("path_config", {}).get("max_speed_cmd", CFG.get("path_config", {}).get("max_speed_ips", 127.0)))
+        except Exception:
+            cfg_cmd = 127.0
+        cfg_cmd = max(0.0, min(127.0, cfg_cmd))
+        return vmax_straight(CFG) * (cfg_cmd / 127.0)
+
+    total_px = 0.0
+    try:
+        total_px = float(seg.get("path_meta", {}).get("total_px", 0.0))
+    except Exception:
+        total_px = 0.0
+    if total_px <= 1e-9:
+        total_px = max(1e-9, _path_length_in(path_points) * PPI)
+
+    ratio = max(0.0, min(1.0, progress_px / total_px))
+    idx_f = ratio * max(0, len(speeds) - 1)
+    idx0 = int(math.floor(idx_f))
+    idx1 = min(len(speeds) - 1, idx0 + 1)
+    frac = idx_f - idx0
+    try:
+        v0 = float(speeds[idx0])
+        v1 = float(speeds[idx1])
+    except Exception:
+        v0 = v1 = 0.0
+    return max(0.0, v0 + (v1 - v0) * frac)
+
+def _segment_wait_distance_in(seg, path_points=None):
+    """Return the distance basis used for marker waitUntil progress."""
+    st = str(seg.get("type", "")).strip().lower()
+    if st == "move":
+        try:
+            length_in = float(seg.get("length_in", 0.0))
+        except Exception:
+            length_in = 0.0
+        if length_in > 1e-9:
+            return length_in
+        p0 = seg.get("p0", (0.0, 0.0))
+        p1 = seg.get("p1", p0)
+        return math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / PPI
+    if st in ("path", "path_follow"):
+        try:
+            path_len_in = float(seg.get("path_length_in", 0.0))
+        except Exception:
+            path_len_in = 0.0
+        if path_len_in > 1e-9:
+            return path_len_in
+        pts = path_points if path_points is not None else seg.get("path_points", [])
+        return _path_length_in(pts)
+    return 0.0
+
+def _advance_path_segment(seg, pos, heading, cfg, dt_s, state=None, use_pursuit=True):
+    """Run one path-following step. The estimate path and the playback path both use this."""
+    state = dict(state or {})
+    elapsed_s = max(0.0, float(state.get("elapsed_s", 0.0)))
+    travel_in = max(0.0, float(state.get("travel_in", 0.0)))
+    lookahead_px = max(1.0, float(seg.get("lookahead_px", path_lookahead_px)))
+    reverse = bool(seg.get("reverse", False))
+    move_to_pose = bool(seg.get("move_to_pose", False))
+
+    if move_to_pose:
+        pose_heading = float(seg.get("pose_heading", seg.get("facing", heading)))
+        pose_lead = seg.get("pose_lead_in")
+        path_points, _ = boomerang_curve_points(
+            pos,
+            seg.get("p1", pos),
+            pose_heading,
+            lead_in=pose_lead,
+            reverse=reverse,
+            num=max(24, int(max(1.0, float(seg.get("path_length_in", 0.0) or 0.0)) * 4.0)),
+        )
+        path_meta = None
+        path_speeds = None
+    else:
+        path_points = seg.get("path_points", []) or []
+        path_meta = seg.get("path_meta")
+        path_speeds = seg.get("path_speeds")
+
+    if len(path_points) < 2:
+        state.update({
+            "elapsed_s": elapsed_s + max(0.0, dt_s),
+            "travel_in": travel_in,
+            "progress_frac": 1.0,
+            "done": True,
+            "lookahead_point": None,
+            "lookahead_radius": 0.0,
+            "heading_target": None,
+        })
+        return seg.get("p1", pos), float(seg.get("facing", heading)) % 360.0, state
+
+    total_wait_in = max(1e-6, _segment_wait_distance_in(seg, path_points))
+    total_path_px = max(1e-6, _path_length_in(path_points) * PPI)
+    next_pos = pos
+    next_heading = heading
+    look_pt = None
+    heading_target = None
+
+    if use_pursuit:
+        progress_px, _seg_idx, _proj = _closest_path_progress_px(path_points, pos)
+        _, heading_to_look, look_pt = sample_path_position(
+            elapsed_s,
+            path_points,
+            max(1e-6, float(seg.get("T", 0.0))),
+            cfg,
+            lookahead_px=lookahead_px,
+            use_pursuit=True,
+            path_speeds=path_speeds,
+            current_pos=pos,
+            path_meta=path_meta,
+        )
+        if look_pt is None:
+            look_pt = seg.get("p1", path_points[-1])
+        target_heading = heading_to_look
+        if move_to_pose:
+            target_pos = seg.get("p1", path_points[-1])
+            dist_end = math.hypot(target_pos[0] - pos[0], target_pos[1] - pos[1])
+            if dist_end <= max(lookahead_px * 0.8, PPI * 1.5):
+                target_heading = float(seg.get("pose_heading", seg.get("facing", heading)))
+            if reverse:
+                target_heading = (target_heading + 180.0) % 360.0
+        else:
+            dist_end = math.hypot(path_points[-1][0] - pos[0], path_points[-1][1] - pos[1])
+            if dist_end <= max(lookahead_px * 0.8, PPI * 1.5):
+                target_heading = calculate_path_heading(path_points, len(path_points) - 1)
+            if reverse:
+                target_heading = (target_heading + 180.0) % 360.0
+
+        prev_target = state.get("heading_target")
+        heading_target = smooth_angle(prev_target if prev_target is not None else heading, target_heading, 0.25)
+        dx = look_pt[0] - pos[0]
+        dy = look_pt[1] - pos[1]
+        dist_px = math.hypot(dx, dy)
+        speed_ips = _speed_at_path_progress_ips(seg, path_points, progress_px)
+        step_px = min(dist_px, max(0.0, speed_ips) * PPI * max(0.0, dt_s))
+        if dist_px > 1e-6 and step_px > 0.0:
+            next_pos = (pos[0] + dx / dist_px * step_px, pos[1] + dy / dist_px * step_px)
+        next_heading = clamp_heading_rate(heading, heading_target, cfg, dt=max(1e-6, dt_s))
+    else:
+        next_elapsed = min(max(0.0, float(seg.get("T", 0.0))), elapsed_s + max(0.0, dt_s))
+        next_pos, heading_sample, _ = sample_path_position(
+            next_elapsed,
+            path_points,
+            max(1e-6, float(seg.get("T", 0.0))),
+            cfg,
+            lookahead_px=lookahead_px,
+            use_pursuit=False,
+            path_speeds=path_speeds,
+            path_meta=path_meta,
+        )
+        if reverse:
+            heading_sample = (heading_sample + 180.0) % 360.0
+        next_heading = clamp_heading_rate(heading, heading_sample, cfg, dt=max(1e-6, dt_s))
+        elapsed_s = next_elapsed - max(0.0, dt_s)
+
+    step_in = math.hypot(next_pos[0] - pos[0], next_pos[1] - pos[1]) / PPI
+    travel_in += step_in
+    elapsed_s += max(0.0, dt_s)
+
+    target_heading = float(seg.get("pose_heading", seg.get("facing", next_heading))) if move_to_pose else calculate_path_heading(path_points, len(path_points) - 1)
+    if reverse:
+        target_heading = (target_heading + 180.0) % 360.0
+    heading_err = abs(((target_heading - next_heading + 180.0) % 360.0) - 180.0)
+    dist_end_px = math.hypot(path_points[-1][0] - next_pos[0], path_points[-1][1] - next_pos[1])
+    progress_frac = max(0.0, min(1.0, travel_in / total_wait_in))
+    done = progress_frac >= 0.999 and dist_end_px <= max(PPI * 0.5, lookahead_px * 0.2)
+    if move_to_pose:
+        done = done and heading_err <= 4.0
+    elif not use_pursuit and elapsed_s >= max(0.0, float(seg.get("T", 0.0))) - 1e-9:
+        done = True
+
+    state.update({
+        "elapsed_s": elapsed_s,
+        "travel_in": travel_in,
+        "progress_frac": progress_frac,
+        "done": bool(done),
+        "lookahead_point": look_pt if use_pursuit else None,
+        "lookahead_radius": lookahead_px if use_pursuit else 0.0,
+        "heading_target": heading_target if use_pursuit else None,
+    })
+    return next_pos, next_heading, state
+
+def _estimate_path_segment_duration(seg, cfg, cfg_sig=None):
+    """Estimate the duration of a pursuit-driven segment by running the same stepper offline."""
+    pos = seg.get("p0", seg.get("path_points", [(0.0, 0.0)])[0] if seg.get("path_points") else (0.0, 0.0))
+    path_points = seg.get("path_points", []) or []
+    if len(path_points) >= 2:
+        heading = calculate_path_heading(path_points, 0)
+        if bool(seg.get("reverse", False)):
+            heading = (heading + 180.0) % 360.0
+    else:
+        heading = float(seg.get("start_heading", seg.get("facing", seg.get("pose_heading", 0.0))))
+    use_pursuit = bool(seg.get("move_to_pose")) or bool(path_lookahead_enabled)
+    if not use_pursuit:
+        return None
+    cache_key = _path_duration_cache_key(seg, cfg_sig or _estimate_cfg_sig(), use_pursuit)
+    cached = _path_duration_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    state = {}
+    elapsed_s = 0.0
+    base_T = max(0.0, float(seg.get("T", 0.0)))
+    deadline_s = max(1.0, base_T * 2.5 + 1.0)
+    dt_s = 1.0 / max(1.0, float(fps))
+    while elapsed_s < deadline_s:
+        pos, heading, state = _advance_path_segment(seg, pos, heading, cfg, dt_s, state=state, use_pursuit=use_pursuit)
+        elapsed_s = float(state.get("elapsed_s", elapsed_s + dt_s))
+        if state.get("done"):
+            result = max(dt_s, elapsed_s)
+            _cache_store(_path_duration_cache, cache_key, result, max_size=384)
+            return result
+    result = max(dt_s, base_T)
+    _cache_store(_path_duration_cache, cache_key, result, max_size=384)
+    return result
+
+def _retime_dynamic_motion_segments(timeline_list, cfg_sig=None):
+    """Replace stale path timings with the same pursuit model used during playback."""
+    cfg_sig = cfg_sig or _estimate_cfg_sig()
+    for seg in timeline_list:
+        st = str(seg.get("type", "")).strip().lower()
+        if st not in ("path", "path_follow"):
+            continue
+        est_s = _estimate_path_segment_duration(seg, CFG, cfg_sig=cfg_sig)
+        if est_s is None:
+            continue
+        try:
+            seg["T"] = max(0.0, float(est_s))
+        except Exception:
+            pass
+
+def _attlib_sim_should_run() -> bool:
+    """Whether SPACE simulation should run via attlib_sim."""
+    if _attlib_sim_source_mode() == "external_script":
+        return True
+    style = str(CFG.get("codegen", {}).get("style", "")).strip()
+    return bool(attlib_sim_visual_run) and style in ("Atticus", "AttLib")
+
+def _attlib_sim_source_mode() -> str:
+    """Return normalized AttLibSim source mode."""
+    mode = str(attlib_sim_source or "timeline").strip().lower()
+    if mode in ("external", "external_script", "script"):
+        return "external_script"
+    return "timeline"
+
+def _attlib_sim_mode_reason() -> str:
+    """Human-readable reason for current SPACE simulation mode."""
+    if _attlib_sim_source_mode() == "external_script":
+        return (
+            "AttLibSim external routine mode enabled: "
+            f"{attlib_sim_routine_script}::{attlib_sim_routine_func}"
+        )
+    style = str(CFG.get("codegen", {}).get("style", "")).strip()
+    if style not in ("Atticus", "AttLib"):
+        return f"AttLibSim disabled: output style is '{style}', expected 'Atticus' or legacy 'AttLib'."
+    if not bool(attlib_sim_visual_run):
+        return "AttLibSim disabled: visual mode toggle is off in General settings."
+    return "AttLibSim timeline mode enabled."
+
+def _attlib_sim_load_external_callable():
+    """Load external routine callable from configured script path."""
+    script_path = Path(str(attlib_sim_routine_script or "").strip())
+    if not script_path.exists():
+        raise FileNotFoundError(f"Routine script not found: {script_path}")
+
+    module_name = f"_attlibsim_ext_{abs(hash((str(script_path), script_path.stat().st_mtime_ns)))}"
+    spec = importlib.util.spec_from_file_location(module_name, str(script_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load script module: {script_path}")
+    script_dir = str(script_path.parent)
+    if script_dir and script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    ext_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ext_mod)
+    fn_name = str(attlib_sim_routine_func or "run_routine").strip() or "run_routine"
+    runner = getattr(ext_mod, fn_name, None)
+    if runner is None or not callable(runner):
+        raise AttributeError(f"Callable '{fn_name}' not found in {script_path}")
+    return runner
+
+def _attlib_sim_external_worker(runner, chassis, module):
+    """Run external routine function in a side thread and capture terminal state."""
+    result = None
+    error = None
+    try:
+        try:
+            result = runner(chassis, module)
+        except TypeError:
+            result = runner(chassis)
+    except Exception:
+        error = traceback.format_exc(limit=8)
+    attlib_sim_runtime["external_done"] = True
+    attlib_sim_runtime["external_error"] = error
+    attlib_sim_runtime["external_result"] = result
+
+class _AttlibSimChassisProxy:
+    """
+    Proxy that preserves default synchronous call style while keeping UI responsive.
+
+    Motion methods are sent as async=True to attlib_sim, then locally waited by polling
+    `is_in_motion()` with short sleeps so pygame/Tk can continue rendering pose updates.
+    """
+
+    def __init__(self, chassis):
+        self._ch = chassis
+
+    def __getattr__(self, name):
+        return getattr(self._ch, name)
+
+    def _wait_for_motion_completion(self, start_timeout_s=0.25):
+        """
+        Wait for a motion to start, then wait for it to finish.
+
+        This avoids returning too early when async commands are queued but not yet active.
+        """
+        started = False
+        start_deadline = time.monotonic() + max(0.02, float(start_timeout_s))
+        while time.monotonic() < start_deadline:
+            try:
+                if self._ch.is_in_motion():
+                    started = True
+                    break
+            except Exception:
+                return
+            time.sleep(0.005)
+
+        if not started:
+            return
+
+        while True:
+            try:
+                if not self._ch.is_in_motion():
+                    return
+            except Exception:
+                return
+            time.sleep(0.005)
+
+    def _wait_for_motion_ack(self, start_timeout_s=0.15):
+        """Wait until a motion enters active state once (ack behavior)."""
+        deadline = time.monotonic() + max(0.02, float(start_timeout_s))
+        while time.monotonic() < deadline:
+            try:
+                if self._ch.is_in_motion():
+                    return
+            except Exception:
+                return
+            time.sleep(0.005)
+
+    @staticmethod
+    def _read_async(default_value, kwargs):
+        if "async" in kwargs:
+            return bool(kwargs.pop("async"))
+        if "async_" in kwargs:
+            return bool(kwargs.pop("async_"))
+        return bool(default_value)
+
+    def _read_params_and_async(self, rest, kwargs, async_default=False):
+        """Parse the common (params?, async?) motion-call suffix used by host scripts."""
+        async_req = self._read_async(async_default, kwargs)
+        params = None
+        if len(rest) == 1:
+            if isinstance(rest[0], bool):
+                async_req = bool(rest[0])
+            else:
+                params = rest[0]
+        elif len(rest) >= 2:
+            params = rest[0]
+            async_req = bool(rest[1])
+        return params, async_req
+
+    def turn_to_heading(self, theta_deg, timeout_ms, *rest, async_=False, **kwargs):
+        _params, async_req = self._read_params_and_async(rest, kwargs, async_)
+        self._ch.turn_to_heading(theta_deg, timeout_ms, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def turn_to_point(self, x, y, timeout_ms, *rest, async_=False, **kwargs):
+        _params, async_req = self._read_params_and_async(rest, kwargs, async_)
+        self._ch.turn_to_point(x, y, timeout_ms, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def move_to_point(self, x, y, timeout_ms, *rest, async_=False, **kwargs):
+        params, async_req = self._read_params_and_async(rest, kwargs, async_)
+        if params is None:
+            self._ch.move_to_point(x, y, timeout_ms, True)
+        else:
+            self._ch.move_to_point(x, y, timeout_ms, params, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def swing_to_heading(self, theta_deg, locked_side, timeout_ms, *rest, async_=False, **kwargs):
+        _params, async_req = self._read_params_and_async(rest, kwargs, async_)
+        self._ch.swing_to_heading(theta_deg, locked_side, timeout_ms, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def swing_to_point(self, x, y, locked_side, timeout_ms, *rest, async_=False, **kwargs):
+        _params, async_req = self._read_params_and_async(rest, kwargs, async_)
+        self._ch.swing_to_point(x, y, locked_side, timeout_ms, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def move_to_pose(self, x, y, theta_deg, timeout_ms, *rest, **kwargs):
+        params, async_req = self._read_params_and_async(rest, kwargs, False)
+        if params is None:
+            self._ch.move_to_pose(x, y, theta_deg, timeout_ms, True)
+        else:
+            self._ch.move_to_pose(x, y, theta_deg, timeout_ms, params, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def follow(self, path, lookahead_in, timeout_ms, forwards=True, async_=False, **kwargs):
+        async_req = self._read_async(async_, kwargs)
+        self._ch.follow(path, lookahead_in, timeout_ms, forwards, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def tank127(self, left127, right127, async_=False, **kwargs):
+        async_req = self._read_async(async_, kwargs)
+        self._ch.tank127(left127, right127, True)
+        if not async_req:
+            self._wait_for_motion_ack()
+
+    def tank127_for(self, left127, right127, duration_ms, async_=False, **kwargs):
+        async_req = self._read_async(async_, kwargs)
+        self._ch.tank127_for(left127, right127, duration_ms, True)
+        if not async_req:
+            self._wait_for_motion_completion()
+
+    def wait_until_done(self):
+        self._wait_for_motion_completion(start_timeout_s=0.4)
+
+    def wait_until(self, dist_or_deg):
+        self._ch.wait_until(float(dist_or_deg))
+
+def _attlib_sim_px_to_in(pos):
+    """Convert terminal pixel coordinates to Atticus field coordinates (x forward, y left)."""
+    if int(CFG.get("field_centric", 1)) == 1:
+        cx, cy = WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0
+    else:
+        cx, cy = initial_state["position"]
+    x_forward_in = -(float(pos[1]) - cy) / PPI
+    y_left_in = -(float(pos[0]) - cx) / PPI
+    return (x_forward_in, y_left_in)
+
+def _attlib_sim_in_to_px(x_in: float, y_in: float):
+    """Convert Atticus field coordinates (x forward, y left) back to terminal pixels."""
+    if int(CFG.get("field_centric", 1)) == 1:
+        cx, cy = WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0
+    else:
+        cx, cy = initial_state["position"]
+    px = cx - float(y_in) * PPI
+    py = cy - float(x_in) * PPI
+    return (px, py)
+
+def _attlib_sim_timeout_ms(seg, pad_s: float = 0.4) -> int:
+    """Create a safe timeout from timeline segment duration."""
+    try:
+        t_s = float(seg.get("T", 0.0))
+    except Exception:
+        t_s = 0.0
+    return max(120, int((max(0.0, t_s) + max(0.0, pad_s)) * 1000.0))
+
+def _attlib_sim_log(message: str):
+    """Append an AttLibSim runtime line into the output panel."""
+    if not message:
+        return
+    if not log_lines:
+        log_lines.extend(build_compile_header(CFG, initial_state["heading"]))
+    line = f"[AttLibSim] {message}"
+    if not log_lines or log_lines[-1] != line:
+        log_lines.append(line)
+    ui.output_refresh(log_lines)
+
+def _attlib_motion_profile(module, profile_name):
+    """Map terminal profile names onto host MotionProfile enums."""
+    motion_profile = getattr(module, "MotionProfile", None)
+    if motion_profile is None:
+        return None
+    key = str(profile_name or "").strip().lower()
+    attr = {
+        "legacy": "LEGACY",
+        "precise": "PRECISE",
+        "fast": "FAST",
+    }.get(key, "NORMAL")
+    return getattr(motion_profile, attr, getattr(motion_profile, "NORMAL", None))
+
+def _attlib_drive_params(module, seg):
+    """Build host move params from a compiled terminal segment."""
+    params = module.MoveToPoseParams() if bool(seg.get("move_to_pose")) else module.MoveToPointParams()
+    profile_name = seg.get("profile_override") or pick_profile("drive", abs(float(seg.get("path_length_in", seg.get("length_in", 0.0)) or 0.0)), cfg=CFG)
+    profile = _attlib_motion_profile(module, profile_name)
+    if profile is not None:
+        params.profile = profile
+    params.forwards = not bool(seg.get("reverse", False))
+    try:
+        params.max_speed = float(seg.get("drive_speed_cmd", 127.0) if seg.get("drive_speed_cmd") is not None else 127.0)
+    except Exception:
+        params.max_speed = 127.0
+    if bool(seg.get("chain_to_next")):
+        try:
+            params.min_speed = float(seg.get("chain_min_speed", 0.0) or 0.0)
+        except Exception:
+            params.min_speed = 0.0
+        try:
+            params.early_exit_range = float(seg.get("chain_early_exit", 0.0) or 0.0)
+        except Exception:
+            params.early_exit_range = 0.0
+        params.allow_chaining = True
+    else:
+        params.min_speed = 0.0
+        params.early_exit_range = 0.0
+        params.allow_chaining = False
+    if bool(seg.get("move_to_pose")):
+        lead_in = seg.get("pose_lead_in")
+        if lead_in is not None:
+            try:
+                params.lead = float(lead_in)
+                params.auto_lead = False
+            except Exception:
+                pass
+        else:
+            params.auto_lead = True
+    return params
+
+def _attlib_marker_events(seg):
+    """Convert edge markers into waitUntil-style progress targets for host playback."""
+    raw_events = seg.get("edge_events", [])
+    if not isinstance(raw_events, list) or not raw_events:
+        return []
+    total_in = max(0.0, _segment_wait_distance_in(seg))
+    events = []
+    for event in raw_events:
+        if not isinstance(event, dict) or not event.get("enabled", True):
+            continue
+        try:
+            t_val = float(event.get("t", 0.0))
+        except Exception:
+            t_val = 0.0
+        t_val = max(0.0, min(1.0, t_val))
+        events.append({
+            "progress_in": total_in * t_val,
+            "actions": list(event.get("actions", [])),
+        })
+    events.sort(key=lambda item: item.get("progress_in", 0.0))
+    return events
+
+def _attlib_sim_build_plan(tl, module):
+    """Translate terminal timeline segments into attlib_sim command plan."""
+    plan = []
+    for seg in tl:
+        seg_type = str(seg.get("type", "")).strip().lower()
+        if seg_type == "move":
+            x_in, y_in = _attlib_sim_px_to_in(seg.get("p1", (0.0, 0.0)))
+            plan.append({
+                "kind": "move_to_point",
+                "x_in": x_in,
+                "y_in": y_in,
+                "timeout_ms": _attlib_sim_timeout_ms(seg),
+                "params": _attlib_drive_params(module, seg),
+                "marker_events": _attlib_marker_events(seg),
+                "progress_mode": "linear_in",
+                "started": False,
+                "ticks_since_start": 0,
+            })
+        elif seg_type == "turn":
+            plan.append({
+                "kind": "turn_to_heading",
+                "heading_deg": float(seg.get("target_heading", 0.0)),
+                "timeout_ms": _attlib_sim_timeout_ms(seg),
+                "progress_mode": "angle_deg",
+                "started": False,
+                "ticks_since_start": 0,
+            })
+        elif seg_type == "swing":
+            swing_dir = str(seg.get("swing_dir", "auto")).strip().lower()
+            if swing_dir == "cw":
+                locked_side = "RIGHT"
+            elif swing_dir == "ccw":
+                locked_side = "LEFT"
+            else:
+                start_h = float(seg.get("start_heading", 0.0))
+                target_h = float(seg.get("target_heading", 0.0))
+                delta = ((target_h - start_h + 180.0) % 360.0) - 180.0
+                locked_side = "LEFT" if delta >= 0.0 else "RIGHT"
+            plan.append({
+                "kind": "swing_to_heading",
+                "heading_deg": float(seg.get("target_heading", 0.0)),
+                "locked_side": locked_side,
+                "timeout_ms": _attlib_sim_timeout_ms(seg),
+                "progress_mode": "angle_deg",
+                "started": False,
+                "ticks_since_start": 0,
+            })
+        elif seg_type == "path":
+            if bool(seg.get("move_to_pose", False)):
+                x_in, y_in = _attlib_sim_px_to_in(seg.get("p1", (0.0, 0.0)))
+                heading_deg = float(seg.get("pose_heading", seg.get("facing", 0.0)))
+                plan.append({
+                    "kind": "move_to_pose",
+                    "x_in": x_in,
+                    "y_in": y_in,
+                    "heading_deg": heading_deg,
+                    "timeout_ms": _attlib_sim_timeout_ms(seg, pad_s=0.7),
+                    "params": _attlib_drive_params(module, seg),
+                    "marker_events": _attlib_marker_events(seg),
+                    "progress_mode": "linear_in",
+                    "started": False,
+                    "ticks_since_start": 0,
+                })
+            else:
+                path_points = seg.get("path_points", []) or []
+                if len(path_points) >= 2:
+                    path_obj = module.Path()
+                    pts = []
+                    s_in = []
+                    running_in = 0.0
+                    for point in path_points:
+                        path_point = module.PathPoint()
+                        path_point.x_in, path_point.y_in = _attlib_sim_px_to_in(point)
+                        pts.append(path_point)
+                    for point_idx in range(len(path_points)):
+                        if point_idx > 0:
+                            dx = path_points[point_idx][0] - path_points[point_idx - 1][0]
+                            dy = path_points[point_idx][1] - path_points[point_idx - 1][1]
+                            running_in += math.hypot(dx, dy) / PPI
+                        s_in.append(running_in)
+                    path_obj.pts = pts
+                    path_obj.s_in = s_in
+                    lookahead_in = max(1.0, float(seg.get("lookahead_px", path_lookahead_px)) / PPI)
+                    plan.append({
+                        "kind": "follow",
+                        "path_obj": path_obj,
+                        "lookahead_in": lookahead_in,
+                        "timeout_ms": _attlib_sim_timeout_ms(seg, pad_s=1.0),
+                        "forwards": not bool(seg.get("reverse", False)),
+                        "marker_events": _attlib_marker_events(seg),
+                        "progress_mode": "linear_in",
+                        "started": False,
+                        "ticks_since_start": 0,
+                    })
+                else:
+                    x_in, y_in = _attlib_sim_px_to_in(seg.get("p1", (0.0, 0.0)))
+                    plan.append({
+                        "kind": "move_to_point",
+                        "x_in": x_in,
+                        "y_in": y_in,
+                        "timeout_ms": _attlib_sim_timeout_ms(seg),
+                        "params": _attlib_drive_params(module, seg),
+                        "marker_events": _attlib_marker_events(seg),
+                        "progress_mode": "linear_in",
+                        "started": False,
+                        "ticks_since_start": 0,
+                    })
+        elif seg_type == "wait":
+            if str(seg.get("role", "")).strip().lower() == "buffer":
+                continue
+            try:
+                wait_s = float(seg.get("T", 0.0))
+            except Exception:
+                wait_s = 0.0
+            if wait_s > 0.0:
+                plan.append({"kind": "wait", "seconds": wait_s})
+        elif seg_type == "reshape":
+            plan.append({"kind": "reshape_toggle"})
+        elif seg_type == "marker":
+            plan.append({"kind": "marker", "actions": list(seg.get("actions", []))})
+    return plan
+
+def _attlib_sim_stop():
+    """Stop and release current attlib_sim runtime resources."""
+    global attlib_sim_runtime
+    worker = attlib_sim_runtime.get("external_thread")
+    chassis = attlib_sim_runtime.get("chassis")
+    if chassis is not None:
+        try:
+            chassis.cancel_all_motions()
+        except Exception:
+            pass
+        try:
+            chassis.stop()
+        except Exception:
+            pass
+    if worker is not None:
+        try:
+            worker.join(timeout=0.25)
+        except Exception:
+            pass
+    attlib_sim_runtime = {
+        "running": False,
+        "module": None,
+        "chassis": None,
+        "mode": "timeline",
+        "plan": [],
+        "index": 0,
+        "wait_elapsed_s": 0.0,
+        "external_thread": None,
+        "external_done": False,
+        "external_error": None,
+        "external_result": None,
+    }
+
+def _attlib_sim_start(tl) -> bool:
+    """Initialize attlib_sim visual runner for the current timeline."""
+    global attlib_sim_runtime, attlib_sim_status
+
+    _attlib_sim_stop()
+
+    module_dirs = []
+    preferred = str(attlib_sim_module_dir or "").strip()
+    if preferred:
+        module_dirs.append(Path(preferred))
+    module_dirs.extend([
+        Path(_default_attlib_sim_module_dir()),
+        Path(APP_ROOT).resolve().parent / "Project Atticus" / "atticode" / "host" / "build",
+    ])
+
+    ext_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES or ())
+    module_dir = None
+    found_any = []
+    found_incompatible = []
+    for candidate in module_dirs:
+        if not candidate.exists():
+            continue
+        binaries = sorted(candidate.glob("attlib_sim*.pyd"))
+        if binaries:
+            found_any.extend(str(p.name) for p in binaries)
+        if any((candidate / f"attlib_sim{sfx}").exists() for sfx in ext_suffixes):
+            module_dir = candidate
+            break
+        if binaries:
+            found_incompatible.extend(str(p.name) for p in binaries)
+
+    if module_dir is None:
+        if found_incompatible:
+            py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+            attlib_sim_status = (
+                f"AttLibSim binary mismatch (need {py_tag}). "
+                f"Found: {', '.join(found_incompatible)}"
+            )
+        elif found_any:
+            attlib_sim_status = f"AttLibSim module not loadable for this Python. Found: {', '.join(found_any)}"
+        else:
+            attlib_sim_status = "AttLibSim module not found. Build host/attlib_sim first."
+        return False
+
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
+
+    if os.name == "nt" and hasattr(os, "add_dll_directory"):
+        dll_dir = Path(r"C:\Strawberry\c\bin")
+        if dll_dir.exists():
+            try:
+                os.add_dll_directory(str(dll_dir))
+            except Exception:
+                pass
+
+    try:
+        importlib.invalidate_caches()
+        module = importlib.import_module("attlib_sim")
+    except Exception as exc:
+        attlib_sim_status = f"AttLibSim import failed: {exc}"
+        return False
+
+    try:
+        sim_cfg = module.SimDriveIOConfig()
+        sim_cfg.track_width_in = float(CFG.get("bot_dimensions", {}).get("dt_width", 11.5))
+        sim_cfg.wheel_diameter_in = float(CFG.get("robot_physics", {}).get("diameter", 4.0))
+        sim_cfg.max_wheel_speed_inps = float(vmax_straight(CFG))
+        chassis = module.SimChassis(sim_cfg)
+        x0_in, y0_in = _attlib_sim_px_to_in(display_nodes[0]["pos"])
+        chassis.set_pose(x0_in, y0_in, float(initial_state["heading"]))
+        plan = _attlib_sim_build_plan(tl, module)
+    except Exception as exc:
+        attlib_sim_status = f"AttLibSim setup failed: {exc}"
+        return False
+
+    mode = _attlib_sim_source_mode()
+    if mode == "external_script":
+        try:
+            runner = _attlib_sim_load_external_callable()
+        except Exception as exc:
+            attlib_sim_status = f"External routine load failed: {exc}"
+            return False
+
+        script_chassis = _AttlibSimChassisProxy(chassis)
+
+        worker = threading.Thread(
+            target=_attlib_sim_external_worker,
+            args=(runner, script_chassis, module),
+            daemon=True,
+            name="AttLibSimExternalRoutine",
+        )
+        attlib_sim_runtime = {
+            "running": True,
+            "module": module,
+            "chassis": chassis,
+            "mode": mode,
+            "plan": [],
+            "index": 0,
+            "wait_elapsed_s": 0.0,
+            "external_thread": worker,
+            "external_done": False,
+            "external_error": None,
+            "external_result": None,
+        }
+        worker.start()
+        attlib_sim_status = (
+            "AttLibSim running external routine: "
+            f"{attlib_sim_routine_script}::{attlib_sim_routine_func}"
+        )
+        _attlib_sim_log(attlib_sim_status)
+        _attlib_sim_log("External routine proxy enabled: blocking calls are emulated without freezing visual updates.")
+        return True
+
+    if not plan:
+        attlib_sim_status = "No executable timeline commands for AttLibSim."
+        return False
+
+    attlib_sim_runtime = {
+        "running": True,
+        "module": module,
+        "chassis": chassis,
+        "mode": mode,
+        "plan": plan,
+        "index": 0,
+        "wait_elapsed_s": 0.0,
+        "external_thread": None,
+        "external_done": False,
+        "external_error": None,
+        "external_result": None,
+    }
+    attlib_sim_status = f"AttLibSim running ({len(plan)} cmds)"
+    _attlib_sim_log(attlib_sim_status)
+    return True
+
+def _attlib_sim_step(dt_s):
+    """Advance attlib_sim visual runtime and mirror pose into terminal view."""
+    global moving, robot_pos, robot_heading, reshape_live, attlib_sim_status
+
+    if not attlib_sim_runtime.get("running"):
+        return
+
+    chassis = attlib_sim_runtime.get("chassis")
+    module = attlib_sim_runtime.get("module")
+    plan = attlib_sim_runtime.get("plan", [])
+    index = int(attlib_sim_runtime.get("index", 0))
+    if chassis is None or module is None:
+        moving = False
+        _attlib_sim_stop()
+        attlib_sim_status = "AttLibSim runtime missing chassis/module."
+        _attlib_sim_log(attlib_sim_status)
+        return
+
+    try:
+        pose = chassis.get_pose()
+        robot_pos = _attlib_sim_in_to_px(float(pose.x), float(pose.y))
+        robot_heading = float(pose.theta) % 360.0
+    except Exception:
+        pass
+
+    if paused:
+        return
+
+    mode = str(attlib_sim_runtime.get("mode", "timeline"))
+    if mode == "external_script":
+        if bool(attlib_sim_runtime.get("external_done", False)):
+            try:
+                if chassis.is_in_motion():
+                    return
+            except Exception:
+                pass
+            moving = False
+            err = attlib_sim_runtime.get("external_error")
+            result = attlib_sim_runtime.get("external_result")
+            _attlib_sim_stop()
+            if err:
+                attlib_sim_status = f"External routine failed:\n{err}"
+            else:
+                attlib_sim_status = f"External routine completed. result={result!r}"
+            _attlib_sim_log(attlib_sim_status)
+        return
+
+    if index >= len(plan):
+        moving = False
+        _attlib_sim_stop()
+        attlib_sim_status = "AttLibSim completed."
+        _attlib_sim_log(attlib_sim_status)
+        return
+
+    cmd = plan[index]
+    kind = cmd.get("kind")
+
+    if kind == "wait":
+        attlib_sim_runtime["wait_elapsed_s"] = float(attlib_sim_runtime.get("wait_elapsed_s", 0.0)) + max(0.0, float(dt_s))
+        if float(attlib_sim_runtime["wait_elapsed_s"]) >= float(cmd.get("seconds", 0.0)):
+            attlib_sim_runtime["index"] = index + 1
+            attlib_sim_runtime["wait_elapsed_s"] = 0.0
+        return
+
+    if kind == "reshape_toggle":
+        reshape_live = not reshape_live
+        attlib_sim_runtime["index"] = index + 1
+        return
+
+    if kind == "marker":
+        reshape_live = _marker_apply_reshape(cmd.get("actions", []), reshape_live)
+        _marker_apply_atticus(cmd.get("actions", []))
+        attlib_sim_runtime["index"] = index + 1
+        return
+
+    if not cmd.get("started", False):
+        try:
+            if kind == "move_to_point":
+                params = cmd.get("params")
+                if params is None:
+                    chassis.move_to_point(float(cmd["x_in"]), float(cmd["y_in"]), int(cmd["timeout_ms"]), True)
+                else:
+                    chassis.move_to_point(float(cmd["x_in"]), float(cmd["y_in"]), int(cmd["timeout_ms"]), params, True)
+            elif kind == "turn_to_heading":
+                chassis.turn_to_heading(float(cmd["heading_deg"]), int(cmd["timeout_ms"]), True)
+            elif kind == "swing_to_heading":
+                locked_side = module.DriveSide.RIGHT if cmd.get("locked_side") == "RIGHT" else module.DriveSide.LEFT
+                chassis.swing_to_heading(float(cmd["heading_deg"]), locked_side, int(cmd["timeout_ms"]), True)
+            elif kind == "move_to_pose":
+                params = cmd.get("params")
+                if params is None:
+                    chassis.move_to_pose(
+                        float(cmd["x_in"]),
+                        float(cmd["y_in"]),
+                        float(cmd["heading_deg"]),
+                        int(cmd["timeout_ms"]),
+                        True,
+                    )
+                else:
+                    chassis.move_to_pose(
+                        float(cmd["x_in"]),
+                        float(cmd["y_in"]),
+                        float(cmd["heading_deg"]),
+                        int(cmd["timeout_ms"]),
+                        params,
+                        True,
+                    )
+            elif kind == "follow":
+                chassis.follow(
+                    cmd["path_obj"],
+                    float(cmd["lookahead_in"]),
+                    int(cmd["timeout_ms"]),
+                    bool(cmd.get("forwards", True)),
+                    True,
+                )
+            else:
+                attlib_sim_runtime["index"] = index + 1
+                return
+            cmd["started"] = True
+            cmd["ticks_since_start"] = 0
+            cmd["progress"] = 0.0
+            cmd["marker_index"] = 0
+            try:
+                pose = chassis.get_pose()
+                cmd["last_pose_xy"] = (float(pose.x), float(pose.y))
+                cmd["last_heading_deg"] = float(pose.theta) % 360.0
+            except Exception:
+                cmd["last_pose_xy"] = None
+                cmd["last_heading_deg"] = None
+        except Exception as exc:
+            moving = False
+            _attlib_sim_stop()
+            attlib_sim_status = f"AttLibSim command failed ({kind}): {exc}"
+            _attlib_sim_log(attlib_sim_status)
+            return
+
+    cmd["ticks_since_start"] = int(cmd.get("ticks_since_start", 0)) + 1
+    if cmd["ticks_since_start"] < 2:
+        return
+
+    try:
+        pose = chassis.get_pose()
+        current_xy = (float(pose.x), float(pose.y))
+        current_heading = float(pose.theta) % 360.0
+        progress_mode = str(cmd.get("progress_mode", "")).strip().lower()
+        if progress_mode == "linear_in":
+            prev_xy = cmd.get("last_pose_xy")
+            if isinstance(prev_xy, tuple) and len(prev_xy) == 2:
+                cmd["progress"] = float(cmd.get("progress", 0.0)) + math.hypot(current_xy[0] - prev_xy[0], current_xy[1] - prev_xy[1])
+            cmd["last_pose_xy"] = current_xy
+        elif progress_mode == "angle_deg":
+            prev_heading = cmd.get("last_heading_deg")
+            if prev_heading is not None:
+                delta = ((current_heading - float(prev_heading) + 180.0) % 360.0) - 180.0
+                cmd["progress"] = float(cmd.get("progress", 0.0)) + abs(delta)
+            cmd["last_heading_deg"] = current_heading
+
+        events = cmd.get("marker_events", [])
+        marker_idx = int(cmd.get("marker_index", 0))
+        progress_val = float(cmd.get("progress", 0.0))
+        while marker_idx < len(events):
+            target = float(events[marker_idx].get("progress_in", 0.0))
+            if progress_val + 1e-6 < target:
+                break
+            actions = events[marker_idx].get("actions", [])
+            reshape_live = _marker_apply_reshape(actions, reshape_live)
+            _marker_apply_atticus(actions)
+            marker_idx += 1
+        cmd["marker_index"] = marker_idx
+
+        if not chassis.is_in_motion():
+            while marker_idx < len(events):
+                actions = events[marker_idx].get("actions", [])
+                reshape_live = _marker_apply_reshape(actions, reshape_live)
+                _marker_apply_atticus(actions)
+                marker_idx += 1
+            cmd["marker_index"] = marker_idx
+            attlib_sim_runtime["index"] = index + 1
+            attlib_sim_runtime["wait_elapsed_s"] = 0.0
+    except Exception as exc:
+        moving = False
+        _attlib_sim_stop()
+        attlib_sim_status = f"AttLibSim poll failed: {exc}"
+        _attlib_sim_log(attlib_sim_status)
 
 def remove_path_leading_to(idx):
     """Remove any stored path that ends at idx (path_to_next on idx-1)."""
@@ -946,8 +2352,14 @@ def effective_node_pos(idx):
 
 def compute_total_estimate_s():
     """Compute total routine time estimate."""
+    estimate_sig = _estimate_graph_sig()
+    cached = _estimate_total_cache.get(estimate_sig)
+    if cached is not None:
+        return cached
     tl = build_timeline_with_buffers()
-    return compute_total_from_timeline(tl)
+    total = compute_total_from_timeline(tl)
+    _cache_store(_estimate_total_cache, estimate_sig, total, max_size=96)
+    return total
 
 def clamp_heading_rate(current_h, target_h, cfg, dt):
     """Limit heading change per frame to respect physical turn constraints."""
@@ -1015,6 +2427,30 @@ def _split_edge_events(events, t_split):
             new_ev["t"] = max(0.0, min(1.0, (t - t_split) / denom))
             right.append(new_ev)
     return left, right
+
+def _fire_edge_events(seg, progress=None, reshape_state=False, drain_all=False):
+    """Trigger marker actions when a segment crosses their waitUntil progress target."""
+    events = seg.get("edge_events", [])
+    if not isinstance(events, list) or not events:
+        return reshape_state
+    idx = int(seg.get("_edge_event_idx", 0))
+    while idx < len(events):
+        try:
+            target = float(events[idx].get("t", 0.0))
+        except Exception:
+            target = 0.0
+        if not drain_all:
+            prog = 0.0 if progress is None else max(0.0, min(1.0, float(progress)))
+            if prog + 1e-6 < target:
+                break
+        actions = events[idx].get("actions", [])
+        label = _marker_actions_to_text(actions)
+        reshape_state = _marker_apply_reshape(actions, reshape_state)
+        _marker_apply_atticus(actions)
+        log_action("marker", label=label)
+        idx += 1
+    seg["_edge_event_idx"] = idx
+    return reshape_state
 
 def _split_path_control_points(cps, insert_pt):
     """Handle split path control points."""
@@ -1260,6 +2696,16 @@ def log_action(kind, **kw):
         log_lines.append(f"  Reshape: state {kw['state']}")
     elif kind == "reverse":
         log_lines.append(f"  Reverse: {'ON' if kw['state'] else 'OFF'}")
+    elif kind == "atticus_immediate":
+        log_lines.append(f"  Atticus: applyImmediateCorrectionAuto() [settled about {ATTICUS_DSR_RECOMMENDED_STILL_MS:g} ms]")
+    elif kind == "atticus_wall_trim_start":
+        log_lines.append("  Atticus: correctThetaFromWallAuto()")
+    elif kind == "atticus_wall_trim_end":
+        log_lines.append("  Atticus: endThetaWallAlignment()")
+    elif kind == "atticus_rough_wall_start":
+        log_lines.append("  Atticus: startRoughWallTraverseAuto()")
+    elif kind == "atticus_rough_wall_end":
+        log_lines.append("  Atticus: endRoughWallTraverse()")
     elif kind == "marker":
         label = str(kw.get("label", "")).strip()
         if label:
@@ -1585,18 +3031,76 @@ def compile_cmd_string(node, idx):
             except Exception:
                 parts.append("chain")
     lat_cmd = _node_lateral_cmd(node)
-    if lat_cmd:
+    if lat_cmd is not None:
         parts.append(f"latspeed {float(lat_cmd):g}")
+    elif _node_lateral_reset(node):
+        parts.append("latspeed off")
     if node.get("custom_turn_dps"):
         parts.append(f"turnspeed {node['custom_turn_dps']:g}")
+    corr_mode = _node_atticus_correction_mode(node)
+    if corr_mode == "immediate":
+        parts.append("correct immediate")
+    elif corr_mode == "wall_trim":
+        parts.append("correct walltrim")
+    elif corr_mode == "rough_wall":
+        parts.append("correct roughwall")
     return ", ".join(parts)
+
+def _normalize_preset_state_token(state):
+    """Normalize preset toggle state to on/off/toggle/None."""
+    if state is None:
+        return None
+    if isinstance(state, bool):
+        return "on" if state else "off"
+    s = str(state).strip().lower()
+    if not s:
+        return None
+    if s in ("on", "1", "true", "yes", "enable", "enabled"):
+        return "on"
+    if s in ("off", "0", "false", "no", "disable", "disabled"):
+        return "off"
+    if s == "toggle":
+        return "toggle"
+    return None
+
+
+def _normalize_reverse_action_state(state):
+    """Normalize reverse action state to True/False/None(toggle)."""
+    if state is None:
+        return None
+    if isinstance(state, bool):
+        return state
+    s = str(state).strip().lower()
+    if not s or s == "toggle":
+        return None
+    if s in ("on", "1", "true", "yes", "enable", "enabled"):
+        return True
+    if s in ("off", "0", "false", "no", "disable", "disabled"):
+        return False
+    return None
+
+
+def _looks_like_legacy_dsr_preset(name):
+    """Detect old DSR preset actions that should become Atticus immediate nodes."""
+    return str(name or "").strip().lower() == "dsr"
+
+
+def _looks_like_legacy_dsr_code(code):
+    """Detect old hard-coded DSR calls saved before node correction migration."""
+    text = str(code or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "distancesensorcorrection(" in text
+        or "applyimmediatecorrectionauto(" in text
+    )
+
 
 def parse_and_apply_cmds(node, cmd_str, idx):
     """Parse and apply commands to node."""
     acts = []
     node.pop("swing_target_heading_deg", None)
-    orig_reverse = bool(node.get("reverse", False))
-    node["reverse"] = orig_reverse
+    node["reverse"] = False
     has_reverse_action = False
     presets = _mech_presets()
     preset_names = [p["name"] for p in presets if str(p.get("name", "")).strip()]
@@ -1694,32 +3198,40 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         state = rem_tokens[0].lower()
                         tail = rem_tokens[1:]
                         value = " ".join(tail) if tail else None
-                        acts.append({"type": "preset", "name": "reshape", "state": state, "value": value, "values": tail[:3]})
+                        acts.append({
+                            "type": "preset",
+                            "name": "reshape",
+                            "state": _normalize_preset_state_token(state),
+                            "value": value,
+                            "values": tail[:3],
+                        })
                     else:
                         acts.append({"type": "reshape"})
 
                 elif cmd == "reverse":
                     tokens = low.split()
-                    state = None
-                    if len(tokens) >= 2 and tokens[1] in ("on", "1", "true", "yes"):
-                        state = True
-                    elif len(tokens) >= 2 and tokens[1] in ("off", "0", "false", "no"):
-                        state = False
+                    state = _normalize_reverse_action_state(tokens[1] if len(tokens) >= 2 else None)
                     acts.append({"type": "reverse", "state": state})
                     has_reverse_action = True
 
                 elif cmd in ("latspeed", "lat", "drive_speed"):
                     if len(tokens_raw) >= 2:
                         token = tokens_raw[1].lower()
-                        if token in ("off", "none", "clear"):
+                        if token in ("off", "none", "clear", "default"):
                             node.pop("custom_lateral_cmd", None)
                             node.pop("custom_lateral_ips", None)
+                            node["custom_lateral_reset"] = True
                         else:
                             if not token.endswith("ips"):
                                 if token.endswith("cmd"):
                                     token = token[:-3]
                                 val = max(0.0, min(127.0, float(_num_token(token))))
-                                node["custom_lateral_cmd"] = val if val > 0 else None
+                                if val > 0:
+                                    node["custom_lateral_cmd"] = val
+                                    node.pop("custom_lateral_reset", None)
+                                else:
+                                    node.pop("custom_lateral_cmd", None)
+                                    node["custom_lateral_reset"] = True
                                 node.pop("custom_lateral_ips", None)
 
                 elif cmd == "chain":
@@ -1745,10 +3257,42 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         else:
                             node["custom_turn_dps"] = float(_num_token(token))
 
+                elif cmd in ("correct", "correction", "atticus"):
+                    token = tokens_raw[1].lower() if len(tokens_raw) >= 2 else "immediate"
+                    if token in ("off", "none", "clear", "disable"):
+                        _set_node_atticus_correction_mode(node, None)
+                    elif token in ("immediate", "oneshot", "one-shot", "now"):
+                        _set_node_atticus_correction_mode(node, "immediate")
+                    elif token in ("walltrim", "wall", "trim", "wallalign", "wallalignment", "thetawall"):
+                        _set_node_atticus_correction_mode(node, "wall_trim")
+                    elif token in ("roughwall", "rough", "park", "parking", "wallrough", "roughterrain"):
+                        _set_node_atticus_correction_mode(node, "rough_wall")
+
+                elif cmd in ("immediatecorrection", "immediatecorrect", "correctnow"):
+                    _set_node_atticus_correction_mode(node, "immediate")
+
+                elif cmd in ("walltrim", "wallalign", "wallalignment", "thetawall"):
+                    if len(tokens_raw) >= 2 and tokens_raw[1].lower() in ("off", "none", "clear", "disable"):
+                        _set_node_atticus_correction_mode(node, None)
+                    else:
+                        _set_node_atticus_correction_mode(node, "wall_trim")
+
+                elif cmd in ("roughwall", "wallrough", "roughterrain", "parkmode", "parkingmode"):
+                    if len(tokens_raw) >= 2 and tokens_raw[1].lower() in ("off", "none", "clear", "disable"):
+                        _set_node_atticus_correction_mode(node, None)
+                    else:
+                        _set_node_atticus_correction_mode(node, "rough_wall")
+
                 elif cmd == "code":
                     code = part[len(tokens_raw[0]):].strip() if tokens_raw else ""
                     if code:
                         acts.append({"type": "code", "code": code})
+
+                elif cmd == "dsr":
+                    if len(tokens_raw) >= 2 and tokens_raw[1].lower() in ("off", "none", "clear", "disable"):
+                        _set_node_atticus_correction_mode(node, None)
+                    else:
+                        _set_node_atticus_correction_mode(node, "immediate")
 
                 else:
                     matched_name = preset_map.get(cmd)
@@ -1765,7 +3309,7 @@ def parse_and_apply_cmds(node, cmd_str, idx):
                         value = None
                         values = []
                         if tokens and tokens[0].lower() in ("on", "off", "toggle"):
-                            state = tokens[0].lower()
+                            state = _normalize_preset_state_token(tokens[0])
                             tokens = tokens[1:]
                         if tokens:
                             value = " ".join(tokens)
@@ -1780,7 +3324,7 @@ def parse_and_apply_cmds(node, cmd_str, idx):
     if has_reverse_action:
         node["reverse"] = False
     node["actions"] = acts
-    node["actions_out"] = list(acts)
+    _normalize_node_mech_payload(node)
 
 def _normalize_node_mech_payload(node):
     """Canonicalize node mechanism actions/events so save/load/export stay in sync."""
@@ -1792,7 +3336,7 @@ def _normalize_node_mech_payload(node):
         name = str(src.get("name", "")).strip()
         if not name:
             return None
-        state = src.get("state", None)
+        state = _normalize_preset_state_token(src.get("state", None))
         value = src.get("value", None)
         values = src.get("values", [])
         if not isinstance(values, list):
@@ -1813,6 +3357,7 @@ def _normalize_node_mech_payload(node):
     if not isinstance(src_actions, list):
         src_actions = []
     out_actions = []
+    saw_legacy_dsr = False
     for act in src_actions:
         if not isinstance(act, dict):
             continue
@@ -1823,12 +3368,21 @@ def _normalize_node_mech_payload(node):
             preset = _norm_preset_like(act)
             if preset is None:
                 continue
+            if _looks_like_legacy_dsr_preset(preset.get("name", "")):
+                saw_legacy_dsr = True
+                continue
             out_actions.append({"type": "preset", **preset})
             continue
         if t == "code":
             code = str(act.get("code", "")).strip()
+            if _looks_like_legacy_dsr_code(code):
+                saw_legacy_dsr = True
+                continue
             if code:
                 out_actions.append({"type": "code", "code": code})
+            continue
+        if t == "reverse":
+            out_actions.append({"type": "reverse", "state": _normalize_reverse_action_state(act.get("state", None))})
             continue
         if t in ("turn", "wait", "swing", "reverse", "reshape"):
             out_actions.append(dict(act))
@@ -1836,6 +3390,8 @@ def _normalize_node_mech_payload(node):
         out_actions.append(dict(act))
     node["actions"] = out_actions
     node["actions_out"] = list(out_actions)
+    if saw_legacy_dsr and _node_atticus_correction_mode(node) is None:
+        _set_node_atticus_correction_mode(node, "immediate")
 
     pd = node.get("path_to_next")
     if isinstance(pd, dict) and "edge_events" in pd and "edge_events" not in node:
@@ -1884,6 +3440,7 @@ def _normalize_node_mech_payload(node):
 
 def _mech_presets():
     """Handle mech presets."""
+    _ensure_locked_mech_presets(CFG)
     raw = CFG.get("codegen", {}).get("mech_presets", [])
     if not isinstance(raw, list):
         return []
@@ -1998,6 +3555,26 @@ def _marker_apply_reshape(actions, current_state):
                 state = not state
     return state
 
+
+def _marker_apply_atticus(actions):
+    """Run built-in Atticus marker commands inside the simulator."""
+    if not isinstance(actions, list):
+        return
+    for act in actions:
+        if not isinstance(act, dict):
+            continue
+        if str(act.get("kind", "")).strip().lower() != "preset":
+            continue
+        if str(act.get("name", "")).strip().lower() != "dsr":
+            continue
+        values = act.get("values", [])
+        if isinstance(values, list) and values:
+            sensor_tokens = [str(v).strip() for v in values if str(v).strip()][:2]
+        else:
+            value = _preset_value_text(act)
+            sensor_tokens = [tok for tok in re.split(r"[\s,;/|+]+", value) if tok][:2] if value else []
+        _atticus_apply_immediate_correction(sensor_tokens or None)
+
 def _marker_hover_text(actions):
     """Handle marker hover text."""
     if not isinstance(actions, list):
@@ -2080,7 +3657,7 @@ def _parse_marker_actions(text):
             value = None
             values = []
             if tokens and tokens[0].lower() in ("on", "off", "toggle"):
-                state = tokens[0].lower()
+                state = _normalize_preset_state_token(tokens[0])
                 tokens = tokens[1:]
             if tokens:
                 value = " ".join(tokens)
@@ -2097,6 +3674,8 @@ def _marker_prompt_text():
         "Commands (comma/semicolon separated). Examples:",
         "  intake on, clamp toggle",
         "  lift 300",
+        f"  DSR RIGHT LEFT   (explicit distance reset using up to two sensors; stay settled about {ATTICUS_DSR_RECOMMENDED_STILL_MS:g} ms)",
+        "  DSR              (no value = auto immediate correction)",
         "  trap open   (works with Cases preset keys like words/numbers)",
         "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})",
         "  clamp on 1 2 3     (toggle + values, {STATE} on/off)",
@@ -2439,12 +4018,56 @@ def open_settings_window():
     notebook.add(tabs["general"], text="General")
     notebook.add(tabs["physics"], text="Physics")
     notebook.add(tabs["geometry"], text="Geometry")
-    notebook.add(tabs["mcl"], text="MCL")
+    notebook.add(tabs["mcl"], text="Atticus")
     notebook.add(tabs["codegen"], text="Export")
     
     for name in ("general", "geometry", "mcl", "codegen"):
         for c in range(2):
             tabs[name].columnconfigure(c, weight=1)
+
+    general_tab = tabs["general"]
+    general_tab.rowconfigure(0, weight=1)
+    general_tab.columnconfigure(0, weight=1)
+    general_tab.columnconfigure(1, weight=0)
+    general_canvas = tk.Canvas(general_tab, borderwidth=0, highlightthickness=0)
+    general_scroll = ttk.Scrollbar(general_tab, orient="vertical", command=general_canvas.yview)
+    general_canvas.configure(yscrollcommand=general_scroll.set)
+    general_body = ttk.Frame(general_canvas)
+    general_win = general_canvas.create_window((0, 0), window=general_body, anchor="nw")
+    general_body.columnconfigure(0, weight=1)
+    general_body.columnconfigure(1, weight=1)
+    general_canvas.grid(row=0, column=0, sticky="nsew")
+    general_scroll.grid(row=0, column=1, sticky="ns")
+
+    def _general_on_configure(_evt=None):
+        """Update general-tab scroll region and content width."""
+        try:
+            general_canvas.configure(scrollregion=general_canvas.bbox("all"))
+            general_canvas.itemconfigure(general_win, width=general_canvas.winfo_width())
+        except Exception:
+            pass
+
+    def _general_mousewheel(event):
+        """Handle mousewheel scrolling in General tab."""
+        delta = 0
+        if hasattr(event, "delta") and event.delta:
+            delta = int(-event.delta / 40) if abs(event.delta) >= 40 else (-2 if event.delta > 0 else 2)
+        else:
+            num = getattr(event, "num", None)
+            if num == 4:
+                delta = -1
+            elif num == 5:
+                delta = 1
+        if delta:
+            general_canvas.yview_scroll(delta, "units")
+            return "break"
+
+    general_body.bind("<Configure>", _general_on_configure)
+    general_canvas.bind("<Configure>", _general_on_configure)
+    for w in (general_canvas, general_body):
+        w.bind("<MouseWheel>", _general_mousewheel)
+        w.bind("<Button-4>", _general_mousewheel)
+        w.bind("<Button-5>", _general_mousewheel)
     
     tabs["controls"].rowconfigure(0, weight=1)
     tabs["controls"].columnconfigure(0, weight=1)
@@ -2539,10 +4162,69 @@ def open_settings_window():
     rs_l = tk.StringVar(value=str(bd.get("reshape_length", bd.get("length", 0))))
     rs_off_x = tk.StringVar(value=str(bd.get("reshape_offset_x_in", 0)))
     rs_off_y = tk.StringVar(value=str(bd.get("reshape_offset_y_in", 0)))
+    def _sanitize_advanced_poly(points):
+        """Normalize advanced geometry points to [[x_in, y_in], ...]."""
+        if isinstance(points, dict):
+            points = points.get("value", [])
+        if not isinstance(points, (list, tuple)):
+            return []
+        out = []
+        for pt in points:
+            x = y = None
+            if isinstance(pt, dict):
+                x = pt.get("x", pt.get("x_in"))
+                y = pt.get("y", pt.get("y_in"))
+            elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                x, y = pt[0], pt[1]
+            if x is None or y is None:
+                continue
+            try:
+                out.append([round(float(x), 4), round(float(y), 4)])
+            except Exception:
+                continue
+        return out
+    adv_geom_raw = bd.get("advanced_geometry", {})
+    if not isinstance(adv_geom_raw, dict):
+        adv_geom_raw = {}
+    adv_enabled_raw = adv_geom_raw.get("enabled", 0)
+    if isinstance(adv_enabled_raw, dict):
+        adv_enabled_raw = adv_enabled_raw.get("value", 0)
+    try:
+        adv_enabled = int(bool(int(adv_enabled_raw)))
+    except Exception:
+        adv_enabled = int(bool(adv_enabled_raw))
+    adv_sym_raw = adv_geom_raw.get("symmetry", 0)
+    if isinstance(adv_sym_raw, dict):
+        adv_sym_raw = adv_sym_raw.get("value", 0)
+    try:
+        adv_symmetry = int(bool(int(adv_sym_raw)))
+    except Exception:
+        adv_symmetry = int(bool(adv_sym_raw))
+    adv_points = _sanitize_advanced_poly(adv_geom_raw.get("points", []))
+    adv_reshape_points = _sanitize_advanced_poly(adv_geom_raw.get("reshape_points", []))
+    legacy_normal_pts = _sanitize_advanced_poly(adv_geom_raw.get("normal", []))
+    legacy_reshape_pts = _sanitize_advanced_poly(adv_geom_raw.get("reshape", []))
+    if not adv_points:
+        adv_points = legacy_normal_pts if legacy_normal_pts else legacy_reshape_pts
+    if not adv_reshape_points:
+        adv_reshape_points = legacy_reshape_pts if legacy_reshape_pts else adv_points
+    advanced_geometry_state = {
+        "enabled": adv_enabled,
+        "symmetry": adv_symmetry,
+        "points": adv_points,
+        "reshape_points": adv_reshape_points,
+    }
+    bd["advanced_geometry"] = {
+        "enabled": int(advanced_geometry_state.get("enabled", 0)),
+        "symmetry": int(advanced_geometry_state.get("symmetry", 0)),
+        "points": [list(p) for p in advanced_geometry_state.get("points", [])],
+        "reshape_points": [list(p) for p in advanced_geometry_state.get("reshape_points", [])],
+    }
     
     off = CFG["offsets"]
     off1 = tk.StringVar(value=str(off.get("offset_1_in", 0)))
     off2 = tk.StringVar(value=str(off.get("offset_2_in", 0)))
+    off3 = tk.StringVar(value=str(off.get("offset_3_in", 0)))
     pad = tk.StringVar(value=str(off.get("padding_in", 0)))
 
     mcl_cfg = CFG.get("mcl", {})
@@ -2554,51 +4236,31 @@ def open_settings_window():
     mcl_pose_swap_xy_var = tk.IntVar(value=int(mcl_interop_cfg.get("swap_xy", 0)))
     mcl_pose_invert_x_var = tk.IntVar(value=int(mcl_interop_cfg.get("invert_x", 0)))
     mcl_pose_invert_y_var = tk.IntVar(value=int(mcl_interop_cfg.get("invert_y", 0)))
-    mcl_motion_ms_var = tk.StringVar(value=str(mcl_cfg.get("motion_ms", 10)))
-    mcl_sensor_ms_var = tk.StringVar(value=str(mcl_cfg.get("sensor_ms", 50)))
-    parts_cfg = mcl_cfg.get("particles", {})
-    mcl_particles_n_var = tk.StringVar(value=str(parts_cfg.get("n", parts_cfg.get("n_min", 350))))
-    mcl_particles_min_var = tk.StringVar(value=str(parts_cfg.get("n_min", 250)))
-    mcl_particles_max_var = tk.StringVar(value=str(parts_cfg.get("n_max", 500)))
-    res_cfg = mcl_cfg.get("resample", {})
-    mcl_resample_method_var = tk.StringVar(value=str(res_cfg.get("method", "systematic")))
-    mcl_resample_thresh_var = tk.StringVar(value=str(res_cfg.get("threshold", 0.5)))
-    kld_cfg = mcl_cfg.get("kld", {})
-    mcl_kld_enabled_var = tk.IntVar(value=int(kld_cfg.get("enabled", 0)))
-    mcl_kld_eps_var = tk.StringVar(value=str(kld_cfg.get("epsilon", 0.05)))
-    mcl_kld_delta_var = tk.StringVar(value=str(kld_cfg.get("delta", 0.99)))
-    mcl_kld_bin_xy_var = tk.StringVar(value=str(kld_cfg.get("bin_xy_in", 2.0)))
-    mcl_kld_bin_theta_var = tk.StringVar(value=str(kld_cfg.get("bin_theta_deg", 10.0)))
-    cgr_cfg = mcl_cfg.get("cgr_lite", {})
-    mcl_cgr_enabled_var = tk.IntVar(value=int(cgr_cfg.get("enabled", 1)))
-    mcl_cgr_top_k_var = tk.StringVar(value=str(cgr_cfg.get("top_k", 8)))
-    mcl_cgr_max_iters_var = tk.StringVar(value=str(cgr_cfg.get("max_iters", 2)))
-    mcl_cgr_budget_ms_var = tk.StringVar(value=str(cgr_cfg.get("budget_ms", 1.5)))
-    aug_cfg = mcl_cfg.get("augmented", {})
-    mcl_aug_enabled_var = tk.IntVar(value=int(aug_cfg.get("enabled", 0)))
-    mcl_alpha_slow_var = tk.StringVar(value=str(aug_cfg.get("alpha_slow", 0.001)))
-    mcl_alpha_fast_var = tk.StringVar(value=str(aug_cfg.get("alpha_fast", 0.1)))
-    mcl_random_injection_var = tk.StringVar(value=str(mcl_cfg.get("random_injection", 0.01)))
+    mcl_motion_ms_var = tk.StringVar(value=str(mcl_cfg.get("motion_ms", 20)))
+    mcl_sensor_ms_var = tk.StringVar(value=str(mcl_cfg.get("sensor_ms", 20)))
     motion_cfg = mcl_cfg.get("motion", {})
+    tracking_cfg = mcl_cfg.get("tracking", {})
     mcl_motion_enabled_var = tk.IntVar(value=int(motion_cfg.get("enabled", 1)))
-    mcl_motion_model_var = tk.StringVar(value=str(motion_cfg.get("motion_model", "drive")))
-    mcl_motion_source_var = tk.StringVar(value=str(motion_cfg.get("motion_source", "encoders")))
-    mcl_use_alpha_var = tk.IntVar(value=int(motion_cfg.get("use_alpha_model", 0)))
-    mcl_sigma_x_var = tk.StringVar(value=str(motion_cfg.get("sigma_x_in", 0.1275)))
-    mcl_sigma_y_var = tk.StringVar(value=str(motion_cfg.get("sigma_y_in", 0.1275)))
-    mcl_sigma_theta_var = tk.StringVar(value=str(motion_cfg.get("sigma_theta_deg", 1.0)))
-    mcl_alpha1_var = tk.StringVar(value=str(motion_cfg.get("alpha1", 0.05)))
-    mcl_alpha2_var = tk.StringVar(value=str(motion_cfg.get("alpha2", 0.05)))
-    mcl_alpha3_var = tk.StringVar(value=str(motion_cfg.get("alpha3", 0.05)))
-    mcl_alpha4_var = tk.StringVar(value=str(motion_cfg.get("alpha4", 0.05)))
+    mcl_horizontal_odom_var = tk.StringVar(
+        value="enabled" if int(tracking_cfg.get("horizontal_enabled", 0)) == 1 else "none"
+    )
+    mcl_sigma_x_var = tk.StringVar(value=str(motion_cfg.get("sigma_x_in", 0.08)))
+    mcl_sigma_y_var = tk.StringVar(value=str(motion_cfg.get("sigma_y_in", 0.08)))
+    mcl_sigma_theta_var = tk.StringVar(value=str(motion_cfg.get("sigma_theta_deg", 0.7)))
+    mcl_sigma_x_per_var = tk.StringVar(value=str(motion_cfg.get("sigma_x_per_in", 0.02)))
+    mcl_sigma_y_per_var = tk.StringVar(value=str(motion_cfg.get("sigma_y_per_in", 0.03)))
+    mcl_sigma_theta_per_var = tk.StringVar(value=str(motion_cfg.get("sigma_theta_per_deg", 0.05)))
+    mcl_no_horizontal_scale_var = tk.StringVar(value=str(motion_cfg.get("no_horizontal_lateral_scale", 2.5)))
+    mcl_turn_lateral_scale_var = tk.StringVar(value=str(motion_cfg.get("turn_lateral_scale", 2.0)))
+    mcl_rough_wall_sigma_x_scale_var = tk.StringVar(value=str(motion_cfg.get("rough_wall_sigma_x_scale", 1.8)))
+    mcl_rough_wall_sigma_y_scale_var = tk.StringVar(value=str(motion_cfg.get("rough_wall_sigma_y_scale", 3.5)))
+    mcl_rough_wall_sigma_theta_scale_var = tk.StringVar(value=str(motion_cfg.get("rough_wall_sigma_theta_scale", 1.25)))
     mcl_set_pose_xy_var = tk.StringVar(value=str(mcl_cfg.get("set_pose_sigma_xy_in", 0.2)))
     mcl_set_pose_theta_var = tk.StringVar(value=str(mcl_cfg.get("set_pose_sigma_theta_deg", 2.0)))
     sensors_cfg = mcl_cfg.get("sensors", {})
     dist_cfg = sensors_cfg.get("distance", {})
     imu_cfg = sensors_cfg.get("imu", {})
-    vision_cfg = sensors_cfg.get("vision", {})
     mcl_dist_enabled_var = tk.IntVar(value=int(dist_cfg.get("enabled", 1)))
-    mcl_dist_model_var = tk.StringVar(value=str(dist_cfg.get("model", "likelihood_field")))
     mcl_dist_sigma_var = tk.StringVar(value=str(dist_cfg.get("sigma_hit_mm", 15.0)))
     mcl_dist_w_hit_var = tk.StringVar(value=str(dist_cfg.get("w_hit", 0.9)))
     mcl_dist_w_rand_var = tk.StringVar(value=str(dist_cfg.get("w_rand", 0.1)))
@@ -2610,10 +4272,10 @@ def open_settings_window():
     mcl_dist_conf_min_var = tk.StringVar(value=str(dist_cfg.get("confidence_min", 0.0)))
     mcl_dist_obj_size_min_var = tk.StringVar(value=str(dist_cfg.get("object_size_min", 0.0)))
     mcl_dist_obj_size_max_var = tk.StringVar(value=str(dist_cfg.get("object_size_max", 0.0)))
-    mcl_dist_innov_gate_var = tk.StringVar(value=str(dist_cfg.get("innovation_gate_mm", 0.0)))
+    mcl_dist_innov_gate_var = tk.StringVar(value=str(dist_cfg.get("innovation_gate_mm", 180.0)))
     mcl_dist_median_window_var = tk.StringVar(value=str(dist_cfg.get("median_window", 3)))
     mcl_dist_ignore_max_var = tk.IntVar(value=int(dist_cfg.get("lf_ignore_max", 0)))
-    mcl_dist_gate_var = tk.StringVar(value=str(dist_cfg.get("gate_mm", 150.0)))
+    mcl_dist_gate_var = tk.StringVar(value=str(dist_cfg.get("gate_mm", 180.0)))
     mcl_dist_gate_mode_var = tk.StringVar(value=str(dist_cfg.get("gate_mode", "hard")))
     mcl_dist_gate_penalty_var = tk.StringVar(value=str(dist_cfg.get("gate_penalty", 0.05)))
     mcl_dist_gate_reject_var = tk.StringVar(value=str(dist_cfg.get("gate_reject_ratio", 0.9)))
@@ -2621,14 +4283,11 @@ def open_settings_window():
     mcl_dist_lf_res_var = tk.StringVar(value=str(lf_cfg.get("resolution_in", 1.0)))
     mcl_imu_enabled_var = tk.IntVar(value=int(imu_cfg.get("enabled", 1)))
     mcl_imu_sigma_var = tk.StringVar(value=str(imu_cfg.get("sigma_deg", 1.0)))
-    mcl_vision_enabled_var = tk.IntVar(value=int(vision_cfg.get("enabled", 0)))
-    mcl_vision_sigma_var = tk.StringVar(value=str(vision_cfg.get("sigma_xy_in", 2.0)))
-    mcl_vision_theta_sigma_var = tk.StringVar(value=str(vision_cfg.get("sigma_theta_deg", 5.0)))
-    mcl_vision_conf_min_var = tk.StringVar(value=str(vision_cfg.get("confidence_min", 0.0)))
+    mcl_ekf_use_imu_var = tk.IntVar(value=int((mcl_cfg.get("ekf", {}) or {}).get("use_imu_update", 1)))
     geom_cfg = mcl_cfg.get("sensor_geometry", {})
     geom_sensors = geom_cfg.get("distance_sensors", [])
     if not isinstance(geom_sensors, list) or not geom_sensors:
-        geom_sensors = mcl_mod.get_distance_sensors(CFG)
+        geom_sensors = mcl_mod.get_distance_sensors(CFG, include_disabled=True)
     mcl_sensor_vars = []
     for idx in range(4):
         entry = geom_sensors[idx] if idx < len(geom_sensors) else {}
@@ -2647,8 +4306,8 @@ def open_settings_window():
             "min_confidence": tk.StringVar(value=str(entry.get("min_confidence", dist_cfg.get("confidence_min", 0.0)))),
             "min_object_size": tk.StringVar(value=str(entry.get("min_object_size", dist_cfg.get("object_size_min", 0.0)))),
             "max_object_size": tk.StringVar(value=str(entry.get("max_object_size", dist_cfg.get("object_size_max", 0.0)))),
-            "innovation_gate_mm": tk.StringVar(value=str(entry.get("innovation_gate_mm", dist_cfg.get("innovation_gate_mm", 0.0)))),
-            "map_mode": tk.StringVar(value=str(entry.get("map_mode", "both"))),
+            "innovation_gate_mm": tk.StringVar(value=str(entry.get("innovation_gate_mm", dist_cfg.get("innovation_gate_mm", 180.0)))),
+            "map_mode": tk.StringVar(value=str(entry.get("map_mode", "perimeter"))),
         })
     map_cfg = mcl_cfg.get("map_objects", {})
     mcl_map_perimeter_var = tk.IntVar(value=int(map_cfg.get("perimeter", 1)))
@@ -2687,56 +4346,19 @@ def open_settings_window():
                 vis_default = global_default
             per_sensor[obj_id] = tk.IntVar(value=1 if vis_default else 0)
         mcl_sensor_object_vars[idx] = per_sensor
-    region_cfg = mcl_cfg.get("region", {})
-    mcl_region_enabled_var = tk.IntVar(value=int(region_cfg.get("enabled", 1)))
-    mcl_region_mode_var = tk.StringVar(value=str(region_cfg.get("mode", "hard")))
-    mcl_region_type_var = tk.StringVar(value=str(region_cfg.get("type", "segment_path")))
-    mcl_region_update_var = tk.StringVar(value=str(region_cfg.get("update_mode", "segment_path")))
-    mcl_region_penalty_var = tk.StringVar(value=str(region_cfg.get("penalty", 0.2)))
-    mcl_region_perim_var = tk.IntVar(value=int(region_cfg.get("perimeter_gate", 1)))
-    _obj_mode_raw = region_cfg.get("object_mode", None)
-    if _obj_mode_raw is None:
-        _obj_mode_raw = 2 if int(region_cfg.get("object_gate", 0)) == 1 else 0
-    try:
-        _obj_mode_raw = int(_obj_mode_raw)
-    except Exception:
-        _obj_mode_raw = 0
-    _obj_mode_label = "soft" if _obj_mode_raw == 1 else ("hard" if _obj_mode_raw == 2 else "off")
-    mcl_region_obj_var = tk.StringVar(value=_obj_mode_label)
-    mcl_region_grid_type_var = tk.StringVar(value=str(region_cfg.get("grid_type", "quadrant")))
-    mcl_region_grid_x_var = tk.StringVar(value=str(region_cfg.get("grid_x", 2)))
-    mcl_region_grid_y_var = tk.StringVar(value=str(region_cfg.get("grid_y", 2)))
-    mcl_region_x_min_var = tk.StringVar(value=str(region_cfg.get("x_min_in", 0.0)))
-    mcl_region_x_max_var = tk.StringVar(value=str(region_cfg.get("x_max_in", 144.0)))
-    mcl_region_y_min_var = tk.StringVar(value=str(region_cfg.get("y_min_in", 0.0)))
-    mcl_region_y_max_var = tk.StringVar(value=str(region_cfg.get("y_max_in", 144.0)))
-    mcl_region_radius_var = tk.StringVar(value=str(region_cfg.get("radius_in", 12.0)))
-    mcl_region_slope_var = tk.IntVar(value=int(region_cfg.get("slope_enabled", 0)))
-    mcl_region_slope_sigma_var = tk.StringVar(value=str(region_cfg.get("slope_sigma_deg", 20.0)))
-    mcl_region_current_var = tk.StringVar(value=str(region_cfg.get("current_region", "")))
-    conf_cfg = mcl_cfg.get("confidence", {})
-    mcl_conf_thresh_var = tk.StringVar(value=str(conf_cfg.get("threshold", 0.0)))
-    mcl_conf_auto_var = tk.IntVar(value=int(conf_cfg.get("auto_reinit", 0)))
-    mcl_conf_mode_var = tk.StringVar(value=str(conf_cfg.get("reinit_mode", "global")))
     corr_cfg = mcl_cfg.get("correction", {})
     mcl_corr_enabled_var = tk.IntVar(value=int(corr_cfg.get("enabled", 1)))
     mcl_corr_min_conf_var = tk.StringVar(value=str(corr_cfg.get("min_confidence", 0.6)))
-    mcl_corr_max_trans_var = tk.StringVar(value=str(corr_cfg.get("max_trans_jump_in", 8.0)))
-    mcl_corr_max_theta_var = tk.StringVar(value=str(corr_cfg.get("max_theta_jump_deg", 15.0)))
-    mcl_corr_alpha_min_var = tk.StringVar(value=str(corr_cfg.get("alpha_min", 0.05)))
-    mcl_corr_alpha_max_var = tk.StringVar(value=str(corr_cfg.get("alpha_max", 0.25)))
+    mcl_corr_max_trans_var = tk.StringVar(value=str(corr_cfg.get("max_trans_jump_in", 4.0)))
+    mcl_corr_max_theta_var = tk.StringVar(value=str(corr_cfg.get("max_theta_jump_deg", 8.0)))
+    mcl_corr_writeback_alpha_var = tk.StringVar(value=str(corr_cfg.get("writeback_alpha", corr_cfg.get("alpha_max", 0.35))))
+    mcl_corr_teleport_trans_var = tk.StringVar(value=str(corr_cfg.get("teleport_reset_trans_in", 18.0)))
+    mcl_corr_teleport_theta_var = tk.StringVar(value=str(corr_cfg.get("teleport_reset_theta_deg", 45.0)))
     mcl_ui_cfg = mcl_cfg.get("ui", {})
-    mcl_show_particles_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_particles", 1)))
     mcl_show_estimate_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_estimate", 1)))
     mcl_show_cov_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_covariance", 1)))
     mcl_show_rays_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_rays", 1)))
-    mcl_show_region_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_region", 1)))
     mcl_show_gating_var = tk.IntVar(value=int(mcl_ui_cfg.get("show_gating", 1)))
-    mcl_max_draw_var = tk.StringVar(value=str(mcl_ui_cfg.get("max_particles_draw", 500)))
-    mcl_tuning_cfg = mcl_cfg.get("tuning", {})
-    mcl_tuning_enabled_var = tk.IntVar(value=int(mcl_tuning_cfg.get("enabled", 0)))
-    mcl_tuning_log_rate_var = tk.StringVar(value=str(mcl_tuning_cfg.get("log_rate_hz", 20)))
-    mcl_tuning_subsample_var = tk.StringVar(value=str(mcl_tuning_cfg.get("particle_subsample", 0)))
     def _init_margins():
         """Handle init margins."""
         try:
@@ -2913,6 +4535,475 @@ def open_settings_window():
             _apply_margins._last = {"mode": mode_tag, "name": name}
         _apply_margins._last = {"mode": None, "name": None}
         ttk.Button(sidebar, text="Apply margins", command=_apply_margins).grid(row=18, column=0, sticky="w", pady=(0, 10))
+        advanced_status_var = tk.StringVar(value="")
+        def _refresh_advanced_status():
+            """Refresh advanced geometry summary line."""
+            en = bool(int(advanced_geometry_state.get("enabled", 0)))
+            sym = bool(int(advanced_geometry_state.get("symmetry", 0)))
+            n_pts = len(advanced_geometry_state.get("points", []))
+            n_r_pts = len(advanced_geometry_state.get("reshape_points", []))
+            if en:
+                advanced_status_var.set(
+                    f"Advanced geometry ON (normal {n_pts}, reshape {n_r_pts}, symmetry {'ON' if sym else 'OFF'})"
+                )
+            else:
+                advanced_status_var.set(
+                    f"Advanced geometry OFF (normal {n_pts}, reshape {n_r_pts}, symmetry {'ON' if sym else 'OFF'})"
+                )
+        advanced_editor_win = {"win": None}
+        def _open_advanced_geometry_editor():
+            """Open node editor for the current mode's custom collision polygon."""
+            if advanced_editor_win["win"] is not None and advanced_editor_win["win"].winfo_exists():
+                advanced_editor_win["win"].lift()
+                advanced_editor_win["win"].focus_force()
+                return
+            adv_top = tk.Toplevel(win)
+            advanced_editor_win["win"] = adv_top
+            adv_top.title("Advanced Geometry")
+            adv_top.resizable(False, False)
+
+            use_custom_var = tk.IntVar(value=int(bool(advanced_geometry_state.get("enabled", 0))))
+            symmetry_var = tk.IntVar(value=int(bool(advanced_geometry_state.get("symmetry", 0))))
+            active_adv_key = "reshape_points" if mode_var.get() == "reshape" else "points"
+            active_mode_label = "Reshape" if active_adv_key == "reshape_points" else "Normal"
+            poly_state = [list(p) for p in _sanitize_advanced_poly(advanced_geometry_state.get(active_adv_key, []))]
+            selected = {"idx": None, "drag": False, "mirror_idx": None, "side": 0}
+            SYM_EPS = 1e-4
+            SYM_TOL_IN = 0.6
+            adv_canvas_size = 360
+            state = {"scale": 1.0, "cx": adv_canvas_size / 2.0, "cy": adv_canvas_size / 2.0}
+            root = ttk.Frame(adv_top, padding=6)
+            root.pack(fill="both", expand=True)
+            left = ttk.Frame(root)
+            left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+            right = ttk.Frame(root)
+            right.grid(row=0, column=1, sticky="nw")
+            root.columnconfigure(0, weight=1)
+            root.rowconfigure(0, weight=1)
+            adv_canvas = tk.Canvas(left, width=adv_canvas_size, height=adv_canvas_size, background="#f8f8f8",
+                                   highlightthickness=1, highlightbackground="#cccccc")
+            adv_canvas.pack(fill="both", expand=True)
+            def _save_adv_geometry():
+                """Persist advanced geometry immediately."""
+                try:
+                    save_config(CFG)
+                except Exception:
+                    pass
+            def _on_toggle_adv_flag():
+                """Handle advanced geometry toggles."""
+                _commit_adv(save_now=True)
+                _draw_adv()
+                draw()
+            ttk.Checkbutton(
+                right, text="Use custom polygon", variable=use_custom_var,
+                command=_on_toggle_adv_flag
+            ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+            ttk.Checkbutton(
+                right, text="Symmetry (mirror left/right)", variable=symmetry_var,
+                command=_on_toggle_adv_flag
+            ).grid(row=1, column=0, sticky="w", pady=(0, 6))
+            ttk.Label(right, text=f"Editing: {active_mode_label} geometry").grid(row=2, column=0, sticky="w", pady=(0, 4))
+            help_lbl = ttk.Label(
+                right,
+                text=(
+                    "Left click point: select/drag\n"
+                    "Left click edge: insert node + drag\n"
+                    "Right click/Delete: remove point\n"
+                    "Rect from outer: reset polygon to outer box"
+                ),
+                justify="left"
+            )
+            help_lbl.grid(row=3, column=0, sticky="w")
+            points_var = tk.StringVar(value="")
+            ttk.Label(right, textvariable=points_var, foreground="#555555").grid(row=4, column=0, sticky="w", pady=(6, 6))
+            btn_row = ttk.Frame(right)
+            btn_row.grid(row=5, column=0, sticky="w")
+            def _active_dims_local():
+                """Get outer dimensions/offsets for active advanced edit mode."""
+                return _outer_vals("reshape" if active_adv_key == "reshape_points" else "normal")
+            def _clamp_local_point(x_in, y_in):
+                """Clamp local point to current outer geometry bounds."""
+                ow, ol, _ox, _oy = _active_dims_local()
+                x_lim = max(0.0, float(ol) * 0.5)
+                y_lim = max(0.0, float(ow) * 0.5)
+                return max(-x_lim, min(x_lim, x_in)), max(-y_lim, min(y_lim, y_in))
+            def _to_canvas(x_in, y_in):
+                """Convert local geometry coordinates to canvas coordinates."""
+                s = max(1e-6, state["scale"])
+                return (state["cx"] - float(y_in) * s, state["cy"] - float(x_in) * s)
+            def _to_local(px, py):
+                """Convert canvas coordinates to local geometry coordinates."""
+                s = max(1e-6, state["scale"])
+                return ((state["cy"] - float(py)) / s, (state["cx"] - float(px)) / s)
+            def _symmetry_on():
+                """Return whether mirror symmetry is active."""
+                return bool(int(symmetry_var.get()))
+            def _nearest_to_target(target_x, target_y, exclude_idx=None, tol_in=SYM_TOL_IN):
+                """Find nearest point index to target local position."""
+                best_idx = None
+                best_d2 = 1e9
+                for idx, pt in enumerate(poly_state):
+                    if exclude_idx is not None and idx == exclude_idx:
+                        continue
+                    try:
+                        px = float(pt[0]); py = float(pt[1])
+                    except Exception:
+                        continue
+                    d2 = (px - float(target_x)) * (px - float(target_x)) + (py - float(target_y)) * (py - float(target_y))
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_idx = idx
+                if best_idx is None:
+                    return None
+                return best_idx if best_d2 <= (float(tol_in) * float(tol_in)) else None
+            def _side_from_y(y_in):
+                """Map y sign to side id: +1 left, -1 right, 0 centerline."""
+                try:
+                    y = float(y_in)
+                except Exception:
+                    return 0
+                if y > SYM_EPS:
+                    return 1
+                if y < -SYM_EPS:
+                    return -1
+                return 0
+            def _find_partner_idx(idx):
+                """Find mirrored partner index for a point."""
+                if idx is None or idx < 0 or idx >= len(poly_state):
+                    return None
+                try:
+                    x_in = float(poly_state[idx][0])
+                    y_in = float(poly_state[idx][1])
+                except Exception:
+                    return None
+                if _side_from_y(y_in) == 0:
+                    return None
+                return _nearest_to_target(x_in, -y_in, exclude_idx=idx)
+            def _ensure_partner_idx(idx):
+                """Ensure mirrored partner exists; return (possibly shifted idx, partner_idx)."""
+                partner_idx = _find_partner_idx(idx)
+                if partner_idx is not None:
+                    return idx, partner_idx
+                if idx is None or idx < 0 or idx >= len(poly_state):
+                    return idx, None
+                try:
+                    x_in = float(poly_state[idx][0])
+                    y_in = float(poly_state[idx][1])
+                except Exception:
+                    return idx, None
+                side = _side_from_y(y_in)
+                if side == 0:
+                    return idx, None
+                mirror_target = (x_in, -y_in)
+                edge_info = _nearest_edge_insert_local(mirror_target[0], mirror_target[1])
+                if edge_info:
+                    insert_at = int(edge_info["insert_idx"])
+                    mx, my = _clamp_local_point(float(edge_info["proj"][0]), float(edge_info["proj"][1]))
+                    mirror_pt = [round(mx, 4), round(my, 4)]
+                else:
+                    mirror_pt = [round(x_in, 4), round(-y_in, 4)]
+                    insert_at = (idx + 1) if side > 0 else idx
+                poly_state.insert(insert_at, mirror_pt)
+                if insert_at <= idx:
+                    idx += 1
+                return idx, insert_at
+            def _apply_symmetry_with_partner(idx, partner_idx=None, lock_side=0):
+                """Apply mirrored update while keeping point on its side."""
+                if not _symmetry_on():
+                    return idx, None
+                if idx is None or idx < 0 or idx >= len(poly_state):
+                    return idx, None
+                try:
+                    x_in = float(poly_state[idx][0])
+                    y_in = float(poly_state[idx][1])
+                except Exception:
+                    return idx, None
+                try:
+                    side_lock = int(lock_side)
+                except Exception:
+                    side_lock = 0
+                side = side_lock if side_lock in (-1, 0, 1) else _side_from_y(y_in)
+                if side == 1:
+                    y_in = max(SYM_EPS, y_in)
+                elif side == -1:
+                    y_in = min(-SYM_EPS, y_in)
+                else:
+                    y_in = 0.0
+                poly_state[idx] = [round(x_in, 4), round(y_in, 4)]
+                if side == 0:
+                    return idx, None
+                if partner_idx is None or partner_idx < 0 or partner_idx >= len(poly_state) or partner_idx == idx:
+                    idx, partner_idx = _ensure_partner_idx(idx)
+                if partner_idx is None or partner_idx < 0 or partner_idx >= len(poly_state) or partner_idx == idx:
+                    return idx, None
+                poly_state[partner_idx] = [round(x_in, 4), round(-y_in, 4)]
+                return idx, partner_idx
+            def _delete_idx_with_symmetry(idx):
+                """Delete a point and its mirrored partner when symmetry is enabled."""
+                if idx is None or idx < 0 or idx >= len(poly_state):
+                    return
+                if not _symmetry_on():
+                    poly_state.pop(idx)
+                    return
+                mirror_idx = _find_partner_idx(idx)
+                if mirror_idx is None:
+                    poly_state.pop(idx)
+                    return
+                if mirror_idx > idx:
+                    poly_state.pop(mirror_idx)
+                    poly_state.pop(idx)
+                else:
+                    poly_state.pop(idx)
+                    if 0 <= mirror_idx < len(poly_state):
+                        poly_state.pop(mirror_idx)
+            def _commit_adv(save_now=False):
+                """Persist editor points to shared config state."""
+                advanced_geometry_state["enabled"] = int(bool(use_custom_var.get()))
+                advanced_geometry_state["symmetry"] = int(bool(symmetry_var.get()))
+                advanced_geometry_state[active_adv_key] = _sanitize_advanced_poly(poly_state)
+                CFG.setdefault("bot_dimensions", {})["advanced_geometry"] = {
+                    "enabled": int(bool(advanced_geometry_state.get("enabled", 0))),
+                    "symmetry": int(bool(advanced_geometry_state.get("symmetry", 0))),
+                    "points": [list(p) for p in advanced_geometry_state.get("points", [])],
+                    "reshape_points": [list(p) for p in advanced_geometry_state.get("reshape_points", [])],
+                }
+                _refresh_advanced_status()
+                if save_now:
+                    _save_adv_geometry()
+            def _nearest_idx(px, py, hit_radius_px=11.0):
+                """Return nearest point index within hit radius."""
+                best_idx = None
+                best_d2 = 1e9
+                for idx, pt in enumerate(poly_state):
+                    try:
+                        sx, sy = _to_canvas(float(pt[0]), float(pt[1]))
+                    except Exception:
+                        continue
+                    d2 = (sx - px) * (sx - px) + (sy - py) * (sy - py)
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_idx = idx
+                return best_idx if best_d2 <= (float(hit_radius_px) * float(hit_radius_px)) else None
+            def _nearest_edge_insert_local(x_in, y_in):
+                """Return nearest edge insertion info for a local point."""
+                n = len(poly_state)
+                if n < 2:
+                    return None
+                qx = float(x_in)
+                qy = float(y_in)
+                seg_count = n if n >= 3 else n - 1
+                best_d2 = 1e9
+                best = None
+                for i in range(seg_count):
+                    j = (i + 1) % n
+                    if n < 3 and j <= i:
+                        continue
+                    try:
+                        ax = float(poly_state[i][0]); ay = float(poly_state[i][1])
+                        bx = float(poly_state[j][0]); by = float(poly_state[j][1])
+                    except Exception:
+                        continue
+                    vx = bx - ax
+                    vy = by - ay
+                    vv = vx * vx + vy * vy
+                    if vv <= 1e-12:
+                        continue
+                    t = ((qx - ax) * vx + (qy - ay) * vy) / vv
+                    t = max(0.0, min(1.0, t))
+                    proj_x = ax + t * vx
+                    proj_y = ay + t * vy
+                    d2 = (proj_x - qx) * (proj_x - qx) + (proj_y - qy) * (proj_y - qy)
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best = {
+                            "insert_idx": n if j == 0 else (i + 1),
+                            "proj": (proj_x, proj_y),
+                        }
+                return best
+            def _nearest_edge_insert(px, py, hit_radius_px=12.0):
+                """Return insertion index + projected local point on nearest edge."""
+                x_in, y_in = _to_local(px, py)
+                info = _nearest_edge_insert_local(x_in, y_in)
+                if not info:
+                    return None, None
+                proj_local = info["proj"]
+                proj_px = _to_canvas(proj_local[0], proj_local[1])
+                d2_px = (proj_px[0] - px) * (proj_px[0] - px) + (proj_px[1] - py) * (proj_px[1] - py)
+                if d2_px > (float(hit_radius_px) * float(hit_radius_px)):
+                    return None, None
+                return info["insert_idx"], proj_local
+            def _set_outer_rect_points():
+                """Set polygon to the current outer rectangle."""
+                ow, ol, _ox, _oy = _active_dims_local()
+                half_l = max(0.0, float(ol) * 0.5)
+                half_w = max(0.0, float(ow) * 0.5)
+                poly_state[:] = [
+                    [-half_l, -half_w],
+                    [half_l, -half_w],
+                    [half_l, half_w],
+                    [-half_l, half_w],
+                ]
+                selected.update({"idx": None, "drag": False, "mirror_idx": None, "side": 0})
+                _commit_adv(save_now=True)
+                _draw_adv()
+                draw()
+            def _clear_points():
+                """Clear polygon points."""
+                poly_state[:] = []
+                selected.update({"idx": None, "drag": False, "mirror_idx": None, "side": 0})
+                _commit_adv(save_now=True)
+                _draw_adv()
+                draw()
+            ttk.Button(btn_row, text="Rect from outer", command=_set_outer_rect_points).pack(side="left")
+            ttk.Button(btn_row, text="Clear", command=_clear_points).pack(side="left", padx=(6, 0))
+            def _delete_selected(_evt=None):
+                """Delete selected polygon point."""
+                idx = selected.get("idx")
+                if idx is None or idx < 0 or idx >= len(poly_state):
+                    return
+                _delete_idx_with_symmetry(idx)
+                selected.update({"idx": None, "drag": False, "mirror_idx": None, "side": 0})
+                _commit_adv(save_now=True)
+                _draw_adv()
+                draw()
+            def _draw_adv():
+                """Render advanced polygon editor canvas."""
+                adv_canvas.delete("all")
+                ow, ol, ox, oy = _active_dims_local()
+                dw, dl = _dt_vals()
+                view_in = max(24.0, float(ow) + 8.0, float(ol) + 8.0, float(dw) + 10.0, float(dl) + 10.0)
+                state["scale"] = (adv_canvas_size * 0.86) / max(1e-6, view_in)
+                s = state["scale"]
+                cx, cy = state["cx"], state["cy"]
+                step = max(2, int(round(s)))
+                start = int(cx - (view_in * 0.5) * s)
+                end = int(cx + (view_in * 0.5) * s)
+                for gx in range(start, end + step, step):
+                    fill = "#ececec" if ((gx - start) // step) % 5 else "#d9d9d9"
+                    adv_canvas.create_line(gx, start, gx, end, fill=fill)
+                for gy in range(start, end + step, step):
+                    fill = "#ececec" if ((gy - start) // step) % 5 else "#d9d9d9"
+                    adv_canvas.create_line(start, gy, end, gy, fill=fill)
+                adv_canvas.create_rectangle(start, start, end, end, outline="#c9c9c9")
+                # Outer geometry (centered in local frame).
+                ox0 = cx - float(ow) * 0.5 * s
+                ox1 = cx + float(ow) * 0.5 * s
+                oy0 = cy - float(ol) * 0.5 * s
+                oy1 = cy + float(ol) * 0.5 * s
+                adv_canvas.create_rectangle(ox0, oy0, ox1, oy1, outline="#3c6cc9", width=2, fill="#dfe9f7")
+                # Drivetrain reference rectangle (offset relative to outer center).
+                base_cx = cx + float(oy) * s
+                base_cy = cy + float(ox) * s
+                dx0 = base_cx - float(dw) * 0.5 * s
+                dx1 = base_cx + float(dw) * 0.5 * s
+                dy0 = base_cy - float(dl) * 0.5 * s
+                dy1 = base_cy + float(dl) * 0.5 * s
+                adv_canvas.create_rectangle(dx0, dy0, dx1, dy1, outline="#666666", width=2, dash=(4, 2))
+                adv_canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3, fill="#666666", outline="#333333")
+                cpts = []
+                for pt in poly_state:
+                    try:
+                        cpts.append(_to_canvas(float(pt[0]), float(pt[1])))
+                    except Exception:
+                        continue
+                if len(cpts) >= 2:
+                    for j in range(len(cpts) - 1):
+                        adv_canvas.create_line(*cpts[j], *cpts[j + 1], fill="#b72d2d", width=2)
+                    if len(cpts) >= 3:
+                        adv_canvas.create_line(*cpts[-1], *cpts[0], fill="#b72d2d", width=2)
+                for idx, (px, py) in enumerate(cpts):
+                    r = 5 if idx == selected.get("idx") else 4
+                    fill = "#f1a22e" if idx == selected.get("idx") else "#d86f00"
+                    adv_canvas.create_oval(px - r, py - r, px + r, py + r, outline="#7a3d00", fill=fill)
+                points_var.set(
+                    f"{active_mode_label} points: {len(cpts)} ({'enabled' if bool(use_custom_var.get()) else 'disabled'}, symmetry {'on' if _symmetry_on() else 'off'})"
+                )
+            def _update_selected_point(px, py):
+                """Update selected point using canvas position."""
+                idx = selected.get("idx")
+                if idx is None or idx < 0 or idx >= len(poly_state):
+                    return False
+                x_in, y_in = _to_local(px, py)
+                x_in, y_in = _clamp_local_point(x_in, y_in)
+                side = int(selected.get("side", 0))
+                if _symmetry_on() and side == 0:
+                    side = _side_from_y(y_in)
+                    if side != 0:
+                        selected["side"] = side
+                poly_state[idx] = [round(x_in, 4), round(y_in, 4)]
+                if _symmetry_on():
+                    idx, partner = _apply_symmetry_with_partner(idx, selected.get("mirror_idx"), lock_side=selected.get("side", 0))
+                    selected["idx"] = idx
+                    selected["mirror_idx"] = partner
+                return True
+            def _on_left_down(evt):
+                """Select point or insert a node on nearest polygon edge."""
+                if not poly_state:
+                    _set_outer_rect_points()
+                idx = _nearest_idx(evt.x, evt.y)
+                if idx is None:
+                    insert_idx, proj_local = _nearest_edge_insert(evt.x, evt.y)
+                    if insert_idx is None or proj_local is None:
+                        selected.update({"idx": None, "drag": False, "mirror_idx": None, "side": 0})
+                        _draw_adv()
+                        return
+                    x_in, y_in = _clamp_local_point(float(proj_local[0]), float(proj_local[1]))
+                    poly_state.insert(insert_idx, [round(x_in, 4), round(y_in, 4)])
+                    idx = insert_idx
+                side = 0
+                if _symmetry_on():
+                    try:
+                        side = _side_from_y(float(poly_state[idx][1]))
+                    except Exception:
+                        side = 0
+                selected.update({"idx": idx, "drag": True, "mirror_idx": None, "side": side})
+                if _symmetry_on() and side != 0:
+                    idx, partner = _ensure_partner_idx(idx)
+                    selected["idx"] = idx
+                    selected["mirror_idx"] = partner
+                selected["idx"] = idx
+                _update_selected_point(evt.x, evt.y)
+                _commit_adv()
+                _draw_adv()
+                draw()
+            def _on_motion(evt):
+                """Drag selected point."""
+                if not selected.get("drag"):
+                    return
+                if not _update_selected_point(evt.x, evt.y):
+                    return
+                _commit_adv()
+                _draw_adv()
+                draw()
+            def _on_release(_evt):
+                """Stop drag."""
+                selected["drag"] = False
+                _commit_adv(save_now=True)
+            def _on_right_down(evt):
+                """Remove nearest point."""
+                idx = _nearest_idx(evt.x, evt.y, hit_radius_px=13.0)
+                if idx is None or idx < 0 or idx >= len(poly_state):
+                    return
+                _delete_idx_with_symmetry(idx)
+                selected.update({"idx": None, "drag": False, "mirror_idx": None, "side": 0})
+                _commit_adv(save_now=True)
+                _draw_adv()
+                draw()
+            adv_canvas.bind("<Button-1>", _on_left_down)
+            adv_canvas.bind("<B1-Motion>", _on_motion)
+            adv_canvas.bind("<ButtonRelease-1>", _on_release)
+            adv_canvas.bind("<Button-3>", _on_right_down)
+            adv_top.bind("<Delete>", _delete_selected)
+            _draw_adv()
+            def _close_adv():
+                """Close advanced editor and push latest state."""
+                _commit_adv(save_now=True)
+                draw()
+                adv_top.destroy()
+            adv_top.protocol("WM_DELETE_WINDOW", _close_adv)
+        ttk.Button(sidebar, text="Advanced geometry...", command=_open_advanced_geometry_editor).grid(row=19, column=0, sticky="w", pady=(0, 2))
+        ttk.Label(sidebar, textvariable=advanced_status_var, foreground="#555555", wraplength=190, justify="left").grid(row=20, column=0, sticky="w", pady=(0, 8))
+        _refresh_advanced_status()
         
         normal_margin_widgets = [lbl_left, m_left_entry, lbl_right, m_right_entry, lbl_back, m_back_entry, lbl_front, m_front_entry]
         reshape_margin_widgets = [lbl_lr_r, m_left_r_entry, m_right_r_entry, lbl_fb_r, m_back_r_entry, m_front_r_entry]
@@ -3135,6 +5226,30 @@ def open_settings_window():
             dy1 = base_cy + (dl * 0.5 * scale)
             canvas.create_rectangle(dx0, dy0, dx1, dy1, outline="#666666", width=2, dash=(4,2), fill="")
             canvas.create_text(dx0 - 40, (dy0 + dy1) / 2, text=f"Track {dw:.2f}", angle=90, fill="#444444")
+            try:
+                _refresh_advanced_status()
+                adv_enabled = bool(int(advanced_geometry_state.get("enabled", 0)))
+            except Exception:
+                adv_enabled = False
+            if adv_enabled:
+                adv_key = "reshape_points" if mode == "reshape" else "points"
+                adv_pts = _sanitize_advanced_poly(advanced_geometry_state.get(adv_key, []))
+                poly_px = []
+                for pt in adv_pts:
+                    try:
+                        lx = float(pt[0]); ly = float(pt[1])
+                    except Exception:
+                        continue
+                    px = outer_cx - ly * scale
+                    py = outer_cy - lx * scale
+                    poly_px.append((px, py))
+                if len(poly_px) >= 2:
+                    for j in range(len(poly_px) - 1):
+                        canvas.create_line(*poly_px[j], *poly_px[j + 1], fill="#b72d2d", width=2)
+                    if len(poly_px) >= 3:
+                        canvas.create_line(*poly_px[-1], *poly_px[0], fill="#b72d2d", width=2)
+                for (px, py) in poly_px:
+                    canvas.create_oval(px - 3, py - 3, px + 3, py + 3, fill="#b72d2d", outline="#6f1a1a")
             
             handle_color = "#2b5fad"
             for (hx, hy, kind) in [
@@ -3252,6 +5367,11 @@ def open_settings_window():
             except Exception:
                 pass
             try:
+                if advanced_editor_win["win"] is not None and advanced_editor_win["win"].winfo_exists():
+                    advanced_editor_win["win"].destroy()
+            except Exception:
+                pass
+            try:
                 on_update()
             except Exception:
                 pass
@@ -3294,6 +5414,8 @@ def open_settings_window():
         off1_btn.pack(side="left")
         off2_btn = ttk.Radiobutton(sel_frame, text="Offset 2", variable=offset_sel, value="2")
         off2_btn.pack(side="left", padx=(6,0))
+        off3_btn = ttk.Radiobutton(sel_frame, text="Offset 3", variable=offset_sel, value="3")
+        off3_btn.pack(side="left", padx=(6,0))
         custom_offset_var = tk.StringVar(value="0.0")
         custom_btn = ttk.Radiobutton(sel_frame, text="Custom", variable=offset_sel, value="custom")
         custom_btn.pack(side="left", padx=(6,0))
@@ -3337,6 +5459,8 @@ def open_settings_window():
                     return float(off1.get())
                 if sel == "2":
                     return float(off2.get())
+                if sel == "3":
+                    return float(off3.get())
                 return float(custom_offset_var.get())
             except Exception:
                 return 0.0
@@ -3348,6 +5472,8 @@ def open_settings_window():
                 off1.set(f"{val:.3f}")
             elif sel == "2":
                 off2.set(f"{val:.3f}")
+            elif sel == "3":
+                off3.set(f"{val:.3f}")
             else:
                 custom_offset_var.set(f"{val:.3f}")
             val_label.config(text=f"Offset: {val:.3f} in")
@@ -3414,6 +5540,7 @@ def open_settings_window():
         reshape_btn.config(command=draw)
         off1_btn.config(command=draw)
         off2_btn.config(command=draw)
+        off3_btn.config(command=draw)
         custom_btn.config(command=draw)
         
         def _on_drag(event):
@@ -3592,7 +5719,7 @@ def open_settings_window():
         reshape_live = False
         total_estimate_s = compute_total_estimate_s()
         
-    heading_frame = ttk.Frame(tabs["general"])
+    heading_frame = ttk.Frame(general_body)
     heading_entry = ttk.Entry(heading_frame, textvariable=init_head, width=10)
     heading_entry.pack(side="left", fill="x", expand=True)
     
@@ -3719,7 +5846,7 @@ def open_settings_window():
         tk.Label(
             top_card,
             text=(
-                "Follow the guided order from route creation to export and MCL tuning. "
+                "Follow the guided order from route creation to export and Atticus localization validation. "
                 "Each step has live completion checks."
             ),
             bg=palette["card"],
@@ -3951,13 +6078,13 @@ def open_settings_window():
                 "  * General: units, heading, labels, tutorial.\n"
                 "  * Physics: speed/accel and sim behavior.\n"
                 "  * Geometry: bot geometry visualizer + offset visualizer.\n"
-                "  * MCL: MCL/EKF config, tuning tools, export.\n"
+                "  * Atticus: Atticus localizer config and simulator controls.\n"
                 "  * Export: template system, style, path-file options.\n\n"
                 "Popup tools:\n"
                 "- Template Builder\n"
                 "- Geometry Visual Editor\n"
                 "- Offset Visual Editor\n"
-                "- MCL tuning import/report dialogs"
+                "- Localization integration notes"
             )
             _make_readonly_text(pages["windows"], windows_text)
 
@@ -3969,8 +6096,8 @@ def open_settings_window():
                 "  Tune speed/accel behavior for realistic timing before localization tuning.\n\n"
                 "- Export/templates:\n"
                 "  Connect node commands to your library calls (LemLib, custom chassis APIs, subsystem wrappers).\n\n"
-                "- MCL tab:\n"
-                "  Configure MCL+EKF for drift correction/recovery; import tuning logs from microSD wizard sessions.\n\n"
+                "- Atticus tab:\n"
+                "  Configure the Atticus local map-based corrector used by the simulator.\n\n"
                 "- Mechanism markers:\n"
                 "  Trigger intake/lift/clamp/etc at timeline points without hardcoded delays.\n\n"
                 "Rule of thumb:\n"
@@ -3985,11 +6112,11 @@ def open_settings_window():
                 "3) Path edit mode: control points + spline type.\n"
                 "4) Tune path speeds/lookahead and run sim.\n"
                 "5) Open Geometry tools and verify clearances/offsets.\n"
-                "6) Enable MCL and start with minimal runtime integration.\n"
-                "7) Run microSD MCL tuning wizard, import .mcllog, apply recs.\n"
+                "6) Enable Atticus localization and confirm sensor geometry.\n"
+                "7) Validate raycast corrections in sim and tune gating/writeback.\n"
                 "8) Open Export tab and confirm template style.\n"
-                "9) Re-export and validate on robot.\n\n"
-                "Rule: PID and base drive consistency come before localization tuning."
+                "9) Validate on robot.\n\n"
+                "Rule: PID and base drive consistency come before localization correction."
             )
             _make_readonly_text(pages["workflow"], workflow_text)
 
@@ -4041,8 +6168,8 @@ def open_settings_window():
             step_flags["reviewed_mcl_tools"] = True
             try:
                 messagebox.showinfo(
-                    "MCL Tuning Flow",
-                    "Use this order: export with tuning mode ON -> run robot tuning session -> import .mcllog -> apply recommendations -> re-export."
+                    "Atticus Localizer",
+                    "Use the Atticus tab to configure sensor geometry, range gating, and bounded writeback for the simulator."
                 )
             except Exception:
                 pass
@@ -4213,15 +6340,15 @@ def open_settings_window():
                 "checks": [("Offset visualizer opened", lambda: step_flags["opened_offset_visualizer"])],
             },
             {
-                "title": "MCL tuning flow",
-                "summary": "Review the practical MCL tuning order directly in-app.",
-                "body": "Visit MCL tab and run the tuning flow helper. Sequence is export with tuning mode, run robot session, import .mcllog, apply recs, re-export.",
-                "action_label": "Show tuning flow helper",
+                "title": "Atticus localizer",
+                "summary": "Review the Atticus localization controls directly in-app.",
+                "body": "Visit the Atticus tab and review sensor geometry, gating, and writeback settings.",
+                "action_label": "Show Atticus overview",
                 "action": _step_mcl_tools_overview,
                 "focus_tab": "mcl",
                 "checks": [
-                    ("MCL tab visited", lambda: "mcl" in tutorial_state["tabs_seen"]),
-                    ("MCL tuning helper opened", lambda: step_flags["reviewed_mcl_tools"]),
+                    ("Atticus tab visited", lambda: "mcl" in tutorial_state["tabs_seen"]),
+                    ("Atticus overview opened", lambda: step_flags["reviewed_mcl_tools"]),
                 ],
             },
             {
@@ -4248,7 +6375,7 @@ def open_settings_window():
             },
             {
                 "title": "Finish",
-                "summary": "You covered full terminal usage from route creation to MCL tuning and export.",
+                "summary": "You covered full terminal usage from route creation to Atticus localization validation and export.",
                 "body": "Press Finish to close. Reopen any time from General tab.",
                 "action_label": None,
                 "action": None,
@@ -4432,19 +6559,19 @@ def open_settings_window():
         win.geometry(f"{req_w}x{req_h}")
         _refresh_state()
 
-    tutorial_btn = ttk.Button(tabs["general"], text="Open tutorial", command=_open_tutorial_window)
+    tutorial_btn = ttk.Button(general_body, text="Open tutorial", command=_open_tutorial_window)
     
-    _row(tabs["general"], 0, "Distance Units:", ttk.Combobox(tabs["general"], textvariable=dist_var, values=dist_labels, state="readonly"), "Output units")
-    _row(tabs["general"], 1, "Angle Units:", ttk.Combobox(tabs["general"], textvariable=ang_var, values=ang_labels, state="readonly"), "Angle units")
-    _row(tabs["general"], 2, "Initial heading (deg):", heading_frame, "Robot start heading")
-    hitbox_row = ttk.Frame(tabs["general"])
+    _row(general_body, 0, "Distance Units:", ttk.Combobox(general_body, textvariable=dist_var, values=dist_labels, state="readonly"), "Output units")
+    _row(general_body, 1, "Angle Units:", ttk.Combobox(general_body, textvariable=ang_var, values=ang_labels, state="readonly"), "Angle units")
+    _row(general_body, 2, "Initial heading (deg):", heading_frame, "Robot start heading")
+    hitbox_row = ttk.Frame(general_body)
     hitbox_chk = ttk.Checkbutton(hitbox_row, variable=show_hitboxes_var)
     hitbox_chk.pack(side="left")
     hitbox_conflicts_lbl = ttk.Label(hitbox_row, text="Collisions only")
     hitbox_conflicts_lbl.pack(side="left", padx=(10, 4))
     hitbox_conflicts_chk = ttk.Checkbutton(hitbox_row, variable=show_hitbox_conflicts_only_var)
     hitbox_conflicts_chk.pack(side="left")
-    _row(tabs["general"], 3, "Show node hitboxes:", hitbox_row, "Toggle geometry boxes")
+    _row(general_body, 3, "Show node hitboxes:", hitbox_row, "Toggle geometry boxes")
     def _refresh_hitbox_conflicts_state(*_):
         """Handle refresh hitbox conflicts state."""
         enabled = bool(show_hitboxes_var.get())
@@ -4461,7 +6588,7 @@ def open_settings_window():
         show_hitboxes_var.trace_add("write", _refresh_hitbox_conflicts_state)
     except Exception:
         pass
-    field_obj_row = ttk.Frame(tabs["general"])
+    field_obj_row = ttk.Frame(general_body)
     field_obj_chk = ttk.Checkbutton(field_obj_row, variable=show_field_objects_var)
     field_obj_chk.pack(side="left")
     node_nums_lbl = ttk.Label(field_obj_row, text="Node numbers")
@@ -4472,10 +6599,143 @@ def open_settings_window():
     ui.track_live_widget(hitbox_conflicts_chk)
     ui.track_live_widget(field_obj_chk)
     ui.track_live_widget(node_nums_chk)
-    _row(tabs["general"], 4, "Show field objects:", field_obj_row, "Draw field objects / toggle node labels")
-    _row(tabs["general"], 5, "Reshape label:", ttk.Entry(tabs["general"], textvariable=reshape_label_var), "Custom label used anywhere reshape appears")
-    _row(tabs["general"], 6, "Flip routine:", ttk.Button(tabs["general"], text="Flip", command=_flip_routine_horizontal), "Mirror horizontally")
-    _row(tabs["general"], 7, "Tutorial:", tutorial_btn, "Open the guided terminal tutorial.")
+    _row(general_body, 4, "Show field objects:", field_obj_row, "Draw field objects / toggle node labels")
+    _row(general_body, 5, "Reshape label:", ttk.Entry(general_body, textvariable=reshape_label_var), "Custom label used anywhere reshape appears")
+    _row(general_body, 6, "Flip routine:", ttk.Button(general_body, text="Flip", command=_flip_routine_horizontal), "Mirror horizontally")
+    _row(general_body, 7, "Tutorial:", tutorial_btn, "Open the guided terminal tutorial.")
+
+    attlib_sim_cfg_ui = CFG.get("codegen", {}).get("attlib_sim", {})
+    attlib_sim_visual_var = tk.IntVar(value=int(attlib_sim_cfg_ui.get("visual_run", int(attlib_sim_visual_run))))
+    attlib_sim_module_dir_var = tk.StringVar(value=str(attlib_sim_cfg_ui.get("module_dir", attlib_sim_module_dir)))
+    attlib_sim_external_var = tk.IntVar(
+        value=1 if str(attlib_sim_cfg_ui.get("source", attlib_sim_source)).strip().lower() in ("external", "external_script", "script") else 0
+    )
+    attlib_sim_script_var = tk.StringVar(value=str(attlib_sim_cfg_ui.get("routine_script", attlib_sim_routine_script)))
+    attlib_sim_func_var = tk.StringVar(value=str(attlib_sim_cfg_ui.get("routine_function", attlib_sim_routine_func or "run_routine")))
+
+    attlib_sim_frame = ttk.LabelFrame(general_body, text="AttLibSim Export Helper")
+    attlib_sim_frame.grid(row=8, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
+    attlib_sim_frame.columnconfigure(0, weight=1)
+    attlib_sim_text = (
+        "AttLibSim can run either timeline replay or an external routine script.\n"
+        "External routine mode is intended for library testing parity."
+    )
+    attlib_sim_lbl = ttk.Label(attlib_sim_frame, text=attlib_sim_text, justify="left", wraplength=760)
+    attlib_sim_lbl.grid(row=0, column=0, sticky="w", padx=8, pady=(6, 4))
+
+    attlib_sim_visual_chk = ttk.Checkbutton(
+        attlib_sim_frame,
+        text="Run SPACE visual sim through AttLibSim (Atticus/AttLib style)",
+        variable=attlib_sim_visual_var,
+    )
+    attlib_sim_visual_chk.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 4))
+
+    attlib_sim_external_chk = ttk.Checkbutton(
+        attlib_sim_frame,
+        text="Use external routine script (ignore plotted routine nodes)",
+        variable=attlib_sim_external_var,
+    )
+    attlib_sim_external_chk.grid(row=2, column=0, sticky="w", padx=8, pady=(2, 4))
+
+    module_dir_row = ttk.Frame(attlib_sim_frame)
+    module_dir_row.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
+    module_dir_row.columnconfigure(0, weight=1)
+    module_dir_entry = ttk.Entry(module_dir_row, textvariable=attlib_sim_module_dir_var)
+    module_dir_entry.grid(row=0, column=0, sticky="ew")
+
+    def _browse_attlib_sim_module_dir():
+        """Pick a folder containing attlib_sim*.pyd."""
+        start_dir = attlib_sim_module_dir_var.get() or os.getcwd()
+        chosen = filedialog.askdirectory(
+            parent=top,
+            initialdir=start_dir if os.path.isdir(start_dir) else os.getcwd(),
+            title="Select attlib_sim module directory",
+        )
+        if chosen:
+            attlib_sim_module_dir_var.set(chosen)
+            on_update()
+
+    ttk.Button(module_dir_row, text="Browse...", command=_browse_attlib_sim_module_dir).grid(
+        row=0, column=1, padx=(6, 0)
+    )
+
+    script_row = ttk.Frame(attlib_sim_frame)
+    script_row.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 4))
+    script_row.columnconfigure(0, weight=1)
+    script_entry = ttk.Entry(script_row, textvariable=attlib_sim_script_var)
+    script_entry.grid(row=0, column=0, sticky="ew")
+
+    def _browse_attlib_sim_script():
+        """Pick an external AttLibSim routine script."""
+        start_file = attlib_sim_script_var.get().strip()
+        start_dir = os.path.dirname(start_file) if start_file and os.path.isfile(start_file) else os.getcwd()
+        chosen = filedialog.askopenfilename(
+            parent=top,
+            initialdir=start_dir,
+            title="Select AttLibSim routine script",
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")],
+        )
+        if chosen:
+            attlib_sim_script_var.set(chosen)
+            on_update()
+
+    ttk.Button(script_row, text="Browse...", command=_browse_attlib_sim_script).grid(
+        row=0, column=1, padx=(6, 0)
+    )
+
+    func_row = ttk.Frame(attlib_sim_frame)
+    func_row.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 6))
+    ttk.Label(func_row, text="Routine function:").pack(side="left")
+    func_entry = ttk.Entry(func_row, textvariable=attlib_sim_func_var, width=24)
+    func_entry.pack(side="left", padx=(6, 0))
+
+    def _refresh_attlib_external_state(*_):
+        """Enable script/function inputs only for external routine mode."""
+        state = "normal" if bool(attlib_sim_external_var.get()) else "disabled"
+        try:
+            script_entry.configure(state=state)
+            func_entry.configure(state=state)
+        except Exception:
+            pass
+
+    _refresh_attlib_external_state()
+    try:
+        attlib_sim_external_var.trace_add("write", _refresh_attlib_external_state)
+    except Exception:
+        pass
+
+    def _copy_attlib_sim_snippet():
+        """Copy a minimal AttLibSim terminal runner snippet."""
+        snippet = (
+            "import os, sys\n"
+            "os.add_dll_directory(r\"C:\\\\Strawberry\\\\c\\\\bin\")  # if needed\n"
+            "sys.path.insert(0, r\"host/build\")\n"
+            "import attlib_sim\n\n"
+            "cfg = attlib_sim.SimDriveIOConfig()\n"
+            "ch = attlib_sim.SimChassis(cfg)\n"
+            "ch.set_pose(0.0, 0.0, 0.0)\n\n"
+            "# run exported routine calls here\n"
+            "# default is synchronous (async=False)\n\n"
+            "pose = ch.get_pose()\n"
+            "stats = ch.get_runtime_stats()\n"
+            "trace = ch.consume_control_trace()\n"
+            "ch.stop()\n"
+        )
+        try:
+            top.clipboard_clear()
+            top.clipboard_append(snippet)
+            cal_status_var.set("AttLibSim snippet copied to clipboard.")
+        except Exception:
+            pass
+
+    attlib_sim_btns = ttk.Frame(attlib_sim_frame)
+    attlib_sim_btns.grid(row=6, column=0, sticky="w", padx=8, pady=(0, 8))
+    ttk.Button(attlib_sim_btns, text="Copy Python snippet", command=_copy_attlib_sim_snippet).pack(side="left")
+    ui.track_live_widget(attlib_sim_visual_chk)
+    ui.track_live_widget(attlib_sim_external_chk)
+    ui.track_live_widget(module_dir_entry)
+    ui.track_live_widget(script_entry)
+    ui.track_live_widget(func_entry)
     
     physics_tab = tabs["physics"]
     physics_canvas = tk.Canvas(physics_tab, borderwidth=0, highlightthickness=0)
@@ -5255,8 +7515,9 @@ def open_settings_window():
     _row(tabs["geometry"], 0, "Bot Geometry Visualizer:", ttk.Button(tabs["geometry"], text="Open visual editor", command=open_geometry_visualizer), "Drag-to-edit drivetrain and robot geometry, including reshape.")
     _row(tabs["geometry"], 1, "Offset 1 (in):", ttk.Entry(tabs["geometry"], textvariable=off1), "First preset")
     _row(tabs["geometry"], 2, "Offset 2 (in):", ttk.Entry(tabs["geometry"], textvariable=off2), "Second preset")
-    _row(tabs["geometry"], 3, "Wall padding (in):", ttk.Entry(tabs["geometry"], textvariable=pad), "Boundary margin")
-    _row(tabs["geometry"], 4, "Offset Visualizer:", ttk.Button(tabs["geometry"], text="Open offset editor", command=open_offset_visualizer), "Drag node along centerline to set offsets.")
+    _row(tabs["geometry"], 3, "Offset 3 (in):", ttk.Entry(tabs["geometry"], textvariable=off3), "Third preset")
+    _row(tabs["geometry"], 4, "Wall padding (in):", ttk.Entry(tabs["geometry"], textvariable=pad), "Boundary margin")
+    _row(tabs["geometry"], 5, "Offset Visualizer:", ttk.Button(tabs["geometry"], text="Open offset editor", command=open_offset_visualizer), "Drag node along centerline to set offsets.")
 
     tabs["mcl"].rowconfigure(0, weight=1)
     tabs["mcl"].columnconfigure(0, weight=1)
@@ -5298,12 +7559,12 @@ def open_settings_window():
         w.bind("<Button-4>", _mcl_mousewheel)
         w.bind("<Button-5>", _mcl_mousewheel)
 
-    core_frame = ttk.LabelFrame(mcl_body, text="Core")
+    core_frame = ttk.LabelFrame(mcl_body, text="Atticus Runtime")
     core_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(4, 8))
     core_frame.columnconfigure(1, weight=1)
     r = 0
-    _row(core_frame, r, "Enable MCL:", ttk.Checkbutton(core_frame, variable=mcl_enabled_var),
-         "Enable or disable MCL processing in simulation."); r += 1
+    _row(core_frame, r, "Enable Atticus:", ttk.Checkbutton(core_frame, variable=mcl_enabled_var),
+         "Enable or disable the Atticus localizer in simulation."); r += 1
     _row(
         core_frame,
         r,
@@ -5314,121 +7575,85 @@ def open_settings_window():
             textvariable=mcl_pose_convention_var,
             state="readonly",
         ),
-        "Generated PROS external pose adapters convention.",
+        "Pose convention used when interpreting external pose adapters.",
     ); r += 1
     _row(
         core_frame,
         r,
         "External swap X/Y:",
         ttk.Checkbutton(core_frame, variable=mcl_pose_swap_xy_var),
-        "Swap external pose X and Y axes before conversion into internal MCL frame.",
+        "Swap external pose X and Y axes before conversion into the internal localizer frame.",
     ); r += 1
     _row(
         core_frame,
         r,
         "External invert X:",
         ttk.Checkbutton(core_frame, variable=mcl_pose_invert_x_var),
-        "Invert external X axis before conversion into internal MCL frame.",
+        "Invert external X axis before conversion into the internal localizer frame.",
     ); r += 1
     _row(
         core_frame,
         r,
         "External invert Y:",
         ttk.Checkbutton(core_frame, variable=mcl_pose_invert_y_var),
-        "Invert external Y axis before conversion into internal MCL frame.",
+        "Invert external Y axis before conversion into the internal localizer frame.",
+    ); r += 1
+    _row(
+        core_frame,
+        r,
+        "Horizontal odom:",
+        ttk.Combobox(
+            core_frame,
+            values=["none", "enabled"],
+            textvariable=mcl_horizontal_odom_var,
+            state="readonly",
+        ),
+        "Match the real Atticus runtime: choose whether the horizontal tracking wheel exists.",
     ); r += 1
     _row(core_frame, r, "Motion update ms:", ttk.Entry(core_frame, textvariable=mcl_motion_ms_var),
-         "Prediction update interval (ms)."); r += 1
+         "Prediction loop interval (ms). Real Atticus defaults to 20."); r += 1
     _row(core_frame, r, "Sensor update ms:", ttk.Entry(core_frame, textvariable=mcl_sensor_ms_var),
-         "Correction update interval (ms)."); r += 1
-    _row(core_frame, r, "Particles (N):", ttk.Entry(core_frame, textvariable=mcl_particles_n_var),
-         "Fixed particle count if KLD is disabled."); r += 1
-    mcl_row_particles_min = _row(core_frame, r, "Particles min:", ttk.Entry(core_frame, textvariable=mcl_particles_min_var),
-         "Minimum particles for adaptive/KLD."); r += 1
-    mcl_row_particles_max = _row(core_frame, r, "Particles max:", ttk.Entry(core_frame, textvariable=mcl_particles_max_var),
-         "Maximum particles for adaptive/KLD."); r += 1
-    _row(core_frame, r, "Resample method:", ttk.Combobox(core_frame, values=["systematic", "stratified", "multinomial"],
-         textvariable=mcl_resample_method_var, state="readonly"), "Resampling algorithm."); r += 1
-    _row(core_frame, r, "Resample threshold:", ttk.Entry(core_frame, textvariable=mcl_resample_thresh_var),
-         "Resample when N_eff/N drops below this ratio."); r += 1
-    mcl_row_random_injection = _row(core_frame, r, "Random injection:", ttk.Entry(core_frame, textvariable=mcl_random_injection_var),
-         "Fraction of particles respawned randomly each resample."); r += 1
-    kld_frame = ttk.Frame(core_frame)
-    kld_check = ttk.Checkbutton(kld_frame, variable=mcl_kld_enabled_var)
-    kld_check.pack(side="left")
-    ttk.Label(kld_frame, text="Enable KLD adaptive").pack(side="left", padx=(4, 0))
-    _track_widgets(kld_check)
-    _row(core_frame, r, "KLD adaptive:", kld_frame, "Adaptive particle count via KLD sampling."); r += 1
-    mcl_row_kld_eps = _row(core_frame, r, "KLD epsilon:", ttk.Entry(core_frame, textvariable=mcl_kld_eps_var),
-         "KLD epsilon parameter."); r += 1
-    mcl_row_kld_delta = _row(core_frame, r, "KLD delta:", ttk.Entry(core_frame, textvariable=mcl_kld_delta_var),
-         "KLD delta parameter."); r += 1
-    mcl_row_kld_bin_xy = _row(core_frame, r, "KLD bin xy (in):", ttk.Entry(core_frame, textvariable=mcl_kld_bin_xy_var),
-         "KLD bin size for x/y."); r += 1
-    mcl_row_kld_bin_theta = _row(core_frame, r, "KLD bin theta:", ttk.Entry(core_frame, textvariable=mcl_kld_bin_theta_var),
-         "KLD bin size for heading (deg)."); r += 1
-    cgr_frame = ttk.Frame(core_frame)
-    cgr_check = ttk.Checkbutton(cgr_frame, variable=mcl_cgr_enabled_var)
-    cgr_check.pack(side="left")
-    ttk.Label(cgr_frame, text="Enable CGR-lite top-K refine").pack(side="left", padx=(4, 0))
-    _track_widgets(cgr_check)
-    _row(core_frame, r, "CGR-lite:", cgr_frame, "Enable bounded top-K local refinement after sensor batches."); r += 1
-    mcl_row_cgr_top_k = _row(core_frame, r, "CGR top-K:", ttk.Entry(core_frame, textvariable=mcl_cgr_top_k_var),
-         "Number of top particles to refine."); r += 1
-    mcl_row_cgr_iters = _row(core_frame, r, "CGR max iters:", ttk.Entry(core_frame, textvariable=mcl_cgr_max_iters_var),
-         "Maximum bounded refinement iterations per finalize."); r += 1
-    mcl_row_cgr_budget = _row(core_frame, r, "CGR budget (ms):", ttk.Entry(core_frame, textvariable=mcl_cgr_budget_ms_var),
-         "Hard time budget for CGR-lite refinement per call."); r += 1
-    aug_frame = ttk.Frame(core_frame)
-    aug_check = ttk.Checkbutton(aug_frame, variable=mcl_aug_enabled_var)
-    aug_check.pack(side="left")
-    ttk.Label(aug_frame, text="Enable augmented MCL").pack(side="left", padx=(4, 0))
-    _track_widgets(aug_check)
-    _row(core_frame, r, "Augmented:", aug_frame, "Enable w_slow/w_fast adaptive injection."); r += 1
-    mcl_row_alpha_slow = _row(core_frame, r, "Alpha slow:", ttk.Entry(core_frame, textvariable=mcl_alpha_slow_var),
-         "Augmented MCL slow update rate."); r += 1
-    mcl_row_alpha_fast = _row(core_frame, r, "Alpha fast:", ttk.Entry(core_frame, textvariable=mcl_alpha_fast_var),
-         "Augmented MCL fast update rate."); r += 1
+         "Distance/IMU correction interval (ms). Real Atticus defaults to 20."); r += 1
 
-    motion_frame = ttk.LabelFrame(mcl_body, text="Motion Model")
+    motion_frame = ttk.LabelFrame(mcl_body, text="Odometry Prior")
     motion_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
     motion_frame.columnconfigure(1, weight=1)
     r = 0
     _row(motion_frame, r, "Enable motion:", ttk.Checkbutton(motion_frame, variable=mcl_motion_enabled_var),
-         "Enable the motion model in MCL."); r += 1
-    mcl_row_motion_model = _row(motion_frame, r, "Model:", ttk.Combobox(motion_frame, values=["drive", "tracking", "holonomic"],
-         textvariable=mcl_motion_model_var, state="readonly"), "Motion model type."); r += 1
-    mcl_row_motion_source = _row(motion_frame, r, "Source:", ttk.Combobox(motion_frame, values=["encoders", "tracking_wheels"],
-         textvariable=mcl_motion_source_var, state="readonly"), "Odometry data source."); r += 1
-    mcl_row_sigma_x = _row(motion_frame, r, "Sigma X (in):", ttk.Entry(motion_frame, textvariable=mcl_sigma_x_var),
-         "Translational noise in X (in)."); r += 1
-    mcl_row_sigma_y = _row(motion_frame, r, "Sigma Y (in):", ttk.Entry(motion_frame, textvariable=mcl_sigma_y_var),
-         "Translational noise in Y (in)."); r += 1
-    mcl_row_sigma_theta = _row(motion_frame, r, "Sigma theta (deg):", ttk.Entry(motion_frame, textvariable=mcl_sigma_theta_var),
-         "Rotational noise (deg)."); r += 1
-    _row(motion_frame, r, "Use alpha model:", ttk.Checkbutton(motion_frame, variable=mcl_use_alpha_var),
-         "Use alpha1..alpha4 motion noise model."); r += 1
-    mcl_row_alpha1 = _row(motion_frame, r, "Alpha1:", ttk.Entry(motion_frame, textvariable=mcl_alpha1_var),
-         "Alpha1 for motion noise."); r += 1
-    mcl_row_alpha2 = _row(motion_frame, r, "Alpha2:", ttk.Entry(motion_frame, textvariable=mcl_alpha2_var),
-         "Alpha2 for motion noise."); r += 1
-    mcl_row_alpha3 = _row(motion_frame, r, "Alpha3:", ttk.Entry(motion_frame, textvariable=mcl_alpha3_var),
-         "Alpha3 for motion noise."); r += 1
-    mcl_row_alpha4 = _row(motion_frame, r, "Alpha4:", ttk.Entry(motion_frame, textvariable=mcl_alpha4_var),
-         "Alpha4 for motion noise."); r += 1
+         "Enable odometry-delta prediction for the Atticus localizer."); r += 1
+    mcl_row_sigma_x = _row(motion_frame, r, "Base sigma right (in):", ttk.Entry(motion_frame, textvariable=mcl_sigma_x_var),
+         "Base lateral process sigma in the real Atticus body-right axis."); r += 1
+    mcl_row_sigma_y = _row(motion_frame, r, "Base sigma forward (in):", ttk.Entry(motion_frame, textvariable=mcl_sigma_y_var),
+         "Base forward process sigma in the real Atticus body-forward axis."); r += 1
+    mcl_row_sigma_theta = _row(motion_frame, r, "Base sigma theta (deg):", ttk.Entry(motion_frame, textvariable=mcl_sigma_theta_var),
+         "Base heading process sigma."); r += 1
+    mcl_row_sigma_x_per = _row(motion_frame, r, "Right sigma / in:", ttk.Entry(motion_frame, textvariable=mcl_sigma_x_per_var),
+         "Additional lateral sigma per inch of lateral body motion."); r += 1
+    mcl_row_sigma_y_per = _row(motion_frame, r, "Forward sigma / in:", ttk.Entry(motion_frame, textvariable=mcl_sigma_y_per_var),
+         "Additional forward sigma per inch of forward body motion."); r += 1
+    mcl_row_sigma_theta_per = _row(motion_frame, r, "Theta sigma / deg:", ttk.Entry(motion_frame, textvariable=mcl_sigma_theta_per_var),
+         "Additional heading sigma per degree turned."); r += 1
+    mcl_row_no_horizontal_scale = _row(motion_frame, r, "No horizontal scale:", ttk.Entry(motion_frame, textvariable=mcl_no_horizontal_scale_var),
+         "Inflate lateral uncertainty by this factor when no horizontal odom wheel exists."); r += 1
+    mcl_row_turn_lateral_scale = _row(motion_frame, r, "Turn lateral scale:", ttk.Entry(motion_frame, textvariable=mcl_turn_lateral_scale_var),
+         "Extra lateral inflation during sharp turns without horizontal odom."); r += 1
+    mcl_row_rough_wall_sigma_x_scale = _row(motion_frame, r, "Rough wall right scale:", ttk.Entry(motion_frame, textvariable=mcl_rough_wall_sigma_x_scale_var),
+         "Extra lateral inflation during rough wall-traverse segments."); r += 1
+    mcl_row_rough_wall_sigma_y_scale = _row(motion_frame, r, "Rough wall forward scale:", ttk.Entry(motion_frame, textvariable=mcl_rough_wall_sigma_y_scale_var),
+         "Extra forward inflation during rough wall-traverse segments."); r += 1
+    mcl_row_rough_wall_sigma_theta_scale = _row(motion_frame, r, "Rough wall theta scale:", ttk.Entry(motion_frame, textvariable=mcl_rough_wall_sigma_theta_scale_var),
+         "Extra heading-process inflation during rough wall-traverse segments."); r += 1
     _row(motion_frame, r, "Set pose sigma XY:", ttk.Entry(motion_frame, textvariable=mcl_set_pose_xy_var),
          "Sigma (in) when initializing around a pose."); r += 1
     _row(motion_frame, r, "Set pose sigma theta:", ttk.Entry(motion_frame, textvariable=mcl_set_pose_theta_var),
          "Sigma (deg) when initializing around a pose."); r += 1
 
-    sensors_frame = ttk.LabelFrame(mcl_body, text="Sensors")
+    sensors_frame = ttk.LabelFrame(mcl_body, text="Range Sensors")
     sensors_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
     sensors_frame.columnconfigure(1, weight=1)
     r = 0
     _row(sensors_frame, r, "Distance enabled:", ttk.Checkbutton(sensors_frame, variable=mcl_dist_enabled_var),
-         "Enable distance sensor weighting."); r += 1
-    mcl_row_dist_model = _row(sensors_frame, r, "Distance model:", ttk.Combobox(sensors_frame, values=["likelihood_field", "beam"],
-         textvariable=mcl_dist_model_var, state="readonly"), "Distance sensor model."); r += 1
+         "Enable distance sensors for Atticus map corrections."); r += 1
     mcl_row_dist_sigma = _row(sensors_frame, r, "Sigma hit (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_sigma_var),
          "Distance sensor noise (mm)."); r += 1
     mcl_row_dist_w_hit = _row(sensors_frame, r, "W_hit:", ttk.Entry(sensors_frame, textvariable=mcl_dist_w_hit_var),
@@ -5452,13 +7677,13 @@ def open_settings_window():
     mcl_row_dist_obj_max = _row(sensors_frame, r, "Max object size:", ttk.Entry(sensors_frame, textvariable=mcl_dist_obj_size_max_var),
          "Maximum object size to accept readings (0 disables)."); r += 1
     mcl_row_dist_innov = _row(sensors_frame, r, "Innovation gate (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_innov_gate_var),
-         "Reject a sensor if |meas - expected@estimate| exceeds this (0 disables)."); r += 1
+         "Reject a sensor if |meas - expected| exceeds this. Real Atticus defaults to 180 mm."); r += 1
     mcl_row_dist_median = _row(sensors_frame, r, "Median window:", ttk.Entry(sensors_frame, textvariable=mcl_dist_median_window_var),
          "Median filter window for distance sensors (1 disables)."); r += 1
     mcl_row_dist_ignore_max = _row(sensors_frame, r, "LF ignore max:", ttk.Checkbutton(sensors_frame, variable=mcl_dist_ignore_max_var),
          "Ignore max-range readings in likelihood field mode."); r += 1
     mcl_row_dist_gate = _row(sensors_frame, r, "Gate (mm):", ttk.Entry(sensors_frame, textvariable=mcl_dist_gate_var),
-         "Distance gating threshold (mm)."); r += 1
+         "Legacy overlay threshold. Keep this aligned with the innovation gate."); r += 1
     mcl_row_dist_gate_mode = _row(sensors_frame, r, "Gate mode:", ttk.Combobox(sensors_frame, values=["hard", "soft"],
          textvariable=mcl_dist_gate_mode_var, state="readonly"), "Hard or soft gating."); r += 1
     mcl_row_dist_gate_penalty = _row(sensors_frame, r, "Gate penalty:", ttk.Entry(sensors_frame, textvariable=mcl_dist_gate_penalty_var),
@@ -5471,17 +7696,11 @@ def open_settings_window():
          "Enable IMU heading weighting."); r += 1
     mcl_row_imu_sigma = _row(sensors_frame, r, "IMU sigma (deg):", ttk.Entry(sensors_frame, textvariable=mcl_imu_sigma_var),
          "IMU heading noise (deg)."); r += 1
-    _row(sensors_frame, r, "Vision enabled:", ttk.Checkbutton(sensors_frame, variable=mcl_vision_enabled_var),
-         "Enable vision position weighting."); r += 1
-    mcl_row_vision_sigma = _row(sensors_frame, r, "Vision sigma XY (in):", ttk.Entry(sensors_frame, textvariable=mcl_vision_sigma_var),
-         "Vision position noise (in)."); r += 1
-    mcl_row_vision_theta = _row(sensors_frame, r, "Vision sigma theta:", ttk.Entry(sensors_frame, textvariable=mcl_vision_theta_sigma_var),
-         "Vision heading noise (deg)."); r += 1
-    mcl_row_vision_conf = _row(sensors_frame, r, "Vision confidence min:", ttk.Entry(sensors_frame, textvariable=mcl_vision_conf_min_var),
-         "Minimum vision confidence required."); r += 1
+    _row(sensors_frame, r, "EKF use IMU:", ttk.Checkbutton(sensors_frame, variable=mcl_ekf_use_imu_var),
+         "Fuse IMU heading into the EKF. Disable this when an external pose provider already uses the same IMU."); r += 1
 
     def _mcl_sensor_value(var, default=0.0):
-        """Handle mcl sensor value."""
+        """Parse a float-like sensor field without breaking the editor."""
         try:
             return float(var.get())
         except Exception:
@@ -5491,12 +7710,12 @@ def open_settings_window():
                 return 0.0
 
     def _mcl_sensor_map_mode(var):
-        """Handle mcl sensor map mode."""
-        mode = str(var.get() or "both").strip().lower()
-        return mode if mode in ("both", "perimeter", "objects") else "both"
+        """Clamp a per-sensor map-mode field to the supported Atticus values."""
+        mode = str(var.get() or "perimeter").strip().lower()
+        return mode if mode in ("both", "perimeter", "objects") else "perimeter"
 
     def _open_mcl_sensor_config(idx: int):
-        """Handle open mcl sensor config."""
+        """Open the advanced editor for one distance sensor."""
         sv = mcl_sensor_vars[idx]
         win = tk.Toplevel(top)
         win.title(f"Distance Sensor {idx + 1} Settings")
@@ -5546,18 +7765,17 @@ def open_settings_window():
             }
             try:
                 mcl_heading = _mcl_heading_from_internal(robot_heading)
-                origin, heading = mcl_mod._sensor_world_pose(robot_pos[0], robot_pos[1], mcl_heading, sensor_cfg)
-                segs = mcl_mod._sensor_segments(mcl_state, sensor_cfg)
-                max_range = _mcl_sensor_value(sv["max_range_mm"], _mcl_sensor_value(mcl_dist_max_range_var, 2000.0))
-                if max_range <= 0.0:
-                    max_range = _mcl_sensor_value(mcl_dist_max_range_var, 2000.0)
-                max_range_px = max_range / mcl_mod.MM_PER_IN * mcl_mod.PPI
-                pred_px = mcl_mod.raycast_distance(segs, origin, heading, max_range_px)
-                if pred_px is None:
+                hit = mcl_mod._raycast_expected_measurement(
+                    mcl_state,
+                    CFG,
+                    (robot_pos[0], robot_pos[1], mcl_heading),
+                    sensor_cfg,
+                )
+                if hit is None:
                     messagebox.showerror("Calibrate bias",
                                          "No map intersection found for this sensor from the current pose.")
                     return
-                expected_mm = mcl_mod.px_to_in(pred_px) * mcl_mod.MM_PER_IN
+                expected_mm = float(hit.get("distance_mm", 0.0))
                 bias = meas - expected_mm
                 sv["bias_mm"].set(f"{bias:.3f}")
             except Exception as exc:
@@ -5601,7 +7819,7 @@ def open_settings_window():
             1 + i,
             f"Sensor {i+1}:",
             row_frame,
-            "Distance sensor geometry. Angle uses heading convention: 0=left, 90=forward (clockwise)."
+            "Distance sensor geometry in native Atticus coordinates: x=right of center, y=forward, angle 0=forward and +90=right."
         ))
 
     map_frame = ttk.LabelFrame(mcl_body, text="Map Objects")
@@ -5641,7 +7859,7 @@ def open_settings_window():
     sensor_sel_map = {}
 
     def _sensor_selector_values():
-        """Handle sensor selector values."""
+        """Build picker labels for the global and per-sensor object visibility views."""
         values = ["Global map objects"]
         for idx, sensor_vars in enumerate(mcl_sensor_vars):
             try:
@@ -5657,11 +7875,11 @@ def open_settings_window():
         return values
 
     def _selected_sensor_idx():
-        """Handle selected sensor idx."""
+        """Map the current object-visibility picker choice back to a sensor index."""
         return sensor_sel_map.get(str(sensor_sel_var.get() or "").strip())
 
     def _rebuild_object_checks():
-        """Handle rebuild object checks."""
+        """Rebuild the object checkbox list for the active global or per-sensor view."""
         for child in list(obj_frame.winfo_children()):
             try:
                 child.destroy()
@@ -5689,7 +7907,7 @@ def open_settings_window():
             ui.add_tooltip(obj_check, f"Object id: {obj_id}")
 
     def _refresh_sensor_selector(*_):
-        """Handle refresh sensor selector."""
+        """Refresh the per-sensor object-visibility picker after name or enable changes."""
         sensor_sel_map.clear()
         vals = _sensor_selector_values()
         sensor_sel_combo.configure(values=vals)
@@ -5707,97 +7925,40 @@ def open_settings_window():
             pass
     _refresh_sensor_selector()
 
-    region_frame = ttk.LabelFrame(mcl_body, text="Region Constraints")
-    region_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
-    region_frame.columnconfigure(1, weight=1)
-    r = 0
-    _row(region_frame, r, "Enabled:", ttk.Checkbutton(region_frame, variable=mcl_region_enabled_var),
-         "Enable region constraints."); r += 1
-    mcl_row_region_mode = _row(region_frame, r, "Mode:", ttk.Combobox(region_frame, values=["hard", "soft"],
-         textvariable=mcl_region_mode_var, state="readonly"), "Hard or soft region gating."); r += 1
-    mcl_row_region_type = _row(region_frame, r, "Type:", ttk.Combobox(region_frame, values=["segment_path", "segment_band", "grid", "manual"],
-         textvariable=mcl_region_type_var, state="readonly"), "Region constraint type."); r += 1
-    mcl_row_region_update = _row(region_frame, r, "Update mode:", ttk.Combobox(region_frame, values=["segment_path", "manual"],
-         textvariable=mcl_region_update_var, state="readonly"), "Region update behavior."); r += 1
-    mcl_row_region_penalty = _row(region_frame, r, "Penalty:", ttk.Entry(region_frame, textvariable=mcl_region_penalty_var),
-         "Soft mode weight penalty."); r += 1
-    mcl_row_region_perim = _row(region_frame, r, "Perimeter gate:", ttk.Checkbutton(region_frame, variable=mcl_region_perim_var),
-         "Disallow particles outside the field."); r += 1
-    mcl_row_region_obj = _row(region_frame, r, "Object mode:", ttk.Combobox(region_frame, values=["off", "soft", "hard"],
-         textvariable=mcl_region_obj_var, state="readonly"),
-         "Off, soft clip penalty, or hard reject for obstacle overlap."); r += 1
-    mcl_row_region_radius = _row(region_frame, r, "Radius (in):", ttk.Entry(region_frame, textvariable=mcl_region_radius_var),
-         "Segment band radius (in)."); r += 1
-    mcl_row_region_grid_type = _row(region_frame, r, "Grid type:", ttk.Combobox(region_frame, values=["quadrant", "custom"],
-         textvariable=mcl_region_grid_type_var, state="readonly"), "Grid region type."); r += 1
-    mcl_row_region_grid_x = _row(region_frame, r, "Grid X:", ttk.Entry(region_frame, textvariable=mcl_region_grid_x_var),
-         "Grid columns."); r += 1
-    mcl_row_region_grid_y = _row(region_frame, r, "Grid Y:", ttk.Entry(region_frame, textvariable=mcl_region_grid_y_var),
-         "Grid rows."); r += 1
-    mcl_row_region_x_min = _row(region_frame, r, "X min (in):", ttk.Entry(region_frame, textvariable=mcl_region_x_min_var),
-         "Region X min in screen inches from the left edge."); r += 1
-    mcl_row_region_x_max = _row(region_frame, r, "X max (in):", ttk.Entry(region_frame, textvariable=mcl_region_x_max_var),
-         "Region X max in screen inches from the left edge."); r += 1
-    mcl_row_region_y_min = _row(region_frame, r, "Y min (in):", ttk.Entry(region_frame, textvariable=mcl_region_y_min_var),
-         "Region Y min in screen inches from the top edge."); r += 1
-    mcl_row_region_y_max = _row(region_frame, r, "Y max (in):", ttk.Entry(region_frame, textvariable=mcl_region_y_max_var),
-         "Region Y max in screen inches from the top edge."); r += 1
-    mcl_row_region_current = _row(region_frame, r, "Current region:", ttk.Entry(region_frame, textvariable=mcl_region_current_var),
-         "Grid region index or comma list."); r += 1
-    mcl_row_region_slope = _row(region_frame, r, "Slope field:", ttk.Checkbutton(region_frame, variable=mcl_region_slope_var),
-         "Enable heading slope field weighting."); r += 1
-    mcl_row_region_slope_sigma = _row(region_frame, r, "Slope sigma:", ttk.Entry(region_frame, textvariable=mcl_region_slope_sigma_var),
-         "Slope heading sigma (deg)."); r += 1
-
-    conf_frame = ttk.LabelFrame(mcl_body, text="Confidence")
-    conf_frame.grid(row=6, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
-    conf_frame.columnconfigure(1, weight=1)
-    r = 0
-    mcl_row_conf_thresh = _row(conf_frame, r, "Threshold:", ttk.Entry(conf_frame, textvariable=mcl_conf_thresh_var),
-         "Confidence threshold for relocalization."); r += 1
-    _row(conf_frame, r, "Auto reinit:", ttk.Checkbutton(conf_frame, variable=mcl_conf_auto_var),
-         "Automatically reinitialize when confidence is low."); r += 1
-    mcl_row_conf_mode = _row(conf_frame, r, "Reinit mode:", ttk.Combobox(conf_frame, values=["global", "estimate"],
-         textvariable=mcl_conf_mode_var, state="readonly"), "Reinitialize globally or around estimate."); r += 1
-
-    corr_frame = ttk.LabelFrame(mcl_body, text="Odom Correction")
+    corr_frame = ttk.LabelFrame(mcl_body, text="Bounded Writeback")
     corr_frame.grid(row=7, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
     corr_frame.columnconfigure(1, weight=1)
     r = 0
     _row(corr_frame, r, "Enabled:", ttk.Checkbutton(corr_frame, variable=mcl_corr_enabled_var),
-         "Enable MCL->odom correction helper in exports."); r += 1
+         "Enable bounded writeback from the fused Atticus pose back toward odometry."); r += 1
     mcl_row_corr_min_conf = _row(corr_frame, r, "Min confidence:", ttk.Entry(corr_frame, textvariable=mcl_corr_min_conf_var),
          "Minimum confidence to apply correction."); r += 1
     mcl_row_corr_max_trans = _row(corr_frame, r, "Max trans jump (in):", ttk.Entry(corr_frame, textvariable=mcl_corr_max_trans_var),
-         "Reject correction if translation jump exceeds this."); r += 1
+         "Clamp each writeback axis to this translation limit."); r += 1
     mcl_row_corr_max_theta = _row(corr_frame, r, "Max theta jump (deg):", ttk.Entry(corr_frame, textvariable=mcl_corr_max_theta_var),
-         "Reject correction if heading jump exceeds this."); r += 1
-    mcl_row_corr_alpha_min = _row(corr_frame, r, "Alpha min:", ttk.Entry(corr_frame, textvariable=mcl_corr_alpha_min_var),
-         "Minimum blend factor when applying correction."); r += 1
-    mcl_row_corr_alpha_max = _row(corr_frame, r, "Alpha max:", ttk.Entry(corr_frame, textvariable=mcl_corr_alpha_max_var),
-         "Maximum blend factor when applying correction."); r += 1
+         "Clamp heading writeback to this many degrees."); r += 1
+    mcl_row_corr_writeback_alpha = _row(corr_frame, r, "Writeback alpha:", ttk.Entry(corr_frame, textvariable=mcl_corr_writeback_alpha_var),
+         "Blend factor used by continuous writeback. Real Atticus defaults to 0.35."); r += 1
+    mcl_row_corr_teleport_trans = _row(corr_frame, r, "Teleport reset trans (in):", ttk.Entry(corr_frame, textvariable=mcl_corr_teleport_trans_var),
+         "Reset the fused estimate if one odom step jumps farther than this."); r += 1
+    mcl_row_corr_teleport_theta = _row(corr_frame, r, "Teleport reset theta (deg):", ttk.Entry(corr_frame, textvariable=mcl_corr_teleport_theta_var),
+         "Reset the fused estimate if one odom step turns farther than this."); r += 1
 
-    viz_frame = ttk.LabelFrame(mcl_body, text="Visualizer")
+    viz_frame = ttk.LabelFrame(mcl_body, text="Localization Overlay")
     viz_frame.grid(row=8, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
     viz_frame.columnconfigure(1, weight=1)
     r = 0
-    _row(viz_frame, r, "Show particles:", ttk.Checkbutton(viz_frame, variable=mcl_show_particles_var),
-         "Show particle cloud."); r += 1
     _row(viz_frame, r, "Show estimate:", ttk.Checkbutton(viz_frame, variable=mcl_show_estimate_var),
          "Show estimated pose."); r += 1
     _row(viz_frame, r, "Show covariance:", ttk.Checkbutton(viz_frame, variable=mcl_show_cov_var),
          "Show covariance ellipse."); r += 1
-    _row(viz_frame, r, "Show rays:", ttk.Checkbutton(viz_frame, variable=mcl_show_rays_var),
-         "Show sensor rays and markers."); r += 1
-    _row(viz_frame, r, "Show region:", ttk.Checkbutton(viz_frame, variable=mcl_show_region_var),
-         "Show region overlays."); r += 1
+    _row(viz_frame, r, "Show predicted rays:", ttk.Checkbutton(viz_frame, variable=mcl_show_rays_var),
+         "Show the blue predicted map-hit ray. The green measured ray is always shown while Atticus sim is on."); r += 1
     _row(viz_frame, r, "Show gating:", ttk.Checkbutton(viz_frame, variable=mcl_show_gating_var),
          "Highlight gated sensor readings."); r += 1
-    _row(viz_frame, r, "Max particles draw:", ttk.Entry(viz_frame, textvariable=mcl_max_draw_var),
-         "Limit particles drawn for performance."); r += 1
 
     def _var_int(var, default=0):
-        """Handle var int."""
+        """Parse an int-like Tk variable without crashing the settings editor."""
         try:
             return int(var.get())
         except Exception:
@@ -5807,17 +7968,17 @@ def open_settings_window():
                 return default
 
     def _var_float(var, default=0.0):
-        """Handle var float."""
+        """Parse a float-like Tk variable without crashing the settings editor."""
         try:
             return float(var.get())
         except Exception:
             return float(default)
 
     def _sync_geom_defaults() -> None:
-        """Handle sync geom defaults."""
+        """Populate sensor geometry from the robot config when the editor is still blank."""
         if any(str(sv["name"].get() or "").strip() for sv in mcl_sensor_vars):
             return
-        defaults = mcl_mod.get_distance_sensors(CFG)
+        defaults = mcl_mod.get_distance_sensors(CFG, include_disabled=True)
         for idx, sv in enumerate(mcl_sensor_vars):
             if idx >= len(defaults):
                 break
@@ -5829,70 +7990,43 @@ def open_settings_window():
             sv["enabled"].set(int(entry.get("enabled", 1)))
 
     def _refresh_mcl_visibility(*_):
-        """Handle refresh mcl visibility."""
-        kld_on = _var_int(mcl_kld_enabled_var, 0) == 1
-        _set_row_visible(mcl_row_particles_min, kld_on)
-        _set_row_visible(mcl_row_particles_max, kld_on)
-        _set_row_visible(mcl_row_kld_eps, kld_on)
-        _set_row_visible(mcl_row_kld_delta, kld_on)
-        _set_row_visible(mcl_row_kld_bin_xy, kld_on)
-        _set_row_visible(mcl_row_kld_bin_theta, kld_on)
-        cgr_on = _var_int(mcl_cgr_enabled_var, 1) == 1
-        _set_row_visible(mcl_row_cgr_top_k, cgr_on)
-        _set_row_visible(mcl_row_cgr_iters, cgr_on)
-        _set_row_visible(mcl_row_cgr_budget, cgr_on)
-
-        aug_on = _var_int(mcl_aug_enabled_var, 0) == 1
-        _set_row_visible(mcl_row_alpha_slow, aug_on)
-        _set_row_visible(mcl_row_alpha_fast, aug_on)
-        # Random injection only applies when augmented injection is disabled.
-        _set_row_visible(mcl_row_random_injection, not aug_on)
-
+        """Show only the Atticus controls that still change runtime behavior."""
         motion_on = _var_int(mcl_motion_enabled_var, 1) == 1
-        use_alpha = _var_int(mcl_use_alpha_var, 0) == 1
-        _set_row_visible(mcl_row_motion_model, False)
-        _set_row_visible(mcl_row_motion_source, False)
-        _set_row_visible(mcl_row_sigma_x, motion_on and not use_alpha)
-        _set_row_visible(mcl_row_sigma_y, motion_on and not use_alpha)
-        _set_row_visible(mcl_row_sigma_theta, motion_on and not use_alpha)
-        _set_row_visible(mcl_row_alpha1, motion_on and use_alpha)
-        _set_row_visible(mcl_row_alpha2, motion_on and use_alpha)
-        _set_row_visible(mcl_row_alpha3, motion_on and use_alpha)
-        _set_row_visible(mcl_row_alpha4, motion_on and use_alpha)
+        _set_row_visible(mcl_row_sigma_x, motion_on)
+        _set_row_visible(mcl_row_sigma_y, motion_on)
+        _set_row_visible(mcl_row_sigma_theta, motion_on)
+        _set_row_visible(mcl_row_sigma_x_per, motion_on)
+        _set_row_visible(mcl_row_sigma_y_per, motion_on)
+        _set_row_visible(mcl_row_sigma_theta_per, motion_on)
+        _set_row_visible(mcl_row_no_horizontal_scale, motion_on)
+        _set_row_visible(mcl_row_turn_lateral_scale, motion_on)
+        _set_row_visible(mcl_row_rough_wall_sigma_x_scale, motion_on)
+        _set_row_visible(mcl_row_rough_wall_sigma_y_scale, motion_on)
+        _set_row_visible(mcl_row_rough_wall_sigma_theta_scale, motion_on)
 
         dist_on = _var_int(mcl_dist_enabled_var, 1) == 1
-        dist_model = str(mcl_dist_model_var.get() or "").strip().lower()
-        dist_lf = dist_model == "likelihood_field"
-        gate_mm = _var_float(mcl_dist_gate_var, 0.0)
-        gate_on = dist_on and gate_mm > 0.0
-        _set_row_visible(mcl_row_dist_model, dist_on)
         _set_row_visible(mcl_row_dist_sigma, dist_on)
-        _set_row_visible(mcl_row_dist_w_hit, dist_on)
-        _set_row_visible(mcl_row_dist_w_rand, dist_on)
-        # `w_short`/`lambda_short` are beam-model terms and are no-ops in LF mode.
-        _set_row_visible(mcl_row_dist_w_short, dist_on and not dist_lf)
-        _set_row_visible(mcl_row_dist_w_max, dist_on)
-        _set_row_visible(mcl_row_dist_lambda_short, dist_on and not dist_lf)
+        _set_row_visible(mcl_row_dist_w_hit, False)
+        _set_row_visible(mcl_row_dist_w_rand, False)
+        _set_row_visible(mcl_row_dist_w_short, False)
+        _set_row_visible(mcl_row_dist_w_max, False)
+        _set_row_visible(mcl_row_dist_lambda_short, False)
         _set_row_visible(mcl_row_dist_max_range, dist_on)
         _set_row_visible(mcl_row_dist_min_range, dist_on)
-        _set_row_visible(mcl_row_dist_conf_min, dist_on)
-        _set_row_visible(mcl_row_dist_obj_min, dist_on)
-        _set_row_visible(mcl_row_dist_obj_max, dist_on)
+        _set_row_visible(mcl_row_dist_conf_min, False)
+        _set_row_visible(mcl_row_dist_obj_min, False)
+        _set_row_visible(mcl_row_dist_obj_max, False)
         _set_row_visible(mcl_row_dist_innov, dist_on)
         _set_row_visible(mcl_row_dist_median, dist_on)
-        _set_row_visible(mcl_row_dist_ignore_max, dist_on and dist_model == "likelihood_field")
+        _set_row_visible(mcl_row_dist_ignore_max, False)
         _set_row_visible(mcl_row_dist_gate, dist_on)
-        _set_row_visible(mcl_row_dist_gate_mode, gate_on)
-        _set_row_visible(mcl_row_dist_gate_penalty, gate_on)
-        _set_row_visible(mcl_row_dist_gate_reject, gate_on)
-        _set_row_visible(mcl_row_dist_lf_res, dist_on and dist_model == "likelihood_field")
+        _set_row_visible(mcl_row_dist_gate_mode, False)
+        _set_row_visible(mcl_row_dist_gate_penalty, False)
+        _set_row_visible(mcl_row_dist_gate_reject, False)
+        _set_row_visible(mcl_row_dist_lf_res, False)
 
         imu_on = _var_int(mcl_imu_enabled_var, 1) == 1
         _set_row_visible(mcl_row_imu_sigma, imu_on)
-        vis_on = _var_int(mcl_vision_enabled_var, 0) == 1
-        _set_row_visible(mcl_row_vision_sigma, vis_on)
-        _set_row_visible(mcl_row_vision_theta, vis_on)
-        _set_row_visible(mcl_row_vision_conf, vis_on)
 
         if dist_on:
             geom_frame.grid()
@@ -5913,51 +8047,23 @@ def open_settings_window():
         _set_row_visible(mcl_row_map_sensor_view, dist_on)
         _set_row_visible(mcl_row_map_objects, dist_on)
 
-        region_on = _var_int(mcl_region_enabled_var, 0) == 1
-        region_type = str(mcl_region_type_var.get() or "segment_path").strip().lower()
-        is_segment = region_type in ("segment_path", "segment_band", "segment", "band", "path")
-        is_grid = region_type == "grid"
-        is_manual = region_type in ("manual", "bounds", "rect", "rectangle")
-        _set_row_visible(mcl_row_region_mode, region_on)
-        _set_row_visible(mcl_row_region_type, region_on)
-        _set_row_visible(mcl_row_region_update, False)
-        _set_row_visible(mcl_row_region_penalty, region_on)
-        _set_row_visible(mcl_row_region_perim, region_on)
-        _set_row_visible(mcl_row_region_obj, region_on)
-        _set_row_visible(mcl_row_region_radius, region_on and is_segment)
-        _set_row_visible(mcl_row_region_grid_type, region_on and is_grid)
-        _set_row_visible(mcl_row_region_grid_x, region_on and is_grid)
-        _set_row_visible(mcl_row_region_grid_y, region_on and is_grid)
-        bounds_on = region_on and (is_grid or is_manual)
-        _set_row_visible(mcl_row_region_x_min, bounds_on)
-        _set_row_visible(mcl_row_region_x_max, bounds_on)
-        _set_row_visible(mcl_row_region_y_min, bounds_on)
-        _set_row_visible(mcl_row_region_y_max, bounds_on)
-        _set_row_visible(mcl_row_region_current, region_on and is_grid)
-        _set_row_visible(mcl_row_region_slope, region_on and is_segment)
-        _set_row_visible(mcl_row_region_slope_sigma, region_on and is_segment and _var_int(mcl_region_slope_var, 0) == 1)
-
-        auto_reinit = _var_int(mcl_conf_auto_var, 0) == 1
-        _set_row_visible(mcl_row_conf_thresh, auto_reinit)
-        _set_row_visible(mcl_row_conf_mode, auto_reinit)
-
         corr_on = _var_int(mcl_corr_enabled_var, 1) == 1
         _set_row_visible(mcl_row_corr_min_conf, corr_on)
         _set_row_visible(mcl_row_corr_max_trans, corr_on)
         _set_row_visible(mcl_row_corr_max_theta, corr_on)
-        _set_row_visible(mcl_row_corr_alpha_min, corr_on)
-        _set_row_visible(mcl_row_corr_alpha_max, corr_on)
+        _set_row_visible(mcl_row_corr_writeback_alpha, corr_on)
+        _set_row_visible(mcl_row_corr_teleport_trans, corr_on)
+        _set_row_visible(mcl_row_corr_teleport_theta, corr_on)
         try:
             _mcl_on_configure()
         except Exception:
             pass
 
     for var in (
-        mcl_kld_enabled_var, mcl_cgr_enabled_var, mcl_aug_enabled_var, mcl_motion_enabled_var,
-        mcl_use_alpha_var, mcl_dist_enabled_var, mcl_dist_model_var,
-        mcl_dist_gate_var, mcl_imu_enabled_var,
-        mcl_vision_enabled_var, mcl_region_enabled_var, mcl_region_type_var,
-        mcl_region_slope_var, mcl_conf_auto_var,
+        mcl_motion_enabled_var,
+        mcl_dist_enabled_var,
+        mcl_dist_gate_var,
+        mcl_imu_enabled_var,
         mcl_corr_enabled_var,
     ):
         try:
@@ -5967,172 +8073,31 @@ def open_settings_window():
     _sync_geom_defaults()
     _refresh_mcl_visibility()
 
-    mcl_tune_state = {"analysis": None}
-    mcl_tune_status_var = tk.StringVar(value="No tuning session imported.")
-
-    def _current_mcl_hash32():
-        """Handle current mcl hash32."""
-        try:
-            hpp = mcl_codegen.build_mcl_config_hpp(CFG)
-            m = re.search(r"MCL_CONFIG_HASH32\\s*=\\s*0x([0-9a-fA-F]+)u;", hpp)
-            if m:
-                return int(m.group(1), 16)
-        except Exception:
-            pass
-        return None
-
-    def _import_mcl_tuning_session():
-        """Handle import mcl tuning session."""
-        try:
-            on_update()
-        except Exception:
-            pass
-        path = filedialog.askopenfilename(
-            parent=top,
-            title="Import MCL tuning session",
-            filetypes=[("MCL logs", "*.mcllog"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            expected_hash = _current_mcl_hash32()
-            analysis = mcl_tuning_mod.analyze_mcl_log(path, expected_config_hash32=expected_hash)
-        except Exception as e:
-            messagebox.showerror("MCL Tuning Import", f"Failed to import tuning session:\n{e}")
-            return
-        mcl_tune_state["analysis"] = analysis
-        summary = analysis.get("summary", {})
-        mcl_tune_status_var.set(
-            f"Loaded {os.path.basename(path)} | Score {summary.get('score', 0):.1f}/100 ({summary.get('grade', 'N/A')})"
-        )
-        messagebox.showinfo("MCL Tuning Session", mcl_tuning_mod.format_analysis_text(analysis))
-
-    def _apply_mcl_tuning_recommendations():
-        """Handle apply mcl tuning recommendations."""
-        analysis = mcl_tune_state.get("analysis")
-        if not isinstance(analysis, dict):
-            messagebox.showwarning("MCL Tuning", "Import a .mcllog session first.")
-            return
-        rec = analysis.get("recommendations", {})
-        try:
-            on_update()
-        except Exception:
-            pass
-        mcl_tuning_mod.apply_recommendations(CFG, rec)
-        mcl_imu_sigma_var.set(str(rec.get("imu_sigma_deg", mcl_imu_sigma_var.get())))
-        mcl_dist_sigma_var.set(str(rec.get("dist_sigma_hit_mm", mcl_dist_sigma_var.get())))
-        mcl_dist_w_hit_var.set(str(rec.get("dist_w_hit", mcl_dist_w_hit_var.get())))
-        mcl_dist_w_rand_var.set(str(rec.get("dist_w_rand", mcl_dist_w_rand_var.get())))
-        mcl_dist_gate_var.set(str(rec.get("dist_gate_mm", mcl_dist_gate_var.get())))
-        mcl_dist_innov_gate_var.set(str(rec.get("dist_innovation_gate_mm", mcl_dist_innov_gate_var.get())))
-        mcl_corr_min_conf_var.set(str(rec.get("corr_min_conf", mcl_corr_min_conf_var.get())))
-        mcl_corr_alpha_min_var.set(str(rec.get("corr_alpha_min", mcl_corr_alpha_min_var.get())))
-        mcl_corr_alpha_max_var.set(str(rec.get("corr_alpha_max", mcl_corr_alpha_max_var.get())))
-        mcl_tuning_enabled_var.set(int(rec.get("tuning_enabled", mcl_tuning_enabled_var.get())))
-        mcl_tuning_log_rate_var.set(str(rec.get("tuning_log_rate_hz", mcl_tuning_log_rate_var.get())))
-        mcl_tuning_subsample_var.set(str(rec.get("tuning_particle_subsample", mcl_tuning_subsample_var.get())))
-        try:
-            on_update()
-        except Exception as e:
-            messagebox.showerror("MCL Tuning", f"Failed to apply recommendations:\n{e}")
-            return
-        messagebox.showinfo("MCL Tuning", "Applied recommended tuning values to MCL/EKF config.")
-
-    def _export_mcl_tuning_report():
-        """Handle export mcl tuning report."""
-        analysis = mcl_tune_state.get("analysis")
-        if not isinstance(analysis, dict):
-            messagebox.showwarning("MCL Tuning", "Import a .mcllog session first.")
-            return
-        out = filedialog.asksaveasfilename(
-            parent=top,
-            title="Save tuning report",
-            defaultextension=".md",
-            filetypes=[("Markdown", "*.md"), ("All files", "*.*")],
-            initialfile="TUNING_REPORT.md",
-        )
-        if not out:
-            return
-        try:
-            with open(out, "w", encoding="utf-8") as f:
-                f.write(mcl_tuning_mod.build_tuning_report(analysis))
-        except Exception as e:
-            messagebox.showerror("MCL Tuning", f"Failed to save report:\n{e}")
-            return
-        messagebox.showinfo("MCL Tuning", f"Saved tuning report:\n{out}")
-
-    def _export_mcl_codegen():
-        """Handle export mcl codegen."""
-        try:
-            on_update()
-        except Exception:
-            pass
-        default_dir = os.path.join(os.getcwd(), "export", "mcl")
-        chosen = filedialog.askdirectory(
-            parent=top,
-            initialdir=default_dir if os.path.isdir(default_dir) else os.getcwd(),
-            title="Select MCL export directory"
-        )
-        if not chosen:
-            return
-        try:
-            mcl_codegen.write_mcl_files(CFG, chosen)
-        except Exception as e:
-            messagebox.showerror("Export MCL Code", f"Failed to export MCL code:\n{e}")
-            return
-        messagebox.showinfo(
-            "Export MCL Code",
-            "Generated mcl_config.hpp, mcl_localizer.h, mcl_localizer.cpp,\n"
-            "mcl_runtime.h, and mcl_runtime.cpp in:\n"
-            + chosen
-        )
-
-    export_frame = ttk.LabelFrame(mcl_body, text="MCL PROS Code Generation (EXPERIMENTAL)")
-    export_frame.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
-    export_frame.columnconfigure(1, weight=1)
-    _row(export_frame, 0, "Export:", ttk.Button(export_frame, text="Export MCL Code...", command=_export_mcl_codegen),
-         "Generate MCL core + runtime wrapper for PROS.")
-    mcl_tuning_info_lbl = ttk.Label(
-        export_frame,
-        text="Tuning mode enables .mcllog session logging for the microSD wizard. Turn ON when collecting tuning runs, OFF for normal competition exports.",
+    integration_frame = ttk.LabelFrame(mcl_body, text="Atticus Integration")
+    integration_frame.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+    integration_frame.columnconfigure(1, weight=1)
+    integration_info = ttk.Label(
+        integration_frame,
+        text=(
+            "Legacy export and tuning tools have been removed from the terminal.\n"
+            "This tab now configures the Atticus-style local map corrector used in simulation:\n"
+            "set sensor geometry, range gating, and bounded writeback here, then validate the result in sim."
+        ),
         wraplength=420,
-        justify="left"
+        justify="left",
     )
-    _row(export_frame, 2, "Info:", mcl_tuning_info_lbl,
-         "Quick guidance for when tuning mode should be enabled.")
-    _row(export_frame, 3, "Tuning mode:", ttk.Checkbutton(export_frame, variable=mcl_tuning_enabled_var),
-         "Enable .mcllog telemetry support in generated exports.")
-    _row(export_frame, 4, "Log rate (Hz):", ttk.Entry(export_frame, textvariable=mcl_tuning_log_rate_var),
-         "Tuning telemetry log sample rate for wizard sessions.")
-    _row(export_frame, 5, "Particle subsample:", ttk.Entry(export_frame, textvariable=mcl_tuning_subsample_var),
-         "Optional particle debug subsample (0 keeps disabled).")
-    tune_btns = ttk.Frame(export_frame)
-    tune_btns.columnconfigure(0, weight=1)
-    ttk.Button(tune_btns, text="Import .mcllog...", command=_import_mcl_tuning_session).grid(
-        row=0, column=0, sticky="ew", pady=(0, 4)
-    )
-    ttk.Button(tune_btns, text="Apply Recommended", command=_apply_mcl_tuning_recommendations).grid(
-        row=1, column=0, sticky="ew", pady=(0, 4)
-    )
-    ttk.Button(tune_btns, text="Save Report...", command=_export_mcl_tuning_report).grid(
-        row=2, column=0, sticky="ew"
-    )
-    _row(export_frame, 6, "Tuning tools:", tune_btns,
-         "Import a microSD tuning session, apply recommendations, and save a tuning report.")
-    mcl_tuning_status_lbl = ttk.Label(export_frame, textvariable=mcl_tune_status_var, wraplength=420, justify="left")
-    _row(export_frame, 7, "Session:", mcl_tuning_status_lbl,
-         "Status for the latest imported tuning session.")
+    _row(integration_frame, 0, "Info:", integration_info,
+         "Atticus localization in the terminal is simulator-focused and no longer exports the old particle-filter package.")
 
     def _refresh_mcl_export_wrap(_evt=None):
         """Handle refresh mcl export wrap."""
         try:
-            wrap_px = max(180, min(900, int(export_frame.winfo_width()) - 210))
-            mcl_tuning_info_lbl.configure(wraplength=wrap_px)
-            mcl_tuning_status_lbl.configure(wraplength=wrap_px)
+            wrap_px = max(180, min(900, int(integration_frame.winfo_width()) - 210))
+            integration_info.configure(wraplength=wrap_px)
         except Exception:
             pass
 
-    export_frame.bind("<Configure>", _refresh_mcl_export_wrap)
+    integration_frame.bind("<Configure>", _refresh_mcl_export_wrap)
     top.after(0, _refresh_mcl_export_wrap)
 
     _stored_tpl_defaults = CFG.get("codegen", {}).get("templates", {})
@@ -6181,13 +8146,18 @@ def open_settings_window():
     }
 
     codegen_defaults = {
-        "LemLib": {
+        "AttLib": {
             "wait": "pros::delay({MS});",
-            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
-            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
-            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}});",
-            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}});",
-            "swing": "chassis.swingToHeading({HEADING_DEG}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+            "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, attlib::DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = attlib::AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+            "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+            "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+            "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+            "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+            "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
             "reshape_on": "matchloadPistons.set_value({STATE});",
             "reshape_off": "matchloadPistons.set_value({STATE});",
             "reshape": "matchloadPistons.set_value({STATE});",
@@ -6196,7 +8166,48 @@ def open_settings_window():
             "tbuffer": "pros::delay({MS});",
             "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
             "marker_wait_done": "chassis.waitUntilDone();",
-            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}});",
+            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+            "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
+        },
+        "Atticus": {
+            "wait": "pros::delay({MS});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+            "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+            "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+            "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+            "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+            "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+            "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
+            "reshape_on": "matchloadPistons.set_value({STATE});",
+            "reshape_off": "matchloadPistons.set_value({STATE});",
+            "reshape": "matchloadPistons.set_value({STATE});",
+            "reverse_on": "// reverse handled per-command",
+            "reverse_off": "// reverse handled per-command",
+            "tbuffer": "pros::delay({MS});",
+            "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+            "marker_wait_done": "chassis.waitUntilDone();",
+            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
+            "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
+        },
+        "LemLib": {
+            "wait": "pros::delay({MS});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+            "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+            "reshape_on": "matchloadPistons.set_value({STATE});",
+            "reshape_off": "matchloadPistons.set_value({STATE});",
+            "reshape": "matchloadPistons.set_value({STATE});",
+            "reverse_on": "// reverse handled per-command",
+            "reverse_off": "// reverse handled per-command",
+            "tbuffer": "pros::delay({MS});",
+            "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+            "marker_wait_done": "chassis.waitUntilDone();",
+            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {.forwards = {FORWARDS}}, {ASYNC});",
             "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
         },
         "JAR": dict(_jar_defaults),
@@ -6252,7 +8263,8 @@ def open_settings_window():
             "path_dir": "export/paths",
             "path_columns": "{X}, {Y}, {COMMAND}",
             "mech_presets": [
-            {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False}
+            {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False},
+            {"name": "DSR", "mode": "action", "template": "", "on": "", "off": "", "default": False}
         ],
         "calibration": {
             "enabled": 0,
@@ -6270,15 +8282,12 @@ def open_settings_window():
         }
     })
 
-    if not any(str(p.get("name", "")).strip().lower() == "reshape" for p in CFG["codegen"].get("mech_presets", [])):
-        CFG["codegen"].setdefault("mech_presets", []).append(
-            {"name": "reshape", "mode": "toggle", "template": "", "on": "", "off": "", "default": False}
-        )
+    _ensure_locked_mech_presets(CFG)
 
     def _default_optional_for_style(style_name: str):
         """Handle default optional for style."""
         base = ["setpose", "path_follow"]
-        if style_name != "LemLib":
+        if style_name not in ("LemLib", "Atticus", "AttLib"):
             base += ["pose", "swing"]
         return base
 
@@ -6303,16 +8312,46 @@ def open_settings_window():
         opt_cfg["default_swing_early_exit_migrated"] = 1
     migrate_path_follow = not bool(opt_cfg.get("path_follow_optional_migrated", False))
     migrate_reshape_split = not bool(opt_cfg.get("reshape_split_templates_migrated", False))
+    migrate_async_syntax = not bool(opt_cfg.get("async_template_syntax_migrated", False))
+    migrate_turn_swing_forwards = not bool(opt_cfg.get("turn_swing_forwards_template_migrated", False))
+    legacy_turn_swing_tpls = {
+        "AttLib": {
+            "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, attlib::DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = attlib::AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+        },
+        "LemLib": {
+            "turn_global": (
+                "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            ),
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+        },
+    }
     for _style, _tpl in codegen_defaults.items():
         CFG["codegen"].setdefault("templates", {}).setdefault(_style, dict(_tpl))
         CFG["codegen"]["templates"].setdefault(_style, {}).setdefault("__optional__", _default_optional_for_style(_style))
+        tpl_map = CFG["codegen"]["templates"].get(_style, {})
+        if migrate_turn_swing_forwards and isinstance(tpl_map, dict):
+            legacy_map = legacy_turn_swing_tpls.get(_style, {})
+            for _tpl_key, _legacy_val in legacy_map.items():
+                _current = tpl_map.get(_tpl_key)
+                if isinstance(_legacy_val, (tuple, list, set)):
+                    _match = _current in _legacy_val
+                else:
+                    _match = (_current == _legacy_val)
+                if _match:
+                    tpl_map[_tpl_key] = _tpl.get(_tpl_key, _legacy_val)
+        if migrate_async_syntax and isinstance(tpl_map, dict):
+            for _tpl_key, _tpl_val in list(tpl_map.items()):
+                if isinstance(_tpl_val, str) and "async = {ASYNC}" in _tpl_val:
+                    tpl_map[_tpl_key] = _tpl_val.replace("async = {ASYNC}", "{ASYNC}")
         if migrate_path_follow:
             opt_list = CFG["codegen"]["templates"].get(_style, {}).get("__optional__", [])
-            tpl_map = CFG["codegen"]["templates"].get(_style, {})
             if isinstance(opt_list, list) and "path_follow" not in opt_list and "path_follow" in tpl_map:
                 opt_list.append("path_follow")
         if migrate_reshape_split:
-            tpl_map = CFG["codegen"]["templates"].get(_style, {})
             if isinstance(tpl_map, dict):
                 legacy = tpl_map.get("reshape")
                 if legacy:
@@ -6331,15 +8370,21 @@ def open_settings_window():
         opt_cfg["path_follow_optional_migrated"] = True
     if migrate_reshape_split:
         opt_cfg["reshape_split_templates_migrated"] = True
+    if migrate_async_syntax:
+        opt_cfg["async_template_syntax_migrated"] = True
+    if migrate_turn_swing_forwards:
+        opt_cfg["turn_swing_forwards_template_migrated"] = True
 
     if str(CFG.get("codegen", {}).get("style", "")).strip().lower() == "pros":
         CFG.setdefault("codegen", {})["style"] = "Custom"
 
-    style_labels = ["Action List", "LemLib", "JAR", "JAR (advanced)", "Custom"]
+    style_labels = ["Atticus", "Action List", "LemLib", "JAR", "JAR (advanced)", "Custom"]
     style_raw = CFG.get("codegen", {}).get("style", "JAR")
     if isinstance(style_raw, dict):
         style_raw = style_raw.get("value", "JAR")
     style_name = str(style_raw).strip() or "JAR"
+    if style_name == "AttLib":
+        style_name = "Atticus"
     if style_name not in style_labels:
         style_name = "JAR"
     codegen_style_var = tk.StringVar(value=style_name)
@@ -6355,11 +8400,12 @@ def open_settings_window():
         "X_IN", "Y_IN", "DIST_IN", "DIST_ROT", "DIST_DEG", "DIST_TICKS",
         "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
         "TARGET_X_IN", "TARGET_Y_IN",
-        "FORWARDS", "FORWARD_PARAM", "DIR",
+        "FORWARDS", "FORWARD_PARAM", "ASYNC", "DIR",
         "SIDE", "SIDE_LC", "LOCKED_SIDE", "LOCKED_SIDE_LC",
         "LOOKAHEAD",
         "PATH_NAME", "PATH_FILE", "PATH_ASSET",
         "MOVE_SPEED", "TURN_SPEED", "PATH_MIN_SPEED", "PATH_MAX_SPEED",
+        "DRIVE_MAX_SPEED",
         "DRIVE_MAX_V", "HEADING_MAX_V", "TURN_MAX_V", "SWING_MAX_V",
         "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
         "TURN_SETTLE_ERR", "TURN_SETTLE_TIME",
@@ -7030,7 +9076,7 @@ def open_settings_window():
                 ident += "_auton"
             return ident
 
-        style_options = ["JAR", "JAR (advanced)", "LemLib", "Custom"]
+        style_options = ["Atticus", "JAR", "JAR (advanced)", "LemLib", "Custom"]
         style_default = codegen_style_var.get()
         if style_default not in style_options:
             style_default = "JAR"
@@ -7398,7 +9444,7 @@ def open_settings_window():
                                     tpls[k] = v
                         modes = tpl_source.get("__modes__", {}) if isinstance(tpl_source, dict) else {}
                         move_key = modes.get("motion", "move")
-                        turn_key = modes.get("turn", "turn_global" if style == "LemLib" else "turn_local")
+                        turn_key = modes.get("turn", "turn_global" if style in ("LemLib", "Atticus", "AttLib") else "turn_local")
                         if move_key not in tpls:
                             move_key = "move" if "move" in tpls else next(iter(tpls.keys()))
                         if turn_key not in tpls:
@@ -7484,6 +9530,7 @@ def open_settings_window():
                             "MS": "timeout_ms",
                             "S": "timeout_ms / 1000.0",
                             "FORWARDS": "forwards",
+                            "ASYNC": "false",
                             "HEADING_DEG": "heading_deg",
                             "TURN_DELTA_DEG": "delta_deg",
                             "LOOKAHEAD": "0",
@@ -7502,6 +9549,9 @@ def open_settings_window():
                             "TIMEOUT_S": "timeout_ms / 1000.0",
                             "MS": "timeout_ms",
                             "S": "timeout_ms / 1000.0",
+                            "FORWARDS": "true",
+                            "FORWARD_PARAM": "{.forwards = true}",
+                            "ASYNC": "false",
                             "DIR": "CW_CLOCKWISE",
                             "SIDE": "LEFT",
                             "TURN_MAX_V": "turn_max_v",
@@ -8183,7 +10233,7 @@ def open_settings_window():
         """Handle default modes."""
         return {
             "motion": "move",
-            "turn": "turn_global" if style_name == "LemLib" else "turn_local"
+            "turn": "turn_global" if style_name in ("LemLib", "Atticus", "AttLib") else "turn_local"
         }
 
     def _current_modes(style_name: str):
@@ -8203,7 +10253,7 @@ def open_settings_window():
         """Set modes."""
         CFG.setdefault("codegen", {}).setdefault("templates", {}).setdefault(style_name, {})["__modes__"] = dict(modes)
         motion_mode_var.set(modes.get("motion", "move"))
-        turn_mode_var.set(modes.get("turn", "turn_global" if style_name == "LemLib" else "turn_local"))
+        turn_mode_var.set(modes.get("turn", "turn_global" if style_name in ("LemLib", "Atticus", "AttLib") else "turn_local"))
         return modes
 
     def _fill_tpl_vars_for(style_name: str):
@@ -8458,35 +10508,35 @@ def open_settings_window():
                 "tbuffer": ["MS", "S", "TIMEOUT_MS", "TIMEOUT_S"],
                 "move": [
                     "X_IN", "Y_IN", "DIST_IN", "DIST_ROT", "DIST_DEG", "DIST_TICKS",
-                    "HEADING_DEG", "HEADING_RAD", "FORWARDS", "FORWARD_PARAM", "MOVE_SPEED",
+                    "HEADING_DEG", "HEADING_RAD", "FORWARDS", "FORWARD_PARAM", "ASYNC", "MOVE_SPEED",
                     "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
                     "DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
                     "DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT", "LEAD_IN"
                 ],
                 "pose": [
                     "X_IN", "Y_IN", "DIST_IN", "DIST_ROT", "DIST_DEG", "DIST_TICKS",
-                    "HEADING_DEG", "HEADING_RAD", "FORWARDS", "FORWARD_PARAM", "LEAD_IN", "MOVE_SPEED",
+                    "HEADING_DEG", "HEADING_RAD", "FORWARDS", "FORWARD_PARAM", "ASYNC", "LEAD_IN", "MOVE_SPEED",
                     "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
                     "DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
                     "DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT"
                 ],
                 "turn_global": [
                     "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
-                    "TARGET_X_IN", "TARGET_Y_IN", "TURN_SPEED",
+                    "TARGET_X_IN", "TARGET_Y_IN", "FORWARDS", "FORWARD_PARAM", "ASYNC", "TURN_SPEED",
                     "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
                     "TURN_MAX_V", "TURN_SETTLE_ERR", "TURN_SETTLE_TIME",
                     "TURN_MIN_SPEED", "TURN_EARLY_EXIT"
                 ],
                 "turn_local": [
                     "TURN_DELTA_DEG", "TURN_DELTA_RAD", "HEADING_DEG", "HEADING_RAD",
-                    "TARGET_X_IN", "TARGET_Y_IN", "TURN_SPEED",
+                    "TARGET_X_IN", "TARGET_Y_IN", "FORWARDS", "FORWARD_PARAM", "ASYNC", "TURN_SPEED",
                     "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
                     "TURN_MAX_V", "TURN_SETTLE_ERR", "TURN_SETTLE_TIME",
                     "TURN_MIN_SPEED", "TURN_EARLY_EXIT"
                 ],
                 "swing": [
                     "HEADING_DEG", "HEADING_RAD", "TURN_DELTA_DEG", "TURN_DELTA_RAD",
-                    "TARGET_X_IN", "TARGET_Y_IN", "DIR",
+                    "TARGET_X_IN", "TARGET_Y_IN", "FORWARDS", "FORWARD_PARAM", "ASYNC", "DIR",
                     "SIDE", "SIDE_LC", "LOCKED_SIDE", "LOCKED_SIDE_LC",
                     "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
                     "SWING_MAX_V", "SWING_SETTLE_ERR", "SWING_SETTLE_TIME",
@@ -8495,7 +10545,7 @@ def open_settings_window():
                 "path_follow": [
                     "PATH_NAME", "PATH_FILE", "PATH_ASSET", "LOOKAHEAD",
                     "TIMEOUT_MS", "TIMEOUT_S", "MS", "S",
-                    "FORWARDS", "FORWARD_PARAM", "PATH_MIN_SPEED", "PATH_MAX_SPEED",
+                    "FORWARDS", "FORWARD_PARAM", "ASYNC", "PATH_MIN_SPEED", "PATH_MAX_SPEED",
                     "DRIVE_MAX_V", "HEADING_MAX_V", "DRIVE_SETTLE_ERR", "DRIVE_SETTLE_TIME",
                     "DRIVE_MIN_SPEED", "DRIVE_EARLY_EXIT"
                 ],
@@ -8538,7 +10588,7 @@ def open_settings_window():
 
         def _active_cmds_for_builder():
             """Handle active cmds for builder."""
-            turn_key = turn_choice_var.get() or ("turn_global" if style == "LemLib" else "turn_local")
+            turn_key = turn_choice_var.get() or ("turn_global" if style in ("LemLib", "Atticus", "AttLib") else "turn_local")
             base_cmds = ["wait", "move", "pose", turn_key, "tbuffer"]
             optional_cmds = [k for k in optional_pool if opt_vars.get(k) and opt_vars[k].get()]
             return base_cmds + optional_cmds
@@ -8767,17 +10817,15 @@ def open_settings_window():
         if not isinstance(presets, list):
             presets = []
             CFG["codegen"]["mech_presets"] = presets
+        _ensure_locked_mech_presets(CFG)
         for p in presets:
             if not isinstance(p, dict):
                 continue
-            if str(p.get("name", "")).strip().lower() != "reshape":
+            locked_key = _locked_mech_preset_key(p.get("name", ""))
+            if locked_key is None:
                 continue
-            p["name"] = "reshape"
-            p["mode"] = "toggle"
-            p["default"] = False
-            p["template"] = ""
-            p["on"] = ""
-            p["off"] = ""
+            p.clear()
+            p.update(_locked_mech_preset_spec(locked_key))
             p["cases"] = []
             p["case_default"] = ""
 
@@ -9055,7 +11103,7 @@ def open_settings_window():
             text="Hint: {VALUE} = all values after the preset name; {VALUE1}/{VALUE2}/{VALUE3} = first three.\n"
                  "Toggle templates also get {STATE} (on/off). Cases use Trigger + Output rows.\n"
                  "Use \\n in template text to force a line break in exported output.\n"
-                 "Reshape is locked here; edit reshape_on/reshape_off in Template Editor."
+                 f"Reshape and DSR are locked here. DSR emits a distance reset; use it while settled about {ATTICUS_DSR_RECOMMENDED_STILL_MS:g} ms."
         )
         hint_lbl.grid(row=8, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
@@ -9104,7 +11152,7 @@ def open_settings_window():
             idx = current_idx.get("idx")
             if idx is None or idx >= len(presets):
                 return False
-            return str(presets[idx].get("name", "")).strip().lower() == "reshape"
+            return _locked_mech_preset_key(presets[idx].get("name", "")) is not None
 
         def _refresh_mode_visibility():
             """Handle refresh mode visibility."""
@@ -9175,15 +11223,16 @@ def open_settings_window():
             if idx is None or idx >= len(presets):
                 return
             preset = presets[idx]
-            is_reshape = str(preset.get("name", "")).strip().lower() == "reshape"
-            if is_reshape:
-                name = "reshape"
-                mode = "toggle"
+            locked_key = _locked_mech_preset_key(preset.get("name", ""))
+            if locked_key is not None:
+                locked_spec = _locked_mech_preset_spec(locked_key)
+                name = locked_spec.get("name", "")
+                mode = str(locked_spec.get("mode", "action"))
                 default = False
                 template = ""
                 on_tpl = ""
                 off_tpl = ""
-                mode_var.set("Toggle")
+                mode_var.set("Toggle" if mode == "toggle" else "Action")
                 default_var.set(0)
                 _set_text(action_text, "")
                 _set_text(on_text, "")
@@ -9254,7 +11303,7 @@ def open_settings_window():
             if not sel:
                 return
             idx = sel[0]
-            if str(presets[idx].get("name", "")).strip().lower() == "reshape":
+            if _locked_mech_preset_key(presets[idx].get("name", "")) is not None:
                 return
             presets.pop(idx)
             current_idx["idx"] = None
@@ -9322,18 +11371,18 @@ def open_settings_window():
         
         help_map = {
             "wait": "{MS} or {S} delay tokens. TIMEOUT_MS/S include pad- and min floor.",
-            "move": "{DIST_IN}/{X_IN},{Y_IN} {FORWARDS}; {HEADING_DEG} (global) optional; {MOVE_SPEED} optional cmd (0-127) override.",
-            "turn_global": "Field heading {HEADING_DEG}; target point {TARGET_X_IN},{TARGET_Y_IN}; {TURN_SPEED} optional dps.",
-            "turn_local": "Relative turn {TURN_DELTA_DEG}; target point {TARGET_X_IN},{TARGET_Y_IN}; {TURN_SPEED} optional dps.",
-            "pose": "{X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}; {FORWARDS}.",
+            "move": "{DIST_IN}/{X_IN},{Y_IN} {FORWARDS}; {HEADING_DEG} (global) optional; {ASYNC}; {MOVE_SPEED} optional cmd (0-127) override.",
+            "turn_global": "Field heading {HEADING_DEG}; target point {TARGET_X_IN},{TARGET_Y_IN}; {FORWARDS}; {ASYNC}; {TURN_SPEED} optional dps.",
+            "turn_local": "Relative turn {TURN_DELTA_DEG}; target point {TARGET_X_IN},{TARGET_Y_IN}; {FORWARDS}; {ASYNC}; {TURN_SPEED} optional dps.",
+            "pose": "{X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}; {FORWARDS}; {ASYNC}.",
             "setpose": "Set initial pose {X_IN},{Y_IN},{HEADING_DEG}",
             "reshape_on": "Reshape ON command template; {STATE}=ON value for selected output mode.",
             "reshape_off": "Reshape OFF command template; {STATE}=OFF value for selected output mode.",
             "reverse_on": "Toggle reverse drive ON",
             "reverse_off": "Toggle reverse drive OFF",
             "tbuffer": "{MS} or {S} for buffer wait",
-            "path_follow": "Tokens: {PATH_NAME}, {PATH_FILE}, {PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS}, {PATH_MIN_SPEED}, {PATH_MAX_SPEED} (cmd 0-127).",
-            "swing": "{HEADING_DEG} target, point {TARGET_X_IN},{TARGET_Y_IN}, {DIR}=AUTO/CW_CLOCKWISE/CCW_COUNTERCLOCKWISE, {SIDE}=LEFT/RIGHT/AUTO, {LOCKED_SIDE}=RIGHT/LEFT/AUTO {TIMEOUT_MS}.",
+            "path_follow": "Tokens: {PATH_NAME}, {PATH_FILE}, {PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS}, {ASYNC}, {PATH_MIN_SPEED}, {PATH_MAX_SPEED} (cmd 0-127).",
+            "swing": "{HEADING_DEG} target, point {TARGET_X_IN},{TARGET_Y_IN}, {FORWARDS}, {ASYNC}, {DIR}=AUTO/CW_CLOCKWISE/CCW_COUNTERCLOCKWISE, {SIDE}=LEFT/RIGHT/AUTO, {LOCKED_SIDE}=RIGHT/LEFT/AUTO {TIMEOUT_MS}.",
             "marker_wait": "Edge marker wait: {MARKER_DIST_IN} inches (or use {MARKER_FRAC} 0-1).",
             "marker_wait_done": "Finish motion after markers (e.g. waitUntilDone)."
         }
@@ -9348,7 +11397,7 @@ def open_settings_window():
             help_map["turn_local"] += " JAR: {TURN_MAX_V}, {TURN_SETTLE_ERR}, {TURN_SETTLE_TIME}." + adv_turn_note
             help_map["swing"] += " JAR: {SWING_MAX_V}, {SWING_SETTLE_ERR}, {SWING_SETTLE_TIME}." + adv_swing_note
         
-        turn_key = modes.get("turn") or ("turn_global" if style == "LemLib" else "turn_local")
+        turn_key = modes.get("turn") or ("turn_global" if style in ("LemLib", "Atticus", "AttLib") else "turn_local")
         base_cmds = ["wait", "move", "pose", turn_key, "tbuffer"]
         active_cmds = base_cmds + active_optional
         
@@ -9460,13 +11509,29 @@ def open_settings_window():
             "default_swing_settle_early_exit": _f_or(default_settle_swing_exit_var, 0.0),
             "omit_defaults": int(omit_defaults_var.get())
         })
+        CFG["codegen"].setdefault("attlib_sim", {}).update({
+            "visual_run": int(attlib_sim_visual_var.get()),
+            "module_dir": attlib_sim_module_dir_var.get().strip() or _default_attlib_sim_module_dir(),
+            "source": "external_script" if int(attlib_sim_external_var.get()) else "timeline",
+            "routine_script": attlib_sim_script_var.get().strip() or _default_attlib_sim_routine_script(),
+            "routine_function": attlib_sim_func_var.get().strip() or "run_routine",
+        })
         tpl_panel.after(0, _bind_tpl_live_handlers)
 
     def _on_style_change(_=None):
         """Handle style dropdown change."""
         _rebuild_tpl_panel()
         _refresh_jar_defaults_visibility()
+        _refresh_attlib_general_visibility()
+
+    def _refresh_attlib_general_visibility(_evt=None):
+        """Keep AttLibSim helper visible in General settings."""
+        try:
+            attlib_sim_frame.grid()
+        except Exception:
+            pass
     style_widget.bind("<<ComboboxSelected>>", _on_style_change)
+    _refresh_attlib_general_visibility()
 
     def _bind_live_handlers():
         """Attach live update events to tracked widgets."""
@@ -9491,6 +11556,8 @@ def open_settings_window():
             global CFG, moving, paused, timeline, seg_i, t_local, last_logged_seg
             global robot_pos, robot_heading, last_path_sig, last_snapshot, total_estimate_s
             global path_lookahead_enabled, path_lookahead_px, last_lookahead_radius
+            global attlib_sim_visual_run, attlib_sim_module_dir, attlib_sim_source
+            global attlib_sim_routine_script, attlib_sim_routine_func
             
             CFG["field_centric"] = 1
             CFG["distance_units"] = dist_map[dist_var.get()]
@@ -9547,9 +11614,16 @@ def open_settings_window():
             bd["reshape_length"] = float(rs_l.get())
             bd["reshape_offset_x_in"] = float(rs_off_x.get())
             bd["reshape_offset_y_in"] = float(rs_off_y.get())
+            bd["advanced_geometry"] = {
+                "enabled": int(bool(advanced_geometry_state.get("enabled", 0))),
+                "symmetry": int(bool(advanced_geometry_state.get("symmetry", 0))),
+                "points": _sanitize_advanced_poly(advanced_geometry_state.get("points", [])),
+                "reshape_points": _sanitize_advanced_poly(advanced_geometry_state.get("reshape_points", [])),
+            }
             
             CFG["offsets"]["offset_1_in"] = float(off1.get())
             CFG["offsets"]["offset_2_in"] = float(off2.get())
+            CFG["offsets"]["offset_3_in"] = float(off3.get())
             CFG["offsets"]["padding_in"] = float(pad.get())
             
             pc = CFG.setdefault("path_config", {})
@@ -9568,17 +11642,21 @@ def open_settings_window():
             path_lookahead_px = max(0.0, float(pc.get("lookahead_in", auto_lookahead_in(CFG))) * PPI)
             last_lookahead_radius = path_lookahead_px
 
-            mcl = CFG.setdefault("mcl", {})
-            prev_ekf = mcl.get("ekf")
+            mcl = CFG.get("atticus", CFG.get("mcl", {}))
+            if not isinstance(mcl, dict):
+                mcl = {}
+            CFG["atticus"] = mcl
+            CFG["mcl"] = mcl
+            prev_ekf = mcl.get("ekf") if isinstance(mcl.get("ekf"), dict) else {}
             def _mcl_f(var, default=0.0):
-                """Handle mcl f."""
+                """Parse a float-like settings field without aborting apply."""
                 try:
                     return float(var.get())
                 except Exception:
                     return float(default)
 
             def _mcl_i(var, default=0):
-                """Handle mcl i."""
+                """Parse an int-like settings field without aborting apply."""
                 try:
                     return int(var.get())
                 except Exception:
@@ -9587,76 +11665,27 @@ def open_settings_window():
                     except Exception:
                         return int(default)
 
-            def _mcl_obj_mode():
-                """Handle mcl obj mode."""
-                mode = str(mcl_region_obj_var.get() or "off").strip().lower()
-                if mode in ("soft", "clip", "penalty"):
-                    return 1
-                if mode in ("hard", "reject"):
-                    return 2
-                return 0
-
-            resample_always = res_cfg.get("always", 0)
-            try:
-                resample_always = int(resample_always)
-            except Exception:
-                resample_always = 0
-            vision_sim_conf = vision_cfg.get("sim_confidence", 1.0)
-            try:
-                vision_sim_conf = float(vision_sim_conf)
-            except Exception:
-                vision_sim_conf = 1.0
-            recovery_cfg = mcl_cfg.get("recovery", {}) if isinstance(mcl_cfg, dict) else {}
-            mode_split_cfg = mcl_cfg.get("mode_split", {}) if isinstance(mcl_cfg, dict) else {}
-            region_sample_attempts = region_cfg.get("sample_attempts", 50)
-            try:
-                region_sample_attempts = int(region_sample_attempts)
-            except Exception:
-                region_sample_attempts = 50
-
             mcl["enabled"] = _mcl_i(mcl_enabled_var, 0)
             mcl["config_version"] = int(MCL_CONFIG_VERSION)
-            mcl["loop_ms"] = float(mcl_cfg.get("loop_ms", 10.0))
+            mcl["loop_ms"] = float(mcl_cfg.get("loop_ms", 20.0))
             mcl["stall_ms"] = float(mcl_cfg.get("stall_ms", max(1.0, 2.0 * mcl["loop_ms"])))
-            mcl["motion_ms"] = _mcl_f(mcl_motion_ms_var, 10.0)
-            mcl["sensor_ms"] = _mcl_f(mcl_sensor_ms_var, 50.0)
-            mcl["particles"] = {
-                "n": _mcl_i(mcl_particles_n_var, 350),
-                "n_min": _mcl_i(mcl_particles_min_var, 250),
-                "n_max": _mcl_i(mcl_particles_max_var, 500),
-            }
-            mcl["resample"] = {
-                "method": str(mcl_resample_method_var.get() or "systematic").strip().lower(),
-                "threshold": _mcl_f(mcl_resample_thresh_var, 0.5),
-                "always": resample_always,
-                "roughen_xy_in": float(res_cfg.get("roughen_xy_in", 0.12)),
-                "roughen_theta_deg": float(res_cfg.get("roughen_theta_deg", 1.2)),
-            }
-            mcl["kld"] = {
-                "enabled": _mcl_i(mcl_kld_enabled_var, 0),
-                "epsilon": _mcl_f(mcl_kld_eps_var, 0.05),
-                "delta": _mcl_f(mcl_kld_delta_var, 0.99),
-                "bin_xy_in": _mcl_f(mcl_kld_bin_xy_var, 2.0),
-                "bin_theta_deg": _mcl_f(mcl_kld_bin_theta_var, 10.0),
-            }
-            mcl["augmented"] = {
-                "enabled": _mcl_i(mcl_aug_enabled_var, 0),
-                "alpha_slow": _mcl_f(mcl_alpha_slow_var, 0.001),
-                "alpha_fast": _mcl_f(mcl_alpha_fast_var, 0.1),
-            }
-            mcl["random_injection"] = _mcl_f(mcl_random_injection_var, 0.01)
+            mcl["motion_ms"] = _mcl_f(mcl_motion_ms_var, 20.0)
+            mcl["sensor_ms"] = _mcl_f(mcl_sensor_ms_var, 20.0)
             mcl["motion"] = {
                 "enabled": _mcl_i(mcl_motion_enabled_var, 1),
                 "motion_model": "drive",
                 "motion_source": "encoders",
-                "use_alpha_model": _mcl_i(mcl_use_alpha_var, 0),
-                "sigma_x_in": _mcl_f(mcl_sigma_x_var, 0.1275),
-                "sigma_y_in": _mcl_f(mcl_sigma_y_var, 0.1275),
-                "sigma_theta_deg": _mcl_f(mcl_sigma_theta_var, 1.0),
-                "alpha1": _mcl_f(mcl_alpha1_var, 0.05),
-                "alpha2": _mcl_f(mcl_alpha2_var, 0.05),
-                "alpha3": _mcl_f(mcl_alpha3_var, 0.05),
-                "alpha4": _mcl_f(mcl_alpha4_var, 0.05),
+                "sigma_x_in": _mcl_f(mcl_sigma_x_var, 0.08),
+                "sigma_y_in": _mcl_f(mcl_sigma_y_var, 0.08),
+                "sigma_theta_deg": _mcl_f(mcl_sigma_theta_var, 0.7),
+                "sigma_x_per_in": _mcl_f(mcl_sigma_x_per_var, 0.02),
+                "sigma_y_per_in": _mcl_f(mcl_sigma_y_per_var, 0.03),
+                "sigma_theta_per_deg": _mcl_f(mcl_sigma_theta_per_var, 0.05),
+                "no_horizontal_lateral_scale": _mcl_f(mcl_no_horizontal_scale_var, 2.5),
+                "turn_lateral_scale": _mcl_f(mcl_turn_lateral_scale_var, 2.0),
+                "rough_wall_sigma_x_scale": _mcl_f(mcl_rough_wall_sigma_x_scale_var, 1.8),
+                "rough_wall_sigma_y_scale": _mcl_f(mcl_rough_wall_sigma_y_scale_var, 3.5),
+                "rough_wall_sigma_theta_scale": _mcl_f(mcl_rough_wall_sigma_theta_scale_var, 1.25),
                 "delta_guard_enabled": int(motion_cfg.get("delta_guard_enabled", 1)),
                 "max_dx_in_per_tick": float(motion_cfg.get("max_dx_in_per_tick", 0.0)),
                 "max_dy_in_per_tick": float(motion_cfg.get("max_dy_in_per_tick", 0.0)),
@@ -9668,6 +11697,9 @@ def open_settings_window():
                 "fault_inflate_cycles": int(motion_cfg.get("fault_inflate_cycles", 2)),
                 "fault_noise_scale": float(motion_cfg.get("fault_noise_scale", 2.5)),
             }
+            mcl["tracking"] = {
+                "horizontal_enabled": 1 if str(mcl_horizontal_odom_var.get() or "").strip().lower() == "enabled" else 0,
+            }
             mcl["set_pose_sigma_xy_in"] = _mcl_f(mcl_set_pose_xy_var, 0.2)
             mcl["set_pose_sigma_theta_deg"] = _mcl_f(mcl_set_pose_theta_var, 2.0)
             mcl["interop"] = {
@@ -9676,23 +11708,16 @@ def open_settings_window():
                 "invert_x": _mcl_i(mcl_pose_invert_x_var, 0),
                 "invert_y": _mcl_i(mcl_pose_invert_y_var, 0),
             }
-            dist_model_save = str(mcl_dist_model_var.get() or "likelihood_field").strip().lower()
-            if dist_model_save not in ("likelihood_field", "beam"):
-                dist_model_save = "likelihood_field"
             dist_fov_multi = int(dist_cfg.get("fov_multi_ray", 1))
             dist_rays_per_sensor = int(dist_cfg.get("rays_per_sensor", 3))
-            if dist_model_save != "likelihood_field":
-                # Keep beam mode deterministic/bounded by forcing single-ray updates.
-                dist_fov_multi = 0
-                dist_rays_per_sensor = 1
             mcl["sensors"] = {
                 "distance": {
                     "enabled": _mcl_i(mcl_dist_enabled_var, 1),
-                    "model": dist_model_save,
+                    "model": "likelihood_field",
                     "sigma_hit_mm": _mcl_f(mcl_dist_sigma_var, 15.0),
                     "sigma_far_scale": float(dist_cfg.get("sigma_far_scale", 0.05)),
-                    "sigma_min_mm": float(dist_cfg.get("sigma_min_mm", 8.0)),
-                    "sigma_max_mm": float(dist_cfg.get("sigma_max_mm", 120.0)),
+                    "sigma_min_mm": float(dist_cfg.get("sigma_min_mm", 15.0)),
+                    "sigma_max_mm": float(dist_cfg.get("sigma_max_mm", 100.0)),
                     "conf_sigma_scale": float(dist_cfg.get("conf_sigma_scale", 1.0)),
                     "min_sensor_weight": float(dist_cfg.get("min_sensor_weight", 1e-6)),
                     "w_hit": _mcl_f(mcl_dist_w_hit_var, 0.9),
@@ -9705,7 +11730,7 @@ def open_settings_window():
                     "confidence_min": _mcl_f(mcl_dist_conf_min_var, 0.0),
                     "object_size_min": _mcl_f(mcl_dist_obj_size_min_var, 0.0),
                     "object_size_max": _mcl_f(mcl_dist_obj_size_max_var, 0.0),
-                    "innovation_gate_mm": _mcl_f(mcl_dist_innov_gate_var, 0.0),
+                    "innovation_gate_mm": _mcl_f(mcl_dist_innov_gate_var, 180.0),
                     "median_window": _mcl_f(mcl_dist_median_window_var, 3),
                     "batch_size": int(dist_cfg.get("batch_size", 3)),
                     "lf_ignore_max": _mcl_i(mcl_dist_ignore_max_var, 0),
@@ -9716,7 +11741,7 @@ def open_settings_window():
                     "fov_half_deg_far": float(dist_cfg.get("fov_half_deg_far", 12.0)),
                     "fov_switch_mm": float(dist_cfg.get("fov_switch_mm", 203.0)),
                     "raycast_bucket_in": float(dist_cfg.get("raycast_bucket_in", 12.0)),
-                    "gate_mm": _mcl_f(mcl_dist_gate_var, 150.0),
+                    "gate_mm": _mcl_f(mcl_dist_gate_var, 180.0),
                     "gate_mode": str(mcl_dist_gate_mode_var.get() or "hard").strip(),
                     "gate_penalty": _mcl_f(mcl_dist_gate_penalty_var, 0.05),
                     "gate_reject_ratio": _mcl_f(mcl_dist_gate_reject_var, 0.9),
@@ -9730,13 +11755,6 @@ def open_settings_window():
                     "sigma_deg": _mcl_f(mcl_imu_sigma_var, 1.0),
                     "check_calibrating": int(imu_cfg.get("check_calibrating", 1)),
                     "fallback_noise_scale": float(imu_cfg.get("fallback_noise_scale", 2.0)),
-                },
-                "vision": {
-                    "enabled": _mcl_i(mcl_vision_enabled_var, 0),
-                    "sigma_xy_in": _mcl_f(mcl_vision_sigma_var, 2.0),
-                    "sigma_theta_deg": _mcl_f(mcl_vision_theta_sigma_var, 5.0),
-                    "confidence_min": _mcl_f(mcl_vision_conf_min_var, 0.0),
-                    "sim_confidence": vision_sim_conf,
                 }
             }
             dist_sensors = []
@@ -9757,8 +11775,8 @@ def open_settings_window():
                     "min_confidence": _mcl_f(sv["min_confidence"], 0.0),
                     "min_object_size": _mcl_f(sv["min_object_size"], 0.0),
                     "max_object_size": _mcl_f(sv["max_object_size"], 0.0),
-                    "innovation_gate_mm": _mcl_f(sv["innovation_gate_mm"], 0.0),
-                    "map_mode": str(sv["map_mode"].get() or "both").strip(),
+                    "innovation_gate_mm": _mcl_f(sv["innovation_gate_mm"], 180.0),
+                    "map_mode": str(sv["map_mode"].get() or "perimeter").strip(),
                     "enabled": enabled,
                 })
             mcl["sensor_geometry"] = {"distance_sensors": dist_sensors}
@@ -9779,101 +11797,55 @@ def open_settings_window():
                 sensor_object_visibility[str(idx)] = dict(vis_payload)
                 sensor_object_visibility[sensor_name] = dict(vis_payload)
             mcl["sensor_object_visibility"] = sensor_object_visibility
-            obj_mode = _mcl_obj_mode()
-            region = {
-                "enabled": _mcl_i(mcl_region_enabled_var, 1),
-                "mode": str(mcl_region_mode_var.get() or "hard").strip(),
-                "type": str(mcl_region_type_var.get() or "segment_path").strip(),
-                "update_mode": str(mcl_region_update_var.get() or "segment_path").strip(),
-                "penalty": _mcl_f(mcl_region_penalty_var, 0.2),
-                "perimeter_gate": _mcl_i(mcl_region_perim_var, 1),
-                "object_gate": 1 if obj_mode == 2 else 0,
-                "object_mode": obj_mode,
-                "grid_type": str(mcl_region_grid_type_var.get() or "quadrant").strip(),
-                "grid_x": _mcl_i(mcl_region_grid_x_var, 2),
-                "grid_y": _mcl_i(mcl_region_grid_y_var, 2),
-                "x_min_in": _mcl_f(mcl_region_x_min_var, 0.0),
-                "x_max_in": _mcl_f(mcl_region_x_max_var, 144.0),
-                "y_min_in": _mcl_f(mcl_region_y_min_var, 0.0),
-                "y_max_in": _mcl_f(mcl_region_y_max_var, 144.0),
-                "radius_in": _mcl_f(mcl_region_radius_var, 12.0),
-                "slope_enabled": _mcl_i(mcl_region_slope_var, 0),
-                "slope_sigma_deg": _mcl_f(mcl_region_slope_sigma_var, 20.0),
-                "sample_attempts": region_sample_attempts,
-            }
-            cur_text = str(mcl_region_current_var.get() or "").strip()
-            if cur_text:
-                parts = [p.strip() for p in cur_text.replace(";", ",").split(",") if p.strip()]
-                if len(parts) == 1:
-                    try:
-                        region["current_region"] = int(parts[0])
-                    except Exception:
-                        region["current_region"] = parts[0]
-                else:
-                    vals = []
-                    for p in parts:
-                        try:
-                            vals.append(int(p))
-                        except Exception:
-                            continue
-                    if vals:
-                        region["current_region"] = vals
-            mcl["region"] = region
-            mcl["confidence"] = {
-                "threshold": _mcl_f(mcl_conf_thresh_var, 0.0),
-                "auto_reinit": _mcl_i(mcl_conf_auto_var, 0),
-                "reinit_mode": str(mcl_conf_mode_var.get() or "global").strip(),
-            }
-            mcl["mode_split"] = {
-                "enabled": int(mode_split_cfg.get("enabled", 1)),
-                "conf_max": float(mode_split_cfg.get("conf_max", 0.55)),
-                "min_separation_in": float(mode_split_cfg.get("min_separation_in", 8.0)),
-                "min_mass": float(mode_split_cfg.get("min_mass", 0.15)),
-            }
-            mcl["cgr_lite"] = {
-                "enabled": _mcl_i(mcl_cgr_enabled_var, 1),
-                "top_k": max(1, _mcl_i(mcl_cgr_top_k_var, 8)),
-                "max_iters": max(1, _mcl_i(mcl_cgr_max_iters_var, 2)),
-                "budget_ms": max(0.0, _mcl_f(mcl_cgr_budget_ms_var, 1.5)),
-            }
-            mcl["recovery"] = {
-                "enabled": int(recovery_cfg.get("enabled", 1)),
-                "ess_ratio_min": float(recovery_cfg.get("ess_ratio_min", 0.2)),
-                "ess_streak": int(recovery_cfg.get("ess_streak", 3)),
-                "ekf_gate_reject_streak": int(recovery_cfg.get("ekf_gate_reject_streak", 3)),
-                "cooldown_ms": int(recovery_cfg.get("cooldown_ms", 500)),
-                "lost_exit_confidence": float(recovery_cfg.get("lost_exit_confidence", 0.55)),
-                "lost_exit_streak": int(recovery_cfg.get("lost_exit_streak", 3)),
-                "lost_injection_fraction": float(recovery_cfg.get("lost_injection_fraction", 0.15)),
-                "lost_force_reinit_ms": int(recovery_cfg.get("lost_force_reinit_ms", 0)),
-            }
             mcl["correction"] = {
                 "enabled": _mcl_i(mcl_corr_enabled_var, 1),
                 "min_confidence": _mcl_f(mcl_corr_min_conf_var, 0.6),
-                "max_trans_jump_in": _mcl_f(mcl_corr_max_trans_var, 8.0),
-                "max_theta_jump_deg": _mcl_f(mcl_corr_max_theta_var, 15.0),
-                "alpha_min": _mcl_f(mcl_corr_alpha_min_var, 0.05),
-                "alpha_max": _mcl_f(mcl_corr_alpha_max_var, 0.25),
+                "max_trans_jump_in": _mcl_f(mcl_corr_max_trans_var, 4.0),
+                "max_theta_jump_deg": _mcl_f(mcl_corr_max_theta_var, 8.0),
+                "writeback_alpha": _mcl_f(mcl_corr_writeback_alpha_var, 0.35),
+                "teleport_reset_trans_in": _mcl_f(mcl_corr_teleport_trans_var, 18.0),
+                "teleport_reset_theta_deg": _mcl_f(mcl_corr_teleport_theta_var, 45.0),
                 "safe_window_enabled": int((mcl_cfg.get("correction", {}) or {}).get("safe_window_enabled", 1)),
                 "safe_max_speed_in_s": float((mcl_cfg.get("correction", {}) or {}).get("safe_max_speed_in_s", 8.0)),
                 "safe_max_turn_deg_s": float((mcl_cfg.get("correction", {}) or {}).get("safe_max_turn_deg_s", 60.0)),
             }
             mcl["ui"] = {
-                "show_particles": _mcl_i(mcl_show_particles_var, 1),
                 "show_estimate": _mcl_i(mcl_show_estimate_var, 1),
                 "show_covariance": _mcl_i(mcl_show_cov_var, 1),
                 "show_rays": _mcl_i(mcl_show_rays_var, 1),
-                "show_region": _mcl_i(mcl_show_region_var, 1),
                 "show_gating": _mcl_i(mcl_show_gating_var, 1),
-                "max_particles_draw": _mcl_i(mcl_max_draw_var, 500),
             }
-            mcl["tuning"] = {
-                "enabled": _mcl_i(mcl_tuning_enabled_var, 0),
-                "log_rate_hz": max(1, _mcl_i(mcl_tuning_log_rate_var, 20)),
-                "particle_subsample": max(0, _mcl_i(mcl_tuning_subsample_var, 0)),
-            }
-            if prev_ekf is not None:
-                mcl["ekf"] = prev_ekf
+            ekf_cfg_out = dict(prev_ekf)
+            ekf_cfg_out["use_imu_update"] = _mcl_i(mcl_ekf_use_imu_var, 1)
+            ekf_cfg_out["sigma_dx_in"] = mcl["motion"]["sigma_x_in"]
+            ekf_cfg_out["sigma_dy_in"] = mcl["motion"]["sigma_y_in"]
+            ekf_cfg_out["sigma_dtheta_deg"] = mcl["motion"]["sigma_theta_deg"]
+            mcl["ekf"] = ekf_cfg_out
+            for legacy_key in (
+                "particles",
+                "resample",
+                "kld",
+                "augmented",
+                "random_injection",
+                "recovery",
+                "frame_sign_self_test",
+                "region",
+                "confidence",
+                "mode_split",
+                "cgr_lite",
+                "tuning",
+            ):
+                mcl.pop(legacy_key, None)
+            sensors_out = mcl.get("sensors", {})
+            if isinstance(sensors_out, dict):
+                sensors_out.pop("vision", None)
+                mcl["sensors"] = sensors_out
+            ui_out = mcl.get("ui", {})
+            if isinstance(ui_out, dict):
+                ui_out.pop("show_particles", None)
+                ui_out.pop("show_region", None)
+                ui_out.pop("max_particles_draw", None)
+                mcl["ui"] = ui_out
 
             CFG.setdefault("codegen", {})["style"] = codegen_style_var.get()
             opts = CFG["codegen"].setdefault("opts", {})
@@ -9893,6 +11865,17 @@ def open_settings_window():
                 "default_swing_settle_early_exit": _f_or(default_settle_swing_exit_var, 0.0),
                 "omit_defaults": int(omit_defaults_var.get())
             })
+            attlib_cfg = CFG["codegen"].setdefault("attlib_sim", {})
+            attlib_cfg["visual_run"] = int(attlib_sim_visual_var.get())
+            attlib_cfg["module_dir"] = attlib_sim_module_dir_var.get().strip() or _default_attlib_sim_module_dir()
+            attlib_cfg["source"] = "external_script" if int(attlib_sim_external_var.get()) else "timeline"
+            attlib_cfg["routine_script"] = attlib_sim_script_var.get().strip() or _default_attlib_sim_routine_script()
+            attlib_cfg["routine_function"] = attlib_sim_func_var.get().strip() or "run_routine"
+            attlib_sim_visual_run = bool(attlib_cfg["visual_run"])
+            attlib_sim_module_dir = str(attlib_cfg["module_dir"])
+            attlib_sim_source = str(attlib_cfg["source"])
+            attlib_sim_routine_script = str(attlib_cfg["routine_script"])
+            attlib_sim_routine_func = str(attlib_cfg["routine_function"])
             cal = CFG["codegen"].setdefault("calibration", {})
             cal["enabled"] = int(cal_enabled_var.get())
             try:
@@ -9924,6 +11907,7 @@ def open_settings_window():
             save_config(CFG)
             CFG.pop("_phys_cache", None)
             
+            _attlib_sim_stop()
             moving = False; paused = False; show_chevron = False
             timeline.clear(); seg_i = 0; t_local = 0.0; last_logged_seg = -1
             robot_pos = display_nodes[0]["pos"]; robot_heading = initial_state["heading"]
@@ -9950,6 +11934,7 @@ def main():
     global timeline, seg_i, t_local, last_logged_seg, CFG, total_estimate_s
     global path_lookahead_enabled, path_lookahead_px, last_lookahead_point, last_lookahead_radius, last_heading_target
     global offset_dragging_idx, offset_drag_prev, edge_marker_drag
+    global attlib_sim_status
     
     open_settings_window()
     _mcl_apply_cfg(reset_particles=True)
@@ -9985,6 +11970,7 @@ def main():
                  for a in n.get("actions", [])
              ),
              (None if _node_lateral_cmd(n) is None else round(float(_node_lateral_cmd(n)), 3)),
+             bool(_node_lateral_reset(n)),
              (None if n.get("custom_turn_dps") is None else round(float(n.get("custom_turn_dps", 0.0)), 3)),
              path_sig_for_node(n))
             for n in display_nodes
@@ -10122,12 +12108,25 @@ def main():
                                 label = _marker_actions_to_text(seg.get("actions", []))
                                 log_action("marker", label=label)
                                 continue
+                            if st == "atticus_correction":
+                                mode = str(seg.get("mode", "")).strip().lower()
+                                if mode == "immediate":
+                                    log_action("atticus_immediate")
+                                elif mode == "wall_trim_start":
+                                    log_action("atticus_wall_trim_start")
+                                elif mode == "wall_trim_end":
+                                    log_action("atticus_wall_trim_end")
+                                continue
                             if T <= 0.0:
                                 continue
                             if st == "move":
+                                if seg.get("atticus_immediate"):
+                                    log_action("atticus_immediate")
                                 log_action("move", i0=seg.get("i0", ...), i1=seg.get("i1", ...), 
                                           p0=seg["p0"], p1=seg["p1"], reverse=seg.get("reverse", False))
                             elif st == "path":
+                                if seg.get("atticus_immediate"):
+                                    log_action("atticus_immediate")
                                 pts = seg.get("path_points", []) or []
                                 p0 = seg.get("p0", pts[0] if pts else (0, 0))
                                 p1 = seg.get("p1", pts[-1] if pts else p0)
@@ -10155,24 +12154,71 @@ def main():
                 
                 elif event.key == pygame.K_SPACE and not (mods & pygame.KMOD_CTRL):
                     if moving:
-                        paused = not paused
+                        if attlib_sim_runtime.get("running"):
+                            attlib_sim_status = "Pause is not supported in AttLibSim visual mode. Use Ctrl+Space to reset."
+                            _attlib_sim_log(attlib_sim_status)
+                        else:
+                            paused = not paused
                     else:
-                        if len(display_nodes) >= 2:
-                            correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
-                            sync_all_path_endpoints()
-                            log_lines.clear()
-                            log_lines.extend(build_compile_header(CFG, initial_state["heading"]))
-                            moving = True; paused = False; show_chevron = True
-                            tutorial_state["flags"]["ran_sim"] = True
-                            robot_pos = display_nodes[0]["pos"]
-                            robot_heading = initial_state["heading"]
-                            reshape_live = False
-                            _mcl_apply_cfg(reset_particles=True)
-                            timeline = build_timeline_with_buffers()
-                            total_estimate_s = compute_total_from_timeline(timeline)
+                        use_attlib = _attlib_sim_should_run()
+                        use_external = (_attlib_sim_source_mode() == "external_script")
+                        script_ready = bool(str(attlib_sim_routine_script or "").strip()) and Path(str(attlib_sim_routine_script)).exists()
+                        if not use_external and len(display_nodes) < 2 and script_ready:
+                            use_external = True
+                            _attlib_sim_log(
+                                "No plotted nodes; auto-switching to external routine mode "
+                                f"({attlib_sim_routine_script}::{attlib_sim_routine_func})."
+                            )
+                        if not use_external and len(display_nodes) < 2:
+                            _attlib_sim_log(
+                                "SPACE ignored: need at least 2 nodes to simulate "
+                                "(external routine mode is not active)."
+                            )
+                            continue
+
+                        correct_nodes_inbounds(display_nodes, CFG, initial_state["heading"], WINDOW_WIDTH, WINDOW_HEIGHT)
+                        sync_all_path_endpoints()
+                        log_lines.clear()
+                        log_lines.extend(build_compile_header(CFG, initial_state["heading"]))
+                        _attlib_sim_log(_attlib_sim_mode_reason())
+                        ui.output_refresh(log_lines)
+                        moving = True; paused = False; show_chevron = True
+                        tutorial_state["flags"]["ran_sim"] = True
+                        robot_pos = display_nodes[0]["pos"]
+                        robot_heading = initial_state["heading"]
+                        reshape_live = False
+                        _mcl_apply_cfg(reset_particles=True)
+
+                        if use_external:
+                            timeline = []
+                            total_estimate_s = 0.0
                             seg_i = 0; t_local = 0.0; last_logged_seg = -1
+                            if not _attlib_sim_start([]):
+                                moving = False
+                                show_chevron = False
+                                _attlib_sim_log(attlib_sim_status)
+                        else:
+                            timeline = build_timeline_with_buffers()
+                            if not timeline:
+                                moving = False
+                                show_chevron = False
+                                _attlib_sim_log("SPACE ignored: timeline is empty. Add at least one motion segment.")
+                                continue
+                            _attlib_sim_log(f"Timeline ready: {len(timeline)} segments.")
+                            total_estimate_s = compute_total_from_timeline(timeline)
+                            if total_estimate_s <= 1e-6:
+                                _attlib_sim_log(
+                                    "Timeline duration is near zero; motion may appear instantaneous/no visible movement."
+                                )
+                            seg_i = 0; t_local = 0.0; last_logged_seg = -1
+                            if use_attlib:
+                                if not _attlib_sim_start(timeline):
+                                    _attlib_sim_log(f"{attlib_sim_status} Falling back to internal simulator.")
+                            else:
+                                _attlib_sim_log("Running internal simulator path.")
                 
                 elif event.key == pygame.K_SPACE and (mods & pygame.KMOD_CTRL):
+                    _attlib_sim_stop()
                     moving = False; paused = False; show_chevron = False
                     robot_pos = display_nodes[0]["pos"]
                     robot_heading = initial_state["heading"]
@@ -10184,8 +12230,13 @@ def main():
                     tgt = selected_idx if selected_idx is not None else (len(display_nodes)-1 if display_nodes else None)
                     if tgt is not None and tgt >= 0 and tgt != 0:
                         prev = util_snapshot(display_nodes, robot_pos, robot_heading)
-                        off = display_nodes[tgt].get("offset", 0)
-                        new_off = {0: 1, 1: 2, 2: 0}[off]
+                        try:
+                            off = int(display_nodes[tgt].get("offset", 0))
+                        except Exception:
+                            off = 0
+                        if off not in (0, 1, 2, 3):
+                            off = 0
+                        new_off = (off + 1) % 4
                         display_nodes[tgt]["offset"] = new_off
                         if new_off != 0:
                             display_nodes[tgt].pop("offset_custom_in", None)
@@ -10202,6 +12253,25 @@ def main():
                         last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
                         last_path_sig = None
                         total_estimate_s = compute_total_estimate_s()
+
+                elif event.key == pygame.K_b and not path_edit_mode:
+                    if _atticus_style_selected():
+                        tgt = selected_idx if selected_idx is not None else (len(display_nodes)-1 if display_nodes else None)
+                        if tgt is not None and tgt >= 0:
+                            prev = util_snapshot(display_nodes, robot_pos, robot_heading)
+                            node = display_nodes[tgt]
+                            current_mode = _node_atticus_correction_mode(node)
+                            cycle = [None, "immediate", "wall_trim", "rough_wall"] if tgt < len(display_nodes) - 1 else [None, "immediate"]
+                            try:
+                                idx_mode = cycle.index(current_mode)
+                            except Exception:
+                                idx_mode = 0
+                            next_mode = cycle[(idx_mode + 1) % len(cycle)]
+                            _set_node_atticus_correction_mode(node, next_mode)
+                            util_push_undo_prev(undo_stack, prev)
+                            last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
+                            last_path_sig = None
+                            total_estimate_s = compute_total_estimate_s()
                 
                 elif event.key == pygame.K_r:
                     tgt = selected_idx if selected_idx is not None else (len(display_nodes)-1 if display_nodes else None)
@@ -10220,9 +12290,11 @@ def main():
                                 acts = [a for a in acts if a.get("type") != "reverse"]
                                 acts.append({"type": "reverse", "state": new_state})
                             node["actions"] = acts
+                            node["actions_out"] = list(acts)
                             node["reverse"] = False
                         else:
                             node["reverse"] = not node.get("reverse", False)
+                        _normalize_node_mech_payload(node)
                         util_push_undo_prev(undo_stack, prev)
                         last_snapshot = util_snapshot(display_nodes, robot_pos, robot_heading)
                         last_path_sig = None
@@ -10514,11 +12586,13 @@ def main():
                                     "  offset 7   (custom offset)\n"
                                     "  reshape / reshape on / reshape off\n"
                                     "  reverse    (toggle / reverse on/off)\n"
+                                    f"  DSR (legacy alias for pink immediate correction; use settled about {ATTICUS_DSR_RECOMMENDED_STILL_MS:g} ms)\n"
                                     "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})\n"
                                     "  clamp on 1 2 3     (toggle preset + values, {STATE})\n"
                                     "  code Intake.spin(100, pct); (raw mechanism code)\n"
                                     "  latspeed 50   (drive cmd override 0-127)\n"
                                     "  turnspeed 180 (deg/s override)\n"
+                                    "  correct immediate / correct walltrim / correct roughwall / correct off\n"
                                     "  chain [0-1/off] (chain through this node; optional looseness)\n",
                                     initialvalue=init_cmd
                                 )
@@ -10560,11 +12634,13 @@ def main():
                                 "  offset 7   (custom offset)\n"
                                 "  reshape / reshape on / reshape off\n"
                                 "  reverse    (toggle / reverse on/off)\n"
+                                f"  DSR (legacy alias for pink immediate correction; use settled about {ATTICUS_DSR_RECOMMENDED_STILL_MS:g} ms)\n"
                                 "  lift 100 200 300   (preset values -> {VALUE}/{VALUE1-3})\n"
                                 "  clamp on 1 2 3     (toggle preset + values, {STATE})\n"
                                 "  code Intake.spin(100, pct); (raw mechanism code)\n"
                                 "  latspeed 50   (drive cmd override 0-127)\n"
                                 "  turnspeed 180 (deg/s override)\n"
+                                "  correct immediate / correct walltrim / correct roughwall / correct off\n"
                                 "  chain [0-1/off] (chain through this node; optional looseness)\n"
                                 "Angles use 0=left, 90=up, 180=right.",
                                 initialvalue=init
@@ -10690,6 +12766,7 @@ def main():
         if not history_freeze and sig != last_path_sig:
             last_path_sig = sig
             moving = False; paused = False; show_chevron = False
+            _clear_atticus_runtime()
             timeline.clear(); seg_i = 0; t_local = 0.0; last_logged_seg = -1
             robot_pos = display_nodes[0]["pos"]
             robot_heading = initial_state["heading"]
@@ -10700,14 +12777,25 @@ def main():
             path_draw_cache.clear()
             if not moving:
                 total_estimate_s = compute_total_estimate_s()
-        
-        if moving and not paused:
+
+        if not moving and attlib_sim_runtime.get("running"):
+            _attlib_sim_stop()
+
+        if moving and attlib_sim_runtime.get("running"):
+            _attlib_sim_step(dt_s)
+        elif moving and not paused:
             if seg_i >= len(timeline):
+                _atticus_end_rough_wall()
+                _atticus_end_wall_trim()
                 moving = False
             else:
                 seg = timeline[seg_i]
                 T = seg["T"]
+                motion_progress = None
                 if seg_i != last_logged_seg and t_local <= 1e-9 and T >= 0:
+                    if seg["type"] in ("move", "path", "path_follow") and seg.get("atticus_immediate"):
+                        log_action("atticus_immediate")
+                        _atticus_apply_immediate_correction()
                     if seg["type"] == "move":
                         log_action("move", i0=seg.get("i0", seg_i), i1=seg.get("i1", seg_i+1), 
                                   p0=seg["p0"], p1=seg["p1"], reverse=seg.get("reverse", False))
@@ -10716,6 +12804,18 @@ def main():
                                    p0=seg.get("p0", seg.get("path_points", [robot_pos])[0]),
                                    p1=seg.get("p1", seg.get("path_points", [robot_pos])[-1]),
                                    path_points=seg.get("path_points", []))
+                    elif seg["type"] == "atticus_correction":
+                        mode = str(seg.get("mode", "")).strip().lower()
+                        if mode == "immediate":
+                            log_action("atticus_immediate")
+                        elif mode == "wall_trim_start":
+                            log_action("atticus_wall_trim_start")
+                        elif mode == "wall_trim_end":
+                            log_action("atticus_wall_trim_end")
+                        elif mode == "rough_wall_start":
+                            log_action("atticus_rough_wall_start")
+                        elif mode == "rough_wall_end":
+                            log_action("atticus_rough_wall_end")
                     elif seg["type"] == "turn":
                         log_action("turn", h0=seg["start_heading"], h1=seg["target_heading"])
                     elif seg["type"] == "wait":
@@ -10735,6 +12835,7 @@ def main():
                     last_logged_seg = seg_i
                     if seg.get("edge_events"):
                         seg["_edge_event_idx"] = 0
+                    seg.pop("_runtime_state", None)
                 
                 seg_type = seg.get("type")
                 if T <= 0:
@@ -10749,13 +12850,9 @@ def main():
                                 robot_heading = float(end_h) % 360.0
                                 if seg.get("reverse") and not seg.get("facing_is_travel", False):
                                     robot_heading = (robot_heading + 180.0) % 360.0
-                        seg_i += 1
-                        t_local = 0.0
                     elif seg_type == "swing":
                         robot_pos = seg.get("end_pos", robot_pos)
                         robot_heading = seg.get("target_heading", robot_heading)
-                        seg_i += 1
-                        t_local = 0.0
                     elif seg_type == "turn":
                         robot_pos, robot_heading = seg["pos"], seg["target_heading"]
                     elif seg_type == "wait":
@@ -10763,6 +12860,22 @@ def main():
                         robot_heading = seg.get("heading", robot_heading)
                     elif seg_type == "move":
                         robot_pos, robot_heading = seg["p1"], seg.get("facing", robot_heading)
+                    elif seg_type == "atticus_correction":
+                        mode = str(seg.get("mode", "")).strip().lower()
+                        if mode == "immediate":
+                            _atticus_apply_immediate_correction()
+                        elif mode == "wall_trim_start":
+                            _atticus_start_wall_trim()
+                        elif mode == "wall_trim_end":
+                            _atticus_end_wall_trim()
+                        elif mode == "rough_wall_start":
+                            _atticus_start_rough_wall()
+                        elif mode == "rough_wall_end":
+                            _atticus_end_rough_wall()
+                    elif seg_type == "marker":
+                        actions = seg.get("actions", [])
+                        reshape_live = _marker_apply_reshape(actions, reshape_live)
+                        _marker_apply_atticus(actions)
                     elif seg_type == "reshape":
                         reshape_live = not reshape_live
                     seg_i += 1
@@ -10783,81 +12896,28 @@ def main():
                             v1=seg.get("v_end", 0.0)
                         )
                         frac = 0.0 if L_in <= 0 else max(0.0, min(1.0, s_in / max(1e-6, L_in)))
+                        motion_progress = frac
                         robot_pos = (seg["p0"][0] + frac*(seg["p1"][0]-seg["p0"][0]),
                                     seg["p0"][1] + frac*(seg["p1"][1]-seg["p0"][1]))
                         robot_heading = seg.get("facing", robot_heading)
                     
                     elif seg_type in ("path", "path_follow"):
-                        path_points = seg.get("path_points", [])
-                        use_pursuit = path_lookahead_enabled and not seg.get("move_to_pose")
-                        la_px = seg.get("lookahead_px", path_lookahead_px)
-                        path_speeds = seg.get("path_speeds")
-                        path_meta = seg.get("path_meta")
-                        if use_pursuit:
-                            _, heading_to_look, look_pt = sample_path_position(
-                                t_local, path_points, T, CFG,
-                                lookahead_px=la_px,
-                                use_pursuit=True,
-                                path_speeds=path_speeds,
-                                current_pos=robot_pos,
-                                path_meta=path_meta
-                            )
-                            if look_pt:
-                                dist_end = math.hypot(path_points[-1][0] - robot_pos[0], path_points[-1][1] - robot_pos[1])
-                                if dist_end <= max(la_px * 0.8, PPI * 1.5):
-                                    heading_to_look = calculate_path_heading(path_points, len(path_points) - 1)
-                                if seg.get("reverse"):
-                                    heading_to_look = (heading_to_look + 180.0) % 360.0
-                                heading_to_look = smooth_angle(last_heading_target if last_heading_target is not None else robot_heading, heading_to_look, 0.25)
-                                dx = look_pt[0] - robot_pos[0]
-                                dy = look_pt[1] - robot_pos[1]
-                                dist = math.hypot(dx, dy)
-                                speed_ips = seg.get("path_speeds", [None])[0] if path_speeds else None
-                                try:
-                                    idx_progress = int(max(0, min(len(path_points)-1, (t_local / max(1e-6, T)) * (len(path_points)-1))))
-                                    if path_speeds:
-                                        speed_ips = path_speeds[idx_progress]
-                                except Exception:
-                                    pass
-                                if speed_ips is None:
-                                    cfg_cmd = float(CFG.get("path_config", {}).get("max_speed_cmd", CFG.get("path_config", {}).get("max_speed_ips", 127.0)))
-                                    cfg_cmd = max(0.0, min(127.0, cfg_cmd))
-                                    speed_ips = vmax_straight(CFG) * (cfg_cmd / 127.0)
-                                v_px = float(speed_ips) * PPI
-                                step = min(dist, v_px * (1.0/60.0))
-                                if dist > 1e-6:
-                                    robot_pos = (robot_pos[0] + dx/dist * step, robot_pos[1] + dy/dist * step)
-                                robot_heading = clamp_heading_rate(robot_heading, heading_to_look, CFG, dt=1.0/60.0)
-                                last_heading_target = heading_to_look
-                                if last_lookahead_point:
-                                    look_pt = (
-                                        0.8 * last_lookahead_point[0] + 0.2 * look_pt[0],
-                                        0.8 * last_lookahead_point[1] + 0.2 * look_pt[1],
-                                    )
-                                last_lookahead_point = look_pt
-                            else:
-                                robot_pos, robot_heading, _ = sample_path_position(
-                                    t_local, path_points, T, CFG,
-                                    lookahead_px=la_px,
-                                    use_pursuit=False,
-                                    path_speeds=path_speeds,
-                                    path_meta=path_meta
-                                )
-                                last_heading_target = None
-                            last_lookahead_radius = la_px
-                        else:
-                            robot_pos, heading_sample, look_pt = sample_path_position(
-                                t_local, path_points, T, CFG,
-                                lookahead_px=la_px,
-                                use_pursuit=False,
-                                path_speeds=path_speeds,
-                                path_meta=path_meta
-                            )
-                            if seg.get("reverse"):
-                                heading_sample = (heading_sample + 180.0) % 360.0
-                            robot_heading = clamp_heading_rate(robot_heading, heading_sample, CFG, dt=1.0/60.0)
-                            last_lookahead_point = None
-                            last_heading_target = None
+                        runtime_state = seg.get("_runtime_state", {})
+                        use_pursuit = bool(seg.get("move_to_pose")) or bool(path_lookahead_enabled)
+                        robot_pos, robot_heading, runtime_state = _advance_path_segment(
+                            seg,
+                            robot_pos,
+                            robot_heading,
+                            CFG,
+                            1.0 / 60.0,
+                            state=runtime_state,
+                            use_pursuit=use_pursuit,
+                        )
+                        seg["_runtime_state"] = runtime_state
+                        motion_progress = runtime_state.get("progress_frac")
+                        last_lookahead_point = runtime_state.get("lookahead_point")
+                        last_lookahead_radius = float(runtime_state.get("lookahead_radius", 0.0) or 0.0)
+                        last_heading_target = runtime_state.get("heading_target")
                     
                     elif seg_type == "swing":
                         dg = seg.get("diff_geom", {})
@@ -10883,29 +12943,17 @@ def main():
                         robot_heading = sample_turn_heading_trap(t_local, seg["start_heading"], seg["target_heading"], CFG, rate_override=seg.get("turn_speed_dps"))
                     
                     if seg_type in ("move", "path", "path_follow") and seg.get("edge_events"):
-                        if "_edge_event_idx" not in seg:
-                            seg["_edge_event_idx"] = 0
                         try:
-                            progress = 0.0 if T <= 0 else max(0.0, min(1.0, t_local / max(1e-6, T)))
-                            events = seg.get("edge_events", [])
-                            idx = int(seg.get("_edge_event_idx", 0))
-                            while idx < len(events):
-                                try:
-                                    t_evt = float(events[idx].get("t", 0.0))
-                                except Exception:
-                                    t_evt = 0.0
-                                if progress + 1e-6 < t_evt:
-                                    break
-                                actions = events[idx].get("actions", [])
-                                label = _marker_actions_to_text(actions)
-                                reshape_live = _marker_apply_reshape(actions, reshape_live)
-                                log_action("marker", label=label)
-                                idx += 1
-                            seg["_edge_event_idx"] = idx
+                            reshape_live = _fire_edge_events(seg, progress=motion_progress, reshape_state=reshape_live)
                         except Exception:
                             pass
 
-                    if t_local >= T - 1e-9:
+                    path_state = seg.get("_runtime_state", {}) if seg_type in ("path", "path_follow") else {}
+                    path_done = bool(path_state.get("done")) if seg_type in ("path", "path_follow") else False
+                    path_elapsed = float(path_state.get("elapsed_s", t_local)) if seg_type in ("path", "path_follow") else t_local
+                    path_timeout = (path_elapsed >= max(T, 1.0 / 60.0) + 0.5) if seg_type in ("path", "path_follow") else False
+                    seg_complete = (path_done or path_timeout) if seg_type in ("path", "path_follow") else (t_local >= T - 1e-9)
+                    if seg_complete:
                         if seg_type == "move":
                             robot_pos, robot_heading = seg["p1"], seg.get("facing", robot_heading)
                         elif seg_type == "path" or seg_type == "path_follow":
@@ -10920,6 +12968,8 @@ def main():
                                     if seg.get("reverse") and not seg.get("facing_is_travel", False):
                                         robot_heading = (robot_heading + 180.0) % 360.0
                                 last_heading_target = robot_heading
+                                last_lookahead_point = None
+                                last_lookahead_radius = 0.0
                         elif seg_type == "wait":
                             robot_pos = seg.get("pos", robot_pos)
                             robot_heading = seg.get("heading", robot_heading)
@@ -10930,20 +12980,21 @@ def main():
                             robot_heading = seg.get("target_heading", robot_heading)
                         elif seg_type == "reshape":
                             reshape_live = not reshape_live
+                        if seg_type in ("move", "path", "path_follow") and seg.get("edge_events"):
+                            reshape_live = _fire_edge_events(seg, reshape_state=reshape_live, drain_all=True)
                         seg_i += 1
                         t_local = 0.0
         if mcl_enabled:
             mcl_cfg = CFG.get("mcl", {})
             try:
-                motion_ms = float(mcl_cfg.get("motion_ms", 10.0))
-                sensor_ms = float(mcl_cfg.get("sensor_ms", 50.0))
+                motion_ms = float(mcl_cfg.get("motion_ms", 20.0))
+                sensor_ms = float(mcl_cfg.get("sensor_ms", 20.0))
             except Exception:
-                motion_ms = 10.0
-                sensor_ms = 50.0
+                motion_ms = 20.0
+                sensor_ms = 20.0
             mcl_pose = (robot_pos[0], robot_pos[1], _mcl_heading_from_internal(robot_heading))
             if mcl_state.lf is None or not mcl_state.map_segments:
                 mcl_mod.update_map_segments(mcl_state, CFG)
-            _mcl_update_region_gate()
             mcl_state.motion_accum += dt_ms
             did_motion = False
             motion_input = None
@@ -10970,8 +13021,26 @@ def main():
                     mcl_state, CFG, mcl_pose, add_noise=True
                 )
                 mcl_mod.sensor_update(mcl_state, CFG, measurements)
-                if isinstance(measurements, dict) and "imu" in measurements:
+                ekf_cfg = mcl_cfg.get("ekf", {}) if isinstance(mcl_cfg, dict) else {}
+                use_imu_update = int(ekf_cfg.get("use_imu_update", 1)) == 1
+                if use_imu_update and isinstance(measurements, dict) and "imu" in measurements:
                     mcl_mod.ekf_update_imu(mcl_state, CFG, measurements["imu"])
+                if atticus_runtime.get("rough_wall_ctx"):
+                    mcl_mod.update_rough_wall_traverse(
+                        mcl_state,
+                        CFG,
+                        measurements,
+                        atticus_runtime.get("rough_wall_ctx"),
+                        motion_input=motion_input,
+                    )
+                elif atticus_runtime.get("wall_trim_ctx"):
+                    mcl_mod.update_theta_wall_alignment(
+                        mcl_state,
+                        CFG,
+                        measurements,
+                        atticus_runtime.get("wall_trim_ctx"),
+                        motion_input=motion_input,
+                    )
                 if mcl_state.estimate is not None:
                     try:
                         conf_val = float(mcl_state.confidence)
@@ -10979,6 +13048,7 @@ def main():
                         conf_val = 0.0
                     mcl_mod.ekf_update_mcl(mcl_state, CFG, mcl_state.estimate, conf_val)
                 mcl_state.sensor_accum = 0.0
+        _apply_atticus_ray_highlight(dt_ms)
         insert_preview = None
         if not path_edit_mode and not moving:
             mods_now = pygame.key.get_mods()

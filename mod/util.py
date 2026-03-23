@@ -21,6 +21,8 @@ def get_node_offset_in(node, cfg, idx: int) -> float:
         return float(cfg["offsets"].get("offset_1_in", 0.0) or 0.0)
     if off == 2:
         return float(cfg["offsets"].get("offset_2_in", 0.0) or 0.0)
+    if off == 3:
+        return float(cfg["offsets"].get("offset_3_in", 0.0) or 0.0)
     if off == 0 and node.get("offset_custom_in") is not None:
         try:
             return float(node["offset_custom_in"])

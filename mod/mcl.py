@@ -68,18 +68,18 @@ def _ekf_cfg(cfg: dict) -> dict:
     set_th = float(mcl.get("set_pose_sigma_theta_deg", 2.0))
     return {
         "enabled": int(ekf.get("enabled", 1)) == 1,
-        "mcl_min_conf": float(ekf.get("mcl_min_conf", corr.get("min_confidence", 0.6))),
+        "localizer_min_conf": float(ekf.get("localizer_min_conf", ekf.get("mcl_min_conf", corr.get("min_confidence", 0.6)))),
         "sigma_dx_in": float(ekf.get("sigma_dx_in", motion.get("sigma_x_in", 0.1275))),
         "sigma_dy_in": float(ekf.get("sigma_dy_in", motion.get("sigma_y_in", 0.1275))),
         "sigma_dtheta_deg": float(ekf.get("sigma_dtheta_deg", motion.get("sigma_theta_deg", 1.0))),
         "imu_sigma_deg": float(ekf.get("imu_sigma_deg", imu_cfg.get("sigma_deg", 1.0))),
-        "mcl_sigma_x_min": float(ekf.get("mcl_sigma_x_min", set_xy)),
-        "mcl_sigma_x_max": float(ekf.get("mcl_sigma_x_max", 6.0)),
-        "mcl_sigma_y_min": float(ekf.get("mcl_sigma_y_min", set_xy)),
-        "mcl_sigma_y_max": float(ekf.get("mcl_sigma_y_max", 6.0)),
-        "mcl_sigma_theta_min": float(ekf.get("mcl_sigma_theta_min", set_th)),
-        "mcl_sigma_theta_max": float(ekf.get("mcl_sigma_theta_max", 15.0)),
-        "mcl_mahalanobis_gate": float(ekf.get("mcl_mahalanobis_gate", 11.34)),
+        "pose_sigma_x_min": float(ekf.get("pose_sigma_x_min", ekf.get("mcl_sigma_x_min", set_xy))),
+        "pose_sigma_x_max": float(ekf.get("pose_sigma_x_max", ekf.get("mcl_sigma_x_max", 6.0))),
+        "pose_sigma_y_min": float(ekf.get("pose_sigma_y_min", ekf.get("mcl_sigma_y_min", set_xy))),
+        "pose_sigma_y_max": float(ekf.get("pose_sigma_y_max", ekf.get("mcl_sigma_y_max", 6.0))),
+        "pose_sigma_theta_min": float(ekf.get("pose_sigma_theta_min", ekf.get("mcl_sigma_theta_min", set_th))),
+        "pose_sigma_theta_max": float(ekf.get("pose_sigma_theta_max", ekf.get("mcl_sigma_theta_max", 15.0))),
+        "pose_mahalanobis_gate": float(ekf.get("pose_mahalanobis_gate", ekf.get("mcl_mahalanobis_gate", 11.34))),
         "init_sigma_xy_in": float(ekf.get("init_sigma_xy_in", set_xy)),
         "init_sigma_theta_deg": float(ekf.get("init_sigma_theta_deg", set_th)),
     }
@@ -679,16 +679,16 @@ def ekf_update_mcl(state: MCLState, cfg: dict,
     ekf_cfg = _ekf_cfg(cfg)
     if not ekf_cfg["enabled"]:
         return
-    if confidence < ekf_cfg["mcl_min_conf"]:
+    if confidence < ekf_cfg["localizer_min_conf"]:
         return
     if state.ekf_pose is None or state.ekf_P is None:
         ekf_reset_state(state, cfg, mcl_pose)
         return
     x, y, theta = state.ekf_pose
     P = state.ekf_P
-    sx = ekf_cfg["mcl_sigma_x_max"] - confidence * (ekf_cfg["mcl_sigma_x_max"] - ekf_cfg["mcl_sigma_x_min"])
-    sy = ekf_cfg["mcl_sigma_y_max"] - confidence * (ekf_cfg["mcl_sigma_y_max"] - ekf_cfg["mcl_sigma_y_min"])
-    sth = ekf_cfg["mcl_sigma_theta_max"] - confidence * (ekf_cfg["mcl_sigma_theta_max"] - ekf_cfg["mcl_sigma_theta_min"])
+    sx = ekf_cfg["pose_sigma_x_max"] - confidence * (ekf_cfg["pose_sigma_x_max"] - ekf_cfg["pose_sigma_x_min"])
+    sy = ekf_cfg["pose_sigma_y_max"] - confidence * (ekf_cfg["pose_sigma_y_max"] - ekf_cfg["pose_sigma_y_min"])
+    sth = ekf_cfg["pose_sigma_theta_max"] - confidence * (ekf_cfg["pose_sigma_theta_max"] - ekf_cfg["pose_sigma_theta_min"])
     sx_px = sx * PPI
     sy_px = sy * PPI
     R = [
@@ -705,7 +705,7 @@ def ekf_update_mcl(state: MCLState, cfg: dict,
         float(mcl_pose[1]) - y,
         _angle_diff_deg(float(mcl_pose[2]), theta),
     ]
-    gate = float(ekf_cfg.get("mcl_mahalanobis_gate", 0.0))
+    gate = float(ekf_cfg.get("pose_mahalanobis_gate", 0.0))
     if gate > 0.0:
         md2 = (
             nu[0] * (S_inv[0][0] * nu[0] + S_inv[0][1] * nu[1] + S_inv[0][2] * nu[2])
@@ -1626,6 +1626,7 @@ def sensor_update(state: MCLState, cfg: dict, measurements: Optional[dict]) -> N
     if measurements is None:
         return
     mcl = cfg.get("mcl", {}) if isinstance(cfg, dict) else {}
+    mode_split_cfg = mcl.get("mode_split", {}) if isinstance(mcl, dict) else {}
     sensors_cfg = mcl.get("sensors", {}) if isinstance(mcl, dict) else {}
     dist_cfg = sensors_cfg.get("distance", {}) if isinstance(sensors_cfg, dict) else {}
     imu_cfg = sensors_cfg.get("imu", {}) if isinstance(sensors_cfg, dict) else {}

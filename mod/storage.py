@@ -16,6 +16,21 @@ def _open_path(path: str):
 
 def _sanitize_preset_action(action: dict, key_name: str) -> dict | None:
     """Handle sanitize preset action."""
+    def _normalize_state(value):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "on" if value else "off"
+        s = str(value).strip().lower()
+        if not s:
+            return None
+        if s in ("on", "1", "true", "yes", "enable", "enabled"):
+            return "on"
+        if s in ("off", "0", "false", "no", "disable", "disabled"):
+            return "off"
+        if s == "toggle":
+            return "toggle"
+        return None
     name = str(action.get("name", "")).strip()
     if not name:
         return None
@@ -29,7 +44,7 @@ def _sanitize_preset_action(action: dict, key_name: str) -> dict | None:
     return {
         key_name: "preset",
         "name": name,
-        "state": action.get("state", None),
+        "state": _normalize_state(action.get("state", None)),
         "value": value,
         "values": values,
     }

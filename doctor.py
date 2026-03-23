@@ -1,6 +1,5 @@
 """Run local environment checks for Atticus Terminal."""
 
-import os
 import platform
 import sys
 from pathlib import Path
@@ -39,7 +38,7 @@ def main() -> int:
     win_store = ("WindowsApps" in sys.executable) or ("PythonSoftwareFoundation" in sys.executable)
     print(f"[{_warn(True)}] Windows Store Python detected: {win_store}")
     if win_store:
-        print("       Tip: use `py -m pip install -r requirements.txt`.")
+        print("       Tip: use `py -m pip install .` or `py -m pip install -r requirements.txt`.")
 
     try:
         import tkinter  # noqa: F401
@@ -60,7 +59,7 @@ def main() -> int:
         root / "config.json",
         root / "ATTICUS.png",
         root / "mod" / "config.py",
-        root / "mod" / "mcl_codegen.py",
+        root / "mod" / "localizer_sim.py",
     ]
     files_ok = all(p.exists() for p in required)
     print(f"[{_ok(files_ok)}] core files present")
@@ -68,9 +67,11 @@ def main() -> int:
         for p in required:
             if not p.exists():
                 print(f"       Missing: {p}")
-    docs_dir = root / "pros" / "docs"
-    docs_found = docs_dir.exists() and any(docs_dir.glob("*.md"))
-    print(f"[{_warn(docs_found)}] pros docs detected for MCL export")
+    stale_legacy_dirs = [p for p in (root / ("Pros" + "MCL"), root / "mod" / "mcl_codegen.py") if p.exists()]
+    print(f"[{_warn(not stale_legacy_dirs)}] no stale legacy localization package detected")
+    if stale_legacy_dirs:
+        for p in stale_legacy_dirs:
+            print(f"       Remove stale legacy artifact: {p}")
 
     try:
         from mod.config import _config_candidates  # type: ignore

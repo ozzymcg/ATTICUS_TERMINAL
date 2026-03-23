@@ -196,6 +196,36 @@ def _sample_quad_bezier(p0, p1, p2, num=40):
         pts.append((x, y))
     return pts
 
+def boomerang_curve_points(current_pos, target_pos, target_heading_deg, lead_in=0.6, reverse=False, num=40):
+    """
+    Build the current boomerang curve from the robot's live position.
+
+    The control point is recomputed from the current robot pose every tick so
+    move-to-pose behaves like a continuously updated boomerang controller
+    instead of a static pre-sampled path.
+    """
+    try:
+        lead = max(0.0, float(lead_in or 0.0))
+    except Exception:
+        lead = 0.0
+
+    end_heading = float(target_heading_deg or 0.0) % 360.0
+    if reverse:
+        end_heading = (end_heading + 180.0) % 360.0
+
+    dist_px = math.hypot(target_pos[0] - current_pos[0], target_pos[1] - current_pos[1])
+    if dist_px <= 1e-6:
+        dist_px = 1.0
+
+    disp_heading = convert_heading_input(end_heading, None)
+    th = math.radians(disp_heading)
+    carrot = (
+        target_pos[0] + math.cos(th) * dist_px * lead,
+        target_pos[1] + math.sin(th) * dist_px * lead,
+    )
+    path_points = _sample_quad_bezier(current_pos, carrot, target_pos, num=num)
+    return path_points, carrot
+
 def _clamp_cmd(cmd_val):
     """Clamp a command-style speed to [0, 127]."""
     try:
@@ -216,9 +246,7 @@ def _has_custom_waits_at_node(node: dict) -> bool:
     """Check if node has custom wait actions."""
     acts_a = node.get("actions")
     acts_b = node.get("actions_out")
-    if isinstance(acts_a, list) and isinstance(acts_b, list) and acts_a and acts_b and acts_a != acts_b:
-        acts = list(acts_a) + [a for a in acts_b if a not in acts_a]
-    elif isinstance(acts_a, list) and acts_a:
+    if isinstance(acts_a, list):
         acts = acts_a
     elif isinstance(acts_b, list):
         acts = acts_b
@@ -800,8 +828,24 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
     if n <= 1: 
         return []
     
+    mech_presets = cfg.get("codegen", {}).get("mech_presets", [])
+    toggle_defaults = {"reshape": False}
+    if isinstance(mech_presets, list):
+        for preset in mech_presets:
+            if not isinstance(preset, dict):
+                continue
+            name = str(preset.get("name", "")).strip().lower()
+            if not name:
+                continue
+            mode = str(preset.get("mode", "action")).strip().lower()
+            if mode == "toggle":
+                toggle_defaults[name] = bool(preset.get("default", False))
+
     segs = []
-    reverse = reshape = False
+    reverse = False
+    reshape = bool(toggle_defaults.get("reshape", False))
+    toggle_states = dict(toggle_defaults)
+    toggle_states["reshape"] = reshape
     curr_heading = float(initial_heading)
     eff = _effective_centers(display_nodes, cfg, initial_heading)
     
@@ -810,20 +854,14 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         return any(a.get("type") == "reverse" for a in acts)
 
     def _node_actions(node):
-        """Return node actions, merging legacy actions_out when needed."""
+        """Return node actions, preferring canonical actions over legacy mirror."""
         acts = node.get("actions")
         acts_out = node.get("actions_out")
-        list_a = acts if isinstance(acts, list) else []
-        list_b = acts_out if isinstance(acts_out, list) else []
-        if list_a and list_b:
-            if list_a == list_b:
-                return list_a
-            merged = list(list_a)
-            for item in list_b:
-                if item not in merged:
-                    merged.append(item)
-            return merged
-        return list_a or list_b
+        if isinstance(acts, list):
+            return acts
+        if isinstance(acts_out, list):
+            return acts_out
+        return []
 
     def _apply_reverse_action(reverse_state, act):
         """Handle apply reverse action."""
@@ -852,6 +890,127 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         out.sort(key=lambda e: e.get("t", 0.0))
         return out
 
+    def _normalize_toggle_state(state):
+        """Normalize a toggle token into on/off/toggle/empty."""
+        if state is None:
+            return ""
+        if isinstance(state, bool):
+            return "on" if state else "off"
+        s = str(state).strip().lower()
+        if not s:
+            return ""
+        if s in ("on", "1", "true", "yes", "enable", "enabled"):
+            return "on"
+        if s in ("off", "0", "false", "no", "disable", "disabled"):
+            return "off"
+        if s == "toggle":
+            return "toggle"
+        return ""
+
+    def _apply_preset_toggle_state(name, raw_state):
+        """Resolve a preset toggle against the current global toggle state."""
+        nonlocal reshape
+        key = str(name or "").strip().lower()
+        if not key or key not in toggle_defaults:
+            return None
+        current = bool(toggle_states.get(key, toggle_defaults.get(key, False)))
+        state = _normalize_toggle_state(raw_state)
+        if state == "on":
+            next_state = True
+        elif state == "off":
+            next_state = False
+        else:
+            next_state = not current
+        if next_state == current:
+            return None
+        toggle_states[key] = next_state
+        if key == "reshape":
+            reshape = next_state
+        return "on" if next_state else "off"
+
+    def _resolve_marker_actions(actions):
+        """Resolve toggle-style marker actions against the shared global state."""
+        if not isinstance(actions, list):
+            return []
+        resolved = []
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            kind = str(act.get("kind", act.get("type", ""))).strip().lower()
+            if kind != "preset":
+                resolved.append(dict(act))
+                continue
+            act_copy = dict(act)
+            resolved_state = _apply_preset_toggle_state(act_copy.get("name", ""), act_copy.get("state", None))
+            if resolved_state is None and str(act_copy.get("name", "")).strip().lower() in toggle_defaults:
+                continue
+            if resolved_state is not None:
+                act_copy["state"] = resolved_state
+            resolved.append(act_copy)
+        return resolved
+
+    def _resolve_edge_events(events):
+        """Resolve edge-marker toggle actions in event order for later nodes."""
+        resolved_events = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            actions = _resolve_marker_actions(ev.get("actions", []))
+            if not actions:
+                continue
+            ev_copy = dict(ev)
+            ev_copy["actions"] = actions
+            resolved_events.append(ev_copy)
+        return resolved_events
+
+    def _atticus_correction_mode(node):
+        """Return normalized Atticus correction mode stored on a node."""
+        mode = str(node.get("atticus_correction_mode", "") or "").strip().lower()
+        if mode in ("immediate", "wall_trim", "rough_wall"):
+            return mode
+        return None
+
+    def _atticus_correction_seg(mode, pos, node_i):
+        """Build a zero-time Atticus correction segment."""
+        return {
+            "type": "atticus_correction",
+            "T": 0.0,
+            "mode": str(mode),
+            "pos": pos,
+            "node_i": node_i,
+        }
+
+    def _node_can_start_wall_trim(node):
+        """Wall trim can only start on a plain straight outgoing segment."""
+        mode = _atticus_correction_mode(node)
+        if mode != "wall_trim":
+            return False
+        path_data = node.get("path_to_next", {})
+        if isinstance(path_data, dict) and bool(path_data.get("use_path", False)):
+            return False
+        if bool(node.get("move_to_pose", False)):
+            return False
+        return True
+
+    def _node_can_start_rough_wall(node):
+        """Rough wall traverse uses the same straight-segment boundary as wall trim."""
+        mode = _atticus_correction_mode(node)
+        if mode != "rough_wall":
+            return False
+        path_data = node.get("path_to_next", {})
+        if isinstance(path_data, dict) and bool(path_data.get("use_path", False)):
+            return False
+        if bool(node.get("move_to_pose", False)):
+            return False
+        return True
+
+    def _node_has_atticus_pre_action(node):
+        """Immediate correction and wall-trim toggles count as pre-actions."""
+        mode = _atticus_correction_mode(node)
+        if mode == "immediate":
+            return True
+        return mode in ("wall_trim", "rough_wall")
+
     def _is_chain_node(node):
         """Check whether is chain node."""
         return bool(node.get("chain_through", False) or node.get("chain", False))
@@ -872,11 +1031,27 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             for act in acts:
                 if act.get("type") not in ("preset", "code"):
                     return True
+        if _node_has_atticus_pre_action(node):
+            return True
         if node.get("reshape_toggle", False):
             return True
         if node.get("reverse", False):
             return True
         return False
+
+    def _node_lateral_override_cmd(node):
+        """Return this node's outgoing latspeed command for just its own segment."""
+        if bool(node.get("custom_lateral_reset", False)):
+            return None
+        val = node.get("custom_lateral_cmd")
+        if val is None:
+            val = node.get("custom_lateral_ips")
+        if val is None:
+            return None
+        try:
+            return _clamp_cmd(float(val))
+        except Exception:
+            return None
 
     def _prev_movetopose_heading(idx):
         """Handle prev movetopose heading."""
@@ -968,6 +1143,8 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         return v_end, frac, min_cmd, early_exit, ang_deg
 
     carry_speed = 0.0
+    wall_trim_active = False
+    rough_wall_active = False
 
     def _swing_action(p0, target_heading, start_heading, swing_dir, reverse_state, drive_override):
         """Handle swing action."""
@@ -1002,12 +1179,8 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             curr_heading = prev_pose_heading
         profile_override = node_i.get("profile_override")
         prof_scale = _profile_speed_scale(profile_override)
-        drive_override_cmd = node_i.get("custom_lateral_cmd")
-        if drive_override_cmd is None:
-            drive_override_cmd = node_i.get("custom_lateral_ips")
+        drive_override_cmd = _node_lateral_override_cmd(node_i)
         drive_override_cmd = float(drive_override_cmd) if drive_override_cmd is not None else None
-        if drive_override_cmd is not None:
-            drive_override_cmd = _clamp_cmd(drive_override_cmd)
         if drive_override_cmd is not None:
             drive_override_cmd = _clamp_cmd(drive_override_cmd * prof_scale)
             drive_override = _cmd_to_ips(drive_override_cmd, cfg)
@@ -1049,37 +1222,59 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         heading_overridden = False
         if carry_speed > 1e-6 and _node_has_pre_actions(node_i, acts=acts_all):
             carry_speed = 0.0
+
+        atticus_mode = _atticus_correction_mode(node_i)
+        wall_trim_toggle_consumed = False
+        rough_wall_toggle_consumed = False
+        if atticus_mode == "wall_trim" and wall_trim_active:
+            # Close wall trim as soon as we reach the tagged node, before any outgoing
+            # turn/swing/path/boomerang/straight work from that node can begin.
+            segs.append(_atticus_correction_seg("wall_trim_end", start_anchor, i))
+            wall_trim_active = False
+            wall_trim_toggle_consumed = True
+        if atticus_mode == "rough_wall" and rough_wall_active:
+            # Close rough wall traverse before any outgoing work from this node begins.
+            segs.append(_atticus_correction_seg("rough_wall_end", start_anchor, i))
+            rough_wall_active = False
+            rough_wall_toggle_consumed = True
         
         if node_i.get("reshape_toggle", False):
             reshape = not reshape
+            toggle_states["reshape"] = reshape
             segs.append({"type": "reshape", "T": 0.0, "pos": p0, "state": 2 if reshape else 1})
-        
+
+        immediate_insert_idx = None
+        immediate_insert_pos = None
         for act in acts:
             t = act.get("type")
             if t == "wait":
+                if immediate_insert_idx is None:
+                    immediate_insert_idx = len(segs)
+                    immediate_insert_pos = start_anchor
                 segs.append({"type": "wait", "T": float(act.get("s", 0.0)),
                             "pos": start_anchor, "heading": curr_heading, "role": "custom", "node_i": i})
             elif t in ("reshape", "geom"):
                 reshape = not reshape
+                toggle_states["reshape"] = reshape
                 segs.append({"type": "reshape", "T": 0.0, "pos": start_anchor, "state": 2 if reshape else 1})
             elif t == "reverse":
                 reverse = _apply_reverse_action(reverse, act)
                 segs.append({"type": "reverse", "T": 0.0, "pos": start_anchor, "state": 2 if reverse else 1})
             elif t == "preset":
-                name = str(act.get("name", "")).strip()
-                if name:
+                resolved_actions = _resolve_marker_actions([{
+                    "kind": "preset",
+                    "name": act.get("name", ""),
+                    "state": act.get("state", None),
+                    "value": act.get("value", None),
+                    "values": act.get("values", []),
+                }])
+                if resolved_actions:
                     segs.append({
                         "type": "marker",
                         "T": 0.0,
                         "pos": start_anchor,
                         "node_i": i,
-                        "actions": [{
-                            "kind": "preset",
-                            "name": name,
-                            "state": act.get("state", None),
-                            "value": act.get("value", None),
-                            "values": act.get("values", []),
-                        }]
+                        "actions": resolved_actions
                     })
             elif t == "code":
                 code = str(act.get("code", "")).strip()
@@ -1101,6 +1296,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 segs.append({"type": "turn", "T": Tturn, "pos": start_anchor,
                             "start_heading": curr_heading, "target_heading": tgt,
                             "target_pos": p1,
+                            "reverse": reverse,
                             "role": "explicit", "node_i": i, "turn_speed_dps": turn_speed_override,
                             "T_speed_frac": turn_speed_frac})
                 curr_heading = tgt
@@ -1121,8 +1317,16 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     curr_heading = swing_heading
                     carry_speed = 0.0
                     heading_overridden = True
-        
+
         path_data = node_i.setdefault("path_to_next", {})
+        if atticus_mode == "immediate":
+            if immediate_insert_idx is None:
+                immediate_insert_idx = len(segs)
+                immediate_insert_pos = start_anchor
+            segs.insert(
+                immediate_insert_idx,
+                _atticus_correction_seg("immediate", immediate_insert_pos or start_anchor, i)
+            )
         for k in ("swing_vis", "start_override", "pose_preview_points"):
             if k in path_data:
                 path_data.pop(k, None)
@@ -1174,6 +1378,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                             "start_heading": curr_heading,
                             "target_heading": start_heading,
                             "target_pos": p1,
+                            "reverse": reverse,
                             "role": "face_path",
                             "edge_i": i,
                             "turn_speed_dps": turn_speed_override,
@@ -1259,7 +1464,6 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 seg_lookahead_px = max(6.0 * PPI, min(60.0 * PPI, seg_lookahead_px))
 
                 path_meta = _build_path_meta(resampled, speeds)
-                
                 segs.append({
                     "type": "path",  # New segment type for curved paths
                     "T": Tmove,
@@ -1292,12 +1496,12 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     "chain_min_speed": chain_min_cmd,
                     "chain_early_exit": chain_early_exit,
                     "chain_speed_frac": chain_frac,
-                    "chain_angle_deg": chain_angle
+                    "chain_angle_deg": chain_angle,
                 })
-                if edge_events:
-                    segs[-1]["edge_events"] = edge_events
+                resolved_edge_events = _resolve_edge_events(edge_events)
+                if resolved_edge_events:
+                    segs[-1]["edge_events"] = resolved_edge_events
                 carry_speed = v_end if chain_next else 0.0
-                
             curr_heading = end_heading
         else:
             use_path = False
@@ -1396,6 +1600,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                             "start_heading": curr_heading,
                             "target_heading": start_heading_facing,
                             "target_pos": p1,
+                            "reverse": reverse,
                             "role": "pose_entry",
                             "edge_i": i,
                             "turn_speed_dps": turn_speed_override,
@@ -1471,6 +1676,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 la_scale = max(0.2, min(1.1, la_scale))
                 seg_lookahead_px = base_lookahead_px * la_scale
                 seg_lookahead_px = max(6.0 * PPI, min(60.0 * PPI, seg_lookahead_px))
+                path_meta = _build_path_meta(resampled, speeds)
 
                 segs.append({
                     "type": "path",
@@ -1482,6 +1688,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     "path_curvatures": curvatures,
                     "path_speeds": speeds,
                     "path_speeds_export": speeds_raw,
+                    "path_meta": path_meta,
                     "min_speed_cmd": cfg.get("path_config", {}).get("min_speed_cmd", cfg.get("path_config", {}).get("min_speed_ips", 0.0)),
                     "max_speed_cmd": drive_override_cmd if drive_override_cmd is not None else cfg.get("path_config", {}).get("max_speed_cmd", cfg.get("path_config", {}).get("max_speed_ips", 127.0)),
                     "facing": pose_heading,
@@ -1504,10 +1711,11 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     "chain_min_speed": chain_min_cmd,
                     "chain_early_exit": chain_early_exit,
                     "chain_speed_frac": chain_frac,
-                    "chain_angle_deg": chain_angle
+                    "chain_angle_deg": chain_angle,
                 })
-                if edge_events:
-                    segs[-1]["edge_events"] = edge_events
+                resolved_edge_events = _resolve_edge_events(edge_events)
+                if resolved_edge_events:
+                    segs[-1]["edge_events"] = resolved_edge_events
                 carry_speed = v_end if chain_next else 0.0
                 path_data["pose_preview_points"] = resampled
                 path_data["pose_end_heading"] = pose_heading
@@ -1529,6 +1737,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                         "start_heading": curr_heading,
                         "target_heading": facing,
                         "target_pos": p1,
+                        "reverse": reverse,
                         "role": "face_line",
                         "edge_i": i,
                         "turn_speed_dps": turn_speed_override,
@@ -1558,6 +1767,27 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                         )
                         chain_next = True
                 Tmove = _move_total_time(L_in, cfg, v_override=drive_override, v0=v_start, v1=v_end)
+                wall_trim_segment = bool(
+                    not wall_trim_toggle_consumed and
+                    not wall_trim_active and
+                    _node_can_start_wall_trim(node_i) and
+                    L_in > 1e-6
+                )
+                rough_wall_segment = bool(
+                    not rough_wall_toggle_consumed and
+                    not rough_wall_active and
+                    _node_can_start_rough_wall(node_i) and
+                    L_in > 1e-6
+                )
+                if wall_trim_segment:
+                    # Start wall trim only after any node-local turn/swing work has finished
+                    # and immediately before the plain straight segment begins.
+                    segs.append(_atticus_correction_seg("wall_trim_start", start_pt, i))
+                    wall_trim_active = True
+                if rough_wall_segment:
+                    # Start rough wall traverse on the same straight-only boundary as wall trim.
+                    segs.append(_atticus_correction_seg("rough_wall_start", start_pt, i))
+                    rough_wall_active = True
                 segs.append({
                     "type": "move",
                     "T": Tmove,
@@ -1579,16 +1809,17 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                     "chain_min_speed": chain_min_cmd,
                     "chain_early_exit": chain_early_exit,
                     "chain_speed_frac": chain_frac,
-                    "chain_angle_deg": chain_angle
+                    "chain_angle_deg": chain_angle,
                 })
-                if edge_events:
-                    segs[-1]["edge_events"] = edge_events
+                resolved_edge_events = _resolve_edge_events(edge_events)
+                if resolved_edge_events:
+                    segs[-1]["edge_events"] = resolved_edge_events
                 carry_speed = v_end if chain_next else 0.0
                 curr_heading = facing
-
         
         if display_nodes[i+1].get("reshape_toggle_arrival", False):
             reshape = not reshape
+            toggle_states["reshape"] = reshape
             segs.append({"type": "reshape", "T": 0.0, "pos": p1, "state": 2 if reshape else 1})
 
     final_idx = n - 1
@@ -1599,9 +1830,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
     final_actions = [a for a in final_actions_all if a.get("type") != "reverse"]
     final_profile_override = final_node.get("profile_override")
     final_prof_scale = _profile_speed_scale(final_profile_override)
-    final_drive_override_cmd = final_node.get("custom_lateral_cmd")
-    if final_drive_override_cmd is None:
-        final_drive_override_cmd = final_node.get("custom_lateral_ips")
+    final_drive_override_cmd = _node_lateral_override_cmd(final_node)
     final_drive_override_cmd = float(final_drive_override_cmd) if final_drive_override_cmd is not None else None
     if final_drive_override_cmd is not None:
         final_drive_override_cmd = _clamp_cmd(final_drive_override_cmd)
@@ -1632,6 +1861,13 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
         final_turn_speed_frac = 1.0
     final_turn_speed_frac = max(0.2, min(1.0, min(1.0, final_turn_speed_frac)))
 
+    if _atticus_correction_mode(final_node) == "wall_trim" and wall_trim_active:
+        segs.append(_atticus_correction_seg("wall_trim_end", final_anchor, final_idx))
+        wall_trim_active = False
+    if _atticus_correction_mode(final_node) == "rough_wall" and rough_wall_active:
+        segs.append(_atticus_correction_seg("rough_wall_end", final_anchor, final_idx))
+        rough_wall_active = False
+
     if final_node.get("reverse", False) and not final_reverse_acts:
         new_reverse = not reverse
         if new_reverse != reverse:
@@ -1646,11 +1882,17 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
 
     if final_node.get("reshape_toggle", False):
         reshape = not reshape
+        toggle_states["reshape"] = reshape
         segs.append({"type": "reshape", "T": 0.0, "pos": final_anchor, "state": 2 if reshape else 1})
 
+    final_immediate_insert_idx = None
+    final_immediate_insert_pos = None
     for act in final_actions:
         t = act.get("type")
         if t == "wait":
+            if final_immediate_insert_idx is None:
+                final_immediate_insert_idx = len(segs)
+                final_immediate_insert_pos = final_anchor
             segs.append({
                 "type": "wait",
                 "T": float(act.get("s", 0.0)),
@@ -1661,22 +1903,23 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
             })
         elif t in ("reshape", "geom"):
             reshape = not reshape
+            toggle_states["reshape"] = reshape
             segs.append({"type": "reshape", "T": 0.0, "pos": final_anchor, "state": 2 if reshape else 1})
         elif t == "preset":
-            name = str(act.get("name", "")).strip()
-            if name:
+            resolved_actions = _resolve_marker_actions([{
+                "kind": "preset",
+                "name": act.get("name", ""),
+                "state": act.get("state", None),
+                "value": act.get("value", None),
+                "values": act.get("values", []),
+            }])
+            if resolved_actions:
                 segs.append({
                     "type": "marker",
                     "T": 0.0,
                     "pos": final_anchor,
                     "node_i": final_idx,
-                    "actions": [{
-                        "kind": "preset",
-                        "name": name,
-                        "state": act.get("state", None),
-                        "value": act.get("value", None),
-                        "values": act.get("values", []),
-                    }]
+                    "actions": resolved_actions
                 })
         elif t == "code":
             code = str(act.get("code", "")).strip()
@@ -1702,6 +1945,7 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 "start_heading": curr_heading,
                 "target_heading": tgt,
                 "target_pos": final_anchor,
+                "reverse": reverse,
                 "role": "explicit",
                 "node_i": final_idx,
                 "turn_speed_dps": final_turn_speed_override,
@@ -1721,6 +1965,14 @@ def compile_timeline(display_nodes, cfg, initial_heading, fps=60):
                 swing_seg["T_speed_frac"] = final_drive_speed_frac
                 segs.append(swing_seg)
                 curr_heading = swing_heading
+    if _atticus_correction_mode(final_node) == "immediate":
+        if final_immediate_insert_idx is None:
+            final_immediate_insert_idx = len(segs)
+            final_immediate_insert_pos = final_anchor
+        segs.insert(
+            final_immediate_insert_idx,
+            _atticus_correction_seg("immediate", final_immediate_insert_pos or final_anchor, final_idx)
+        )
     
     return segs
 

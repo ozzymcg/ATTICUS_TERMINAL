@@ -14,7 +14,7 @@ if __package__ is None or __package__ == "":
     sys.path.append(os.path.dirname(here))
     from config import (
         GRID_COLOR, NODE_COLOR, ROBOT_COLOR, ARROW_COLOR, TEXT_COLOR,
-        ORANGE, GOLD, RED, GREY, WHITE, WINDOW_WIDTH, WINDOW_HEIGHT, PPI, GRID_SIZE_PX
+        ORANGE, GOLD, DARK_RED, RED, GREY, WHITE, WINDOW_WIDTH, WINDOW_HEIGHT, PPI, GRID_SIZE_PX
     )
     from geom import (
         oriented_rect_corners_px, rect_oob, approach_unit, polygons_intersect,
@@ -25,7 +25,7 @@ if __package__ is None or __package__ == "":
 else:
     from .config import (
         GRID_COLOR, NODE_COLOR, ROBOT_COLOR, ARROW_COLOR, TEXT_COLOR,
-        ORANGE, GOLD, RED, GREY, WHITE, WINDOW_WIDTH, WINDOW_HEIGHT, PPI, GRID_SIZE_PX
+        ORANGE, GOLD, DARK_RED, RED, GREY, WHITE, WINDOW_WIDTH, WINDOW_HEIGHT, PPI, GRID_SIZE_PX
     )
     from .geom import (
         oriented_rect_corners_px, rect_oob, approach_unit, polygons_intersect,
@@ -82,6 +82,194 @@ PATH_EDIT_HIGHLIGHT = (255, 255, 100)  # Yellow highlight
 _FIELD_POLY_CACHE = {"polys": None, "entries": None}
 CONTROL_POINT_COLOR = (255, 150, 0)
 SELECTED_CONTROL_COLOR = (255, 100, 100)
+ATTICUS_IMMEDIATE_COLOR = (255, 105, 180)
+ATTICUS_WALL_TRIM_COLOR = (255, 182, 220)
+ATTICUS_ROUGH_WALL_COLOR = (255, 158, 158)
+GEOMETRY_OUTLINE_PX = 2
+FIELD_OBJECT_OUTLINE_PX = 2
+PARK_ZONE_CORNER_RADIUS_IN = 1.8
+DRIVETRAIN_WHEEL_WIDTH_IN = 1.5
+
+def _shrink_poly(poly, inset_px=1.0):
+    """Shrink polygon toward centroid."""
+    if not poly or inset_px <= 0:
+        return poly
+    cx = sum(p[0] for p in poly) / len(poly)
+    cy = sum(p[1] for p in poly) / len(poly)
+    shrunk = []
+    for (x, y) in poly:
+        dx, dy = x - cx, y - cy
+        dist = (dx * dx + dy * dy) ** 0.5
+        if dist <= 1e-6:
+            shrunk.append((x, y))
+            continue
+        scale = max(0.0, (dist - inset_px) / dist)
+        shrunk.append((cx + dx * scale, cy + dy * scale))
+    return shrunk
+
+def _inside_outline_poly(poly, outline_px):
+    """Inset polygon so stroke lies inside original bounds."""
+    return _shrink_poly(poly, inset_px=max(0.0, float(outline_px) * 0.5))
+
+def _poly_int_points(poly):
+    """Convert polygon points to integer pixel coordinates."""
+    return [(int(round(x)), int(round(y))) for (x, y) in poly]
+
+def _arc_points_deg(cx, cy, radius, start_deg, end_deg, steps=8):
+    """Sample arc points in screen coordinates (y-positive down)."""
+    n = max(2, int(steps))
+    pts = []
+    for i in range(n + 1):
+        t = i / float(n)
+        a = math.radians(start_deg + (end_deg - start_deg) * t)
+        pts.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
+    return pts
+
+def _draw_park_zone_outline(surface, color, poly):
+    """Draw park-zone outline with rounded inner corners and open perimeter side."""
+    if not isinstance(poly, (list, tuple)) or len(poly) < 4:
+        return False
+    xs = [float(p[0]) for p in poly]
+    ys = [float(p[1]) for p in poly]
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    w = max(0.0, x1 - x0)
+    h = max(0.0, y1 - y0)
+    if w <= 1e-6 or h <= 1e-6:
+        return False
+    inset = float(FIELD_OBJECT_OUTLINE_PX) * 0.5
+    ix = x0 + inset
+    iy = y0 + inset
+    iw = max(1.0, w - 2.0 * inset)
+    ih = max(1.0, h - 2.0 * inset)
+    radius_px = max(4.0, float(PARK_ZONE_CORNER_RADIUS_IN) * float(PPI))
+    radius_px = min(radius_px, iw * 0.32, ih * 0.48)
+    r = max(1.0, float(radius_px))
+
+    top_dist = abs(iy - 0.0)
+    bottom_dist = abs(float(WINDOW_HEIGHT) - (iy + ih))
+    is_top_zone = top_dist <= bottom_dist
+
+    if is_top_zone:
+        # Top park zone: open top/perimeter side; round lower (field-facing) corners.
+        arc_l = _arc_points_deg(ix + r, iy + ih - r, r, 180.0, 90.0, steps=10)
+        arc_r = _arc_points_deg(ix + iw - r, iy + ih - r, r, 90.0, 0.0, steps=10)
+        pts = [
+            (ix, iy),
+            (ix, iy + ih - r),
+        ]
+        pts.extend(arc_l[1:])
+        pts.append((ix + iw - r, iy + ih))
+        pts.extend(arc_r[1:])
+        pts.append((ix + iw, iy))
+    else:
+        # Bottom park zone: open bottom/perimeter side; round upper (field-facing) corners.
+        arc_l = _arc_points_deg(ix + r, iy + r, r, 180.0, 270.0, steps=10)
+        arc_r = _arc_points_deg(ix + iw - r, iy + r, r, 270.0, 360.0, steps=10)
+        pts = [
+            (ix, iy + ih),
+            (ix, iy + r),
+        ]
+        pts.extend(arc_l[1:])
+        pts.append((ix + iw - r, iy))
+        pts.extend(arc_r[1:])
+        pts.append((ix + iw, iy + ih))
+
+    pygame.draw.lines(surface, color, False, _poly_int_points(pts), FIELD_OBJECT_OUTLINE_PX)
+    return True
+
+def _draw_drivetrain_corner_boxes(surface, dt_corners, heading_deg, color, wheel_diameter_in):
+    """Draw wheel rectangles at drivetrain corners."""
+    width_in = float(DRIVETRAIN_WHEEL_WIDTH_IN)
+    try:
+        length_in = max(0.1, float(wheel_diameter_in))
+    except Exception:
+        length_in = 2.75
+    for corner in dt_corners:
+        box = oriented_rect_corners_px(corner, heading_deg, width_in, length_in, 0.0, 0.0)
+        box_draw = _inside_outline_poly(box, GEOMETRY_OUTLINE_PX)
+        pygame.draw.polygon(surface, color, _poly_int_points(box_draw), GEOMETRY_OUTLINE_PX)
+
+def _local_poly_points(raw_points):
+    """Parse local polygon points from config into [(x_in, y_in), ...]."""
+    if isinstance(raw_points, dict):
+        raw_points = raw_points.get("value", [])
+    if not isinstance(raw_points, (list, tuple)):
+        return []
+    out = []
+    for pt in raw_points:
+        x = y = None
+        if isinstance(pt, dict):
+            x = pt.get("x", pt.get("x_in"))
+            y = pt.get("y", pt.get("y_in"))
+        elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            x, y = pt[0], pt[1]
+        if x is None or y is None:
+            continue
+        try:
+            out.append((float(x), float(y)))
+        except Exception:
+            continue
+    return out
+
+def _advanced_local_geometry(cfg, reshape_state=False):
+    """Return active custom local geometry polygon, if enabled and valid."""
+    bd = cfg.get("bot_dimensions", {}) if isinstance(cfg, dict) else {}
+    adv = bd.get("advanced_geometry", {}) if isinstance(bd, dict) else {}
+    if not isinstance(adv, dict):
+        return []
+    enabled_raw = adv.get("enabled", 0)
+    if isinstance(enabled_raw, dict):
+        enabled_raw = enabled_raw.get("value", 0)
+    try:
+        enabled = bool(int(enabled_raw))
+    except Exception:
+        enabled = bool(enabled_raw)
+    if not enabled:
+        return []
+    if reshape_state:
+        pts = _local_poly_points(adv.get("reshape_points", []))
+        if len(pts) < 3:
+            pts = _local_poly_points(adv.get("points", []))
+    else:
+        pts = _local_poly_points(adv.get("points", []))
+    if len(pts) < 3:
+        # Backward-compat: load legacy dual-polygon configs.
+        legacy_normal = _local_poly_points(adv.get("normal", []))
+        legacy_reshape = _local_poly_points(adv.get("reshape", []))
+        if reshape_state and len(legacy_reshape) >= 3:
+            pts = legacy_reshape
+        elif len(legacy_normal) >= 3:
+            pts = legacy_normal
+        elif len(legacy_reshape) >= 3:
+            pts = legacy_reshape
+    return pts if len(pts) >= 3 else []
+
+def _offset_center_px(base_center_px, heading_deg, off_x_in, off_y_in):
+    """Apply local (x,y in inches) offset to a center in world pixels."""
+    th = math.radians(heading_deg)
+    rx_in = float(off_x_in) * math.cos(th) - float(off_y_in) * math.sin(th)
+    ry_in = float(off_x_in) * math.sin(th) + float(off_y_in) * math.cos(th)
+    return (base_center_px[0] + rx_in * PPI, base_center_px[1] - ry_in * PPI)
+
+def _local_poly_to_world_px(center_px, heading_deg, local_points):
+    """Transform local polygon points (inches) to world pixels."""
+    th = math.radians(heading_deg)
+    s, c = math.sin(th), math.cos(th)
+    out = []
+    for (lx_in, ly_in) in local_points:
+        rx_in = lx_in * c - ly_in * s
+        ry_in = lx_in * s + ly_in * c
+        out.append((center_px[0] + rx_in * PPI, center_px[1] - ry_in * PPI))
+    return out
+
+def _full_geometry_poly_px(cfg, base_center_px, heading_deg, width_in, length_in, off_x_in, off_y_in, reshape_state=False):
+    """Get full geometry polygon in world pixels (custom polygon or rectangle)."""
+    local_poly = _advanced_local_geometry(cfg, reshape_state=reshape_state)
+    if local_poly:
+        center_px = _offset_center_px(base_center_px, heading_deg, off_x_in, off_y_in)
+        return _local_poly_to_world_px(center_px, heading_deg, local_poly)
+    return oriented_rect_corners_px(base_center_px, heading_deg, width_in, length_in, off_x_in, off_y_in)
 
 def draw_curved_path(screen, points, color=(100, 200, 255), width=3):
     """Draw a smooth curved path through points."""
@@ -228,6 +416,17 @@ def draw_multicolor_square(surface, pos, half, colors):
 
 def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=False, draw_links=True):
     """Draw path nodes with colors and labels."""
+    def _atticus_node_color(node):
+        """Pick the node tint for Atticus correction modes."""
+        mode = str(node.get("atticus_correction_mode", "") or "").strip().lower()
+        if mode == "immediate":
+            return ATTICUS_IMMEDIATE_COLOR
+        if mode == "wall_trim":
+            return ATTICUS_WALL_TRIM_COLOR
+        if mode == "rough_wall":
+            return ATTICUS_ROUGH_WALL_COLOR
+        return None
+
     def _effective_positions_for_links():
         """Handle effective positions for links."""
         if cfg is None:
@@ -294,7 +493,7 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
                 pygame.draw.line(surface, NODE_COLOR, p0, p1, 2)
     def _node_toggle_flags(node):
         """Handle node toggle flags."""
-        acts = node.get("actions_out", node.get("actions", []))
+        acts = node.get("actions", node.get("actions_out", []))
         reverse_toggle = bool(node.get("reverse", False))
         reshape_toggle = bool(node.get("reshape_toggle", False))
         for act in acts:
@@ -318,12 +517,19 @@ def draw_nodes(surface, nodes, selected_idx, font, cfg=None, path_edit_mode=Fals
     for i, node in enumerate(nodes):
         colors = []
         rev_state, rs_state = node_states[i]
+        atticus_color = _atticus_node_color(node)
+        if atticus_color is not None:
+            colors.append(atticus_color)
         if rev_state:
             colors.append(RED)
-        off = node.get("offset", 0)
+        try:
+            off = int(node.get("offset", 0))
+        except Exception:
+            off = 0
         if i != 0:
             if off == 1: colors.append(ORANGE)
             if off == 2: colors.append(GOLD)
+            if off == 3: colors.append(DARK_RED)
         if rs_state:
             colors.append((0, 100, 0))
         if i < len(nodes) - 1:
@@ -561,9 +767,11 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
     else:
         off = int(node.get("offset", 0))
         if off == 1:
-            lines.append(f"Offset1 {cfg['offsets']['offset_1_in']:g} in")
+            lines.append(f"Offset1 {cfg['offsets'].get('offset_1_in', 0.0):g} in")
         elif off == 2:
-            lines.append(f"Offset2 {cfg['offsets']['offset_2_in']:g} in")
+            lines.append(f"Offset2 {cfg['offsets'].get('offset_2_in', 0.0):g} in")
+        elif off == 3:
+            lines.append(f"Offset3 {cfg['offsets'].get('offset_3_in', 0.0):g} in")
         if off == 0 and node.get("offset_custom_in") is not None:
             lines.append(f"Custom offset {node['offset_custom_in']:g} in")
     has_rev_act = False
@@ -685,6 +893,13 @@ def draw_hover_box(surface, node, idx, mouse_pos, cfg, initial_heading, font_sma
         lines.append(_reshape_label(cfg))
     if node.get("reverse", False) and not has_rev_act:
         lines.append("Reverse")
+    corr_mode = str(node.get("atticus_correction_mode", "") or "").strip().lower()
+    if corr_mode == "immediate":
+        lines.append("Atticus correction: immediate")
+    elif corr_mode == "wall_trim":
+        lines.append("Atticus correction: wall trim")
+    elif corr_mode == "rough_wall":
+        lines.append("Atticus correction: rough wall")
     if lines:
         draw_label(surface, mouse_pos, lines, font_small)
 
@@ -834,7 +1049,11 @@ def draw_field_objects(surface, cfg):
             if name == 'long_goal_brace' and not show_braces:
                 continue
             col = color_map.get(name, (255, 255, 255))
-            pygame.draw.polygon(surface, col, [(int(x), int(y)) for (x, y) in poly], 2)
+            if name == 'park_zone' and _draw_park_zone_outline(surface, col, poly):
+                continue
+            # Keep matchloader outlines unchanged per UI request.
+            draw_poly = poly if name == 'matchloader' else _inside_outline_poly(poly, FIELD_OBJECT_OUTLINE_PX)
+            pygame.draw.polygon(surface, col, _poly_int_points(draw_poly), FIELD_OBJECT_OUTLINE_PX)
     except Exception:
         pass
 
@@ -849,11 +1068,38 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
     eff = []
     arrival_headings = []
     prev_pos = None
+    def _swing_heading_as_travel(swing_vis, prefer_start=True):
+        """Convert stored swing facing heading into travel heading for base-h logic."""
+        if not isinstance(swing_vis, dict):
+            return None
+        if prefer_start:
+            candidates = (("start_heading", "reverse_start"), ("target_heading", "reverse_end"))
+        else:
+            candidates = (("target_heading", "reverse_end"), ("start_heading", "reverse_start"))
+        for heading_key, reverse_key in candidates:
+            raw_h = swing_vis.get(heading_key)
+            if raw_h is None:
+                continue
+            try:
+                h = float(raw_h) % 360.0
+            except Exception:
+                continue
+            rev_raw = swing_vis.get(reverse_key, swing_vis.get("reverse_start", False))
+            if isinstance(rev_raw, dict):
+                rev_raw = rev_raw.get("value", 0)
+            try:
+                rev_on = bool(int(rev_raw))
+            except Exception:
+                rev_on = bool(rev_raw)
+            if rev_on:
+                h = (h - 180.0) % 360.0
+            return h
+        return None
     def _arrival_heading(idx, prev_pd, prev_swing, prev_start, prev_eff, this_pos):
         """Heading coming into node idx from previous segment (paths/swing aware)."""
         heading = None
         if prev_swing and prev_swing.get("target_heading") is not None:
-            heading = prev_swing.get("target_heading")
+            heading = _swing_heading_as_travel(prev_swing, prefer_start=False)
         has_curve = prev_pd.get("use_path", False) or bool(prev_pd.get("pose_preview_points"))
         if heading is None and has_curve:
             pts = list(prev_pd.get("path_points") or prev_pd.get("pose_preview_points") or [])
@@ -944,22 +1190,6 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
         if not pts:
             return None
         return calculate_path_heading(pts, len(pts) - 1)
-    def _shrink_poly(poly, inset_px=1.0):
-        """Shrink polygon toward centroid to ignore stroke outlines."""
-        if not poly or inset_px <= 0:
-            return poly
-        cx = sum(p[0] for p in poly) / len(poly)
-        cy = sum(p[1] for p in poly) / len(poly)
-        shrunk = []
-        for (x, y) in poly:
-            dx, dy = x - cx, y - cy
-            dist = (dx * dx + dy * dy) ** 0.5
-            if dist <= 1e-6:
-                shrunk.append((x, y))
-                continue
-            scale = max(0.0, (dist - inset_px) / dist)
-            shrunk.append((cx + dx * scale, cy + dy * scale))
-        return shrunk
     for i, node in enumerate(nodes):
         outgoing_h = None
         swing_vis_here = nodes[i].get("path_to_next", {}).get("swing_vis")
@@ -967,7 +1197,7 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
             next_pd = nodes[i].get("path_to_next", {})
             p0_override = swing_vis_here.get("end_pos") if swing_vis_here else next_pd.get("start_override")
             if swing_vis_here:
-                outgoing_h = swing_vis_here.get("start_heading") or swing_vis_here.get("target_heading")
+                outgoing_h = _swing_heading_as_travel(swing_vis_here, prefer_start=True)
             if outgoing_h is None and (next_pd.get("use_path", False) or next_pd.get("pose_preview_points")):
                 path_pts = list(next_pd.get("path_points") or next_pd.get("pose_preview_points") or [])
                 if path_pts and len(path_pts) >= 2:
@@ -1016,7 +1246,7 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
                 base_h = incoming_h
             else:
                 base_h = heading_from_points(eff[i-1], eff[i]) if i > 0 else 0.0
-        acts = node.get("actions_out", node.get("actions", []))
+        acts = node.get("actions", node.get("actions_out", []))
         has_reverse_act = any(act.get("type") == "reverse" for act in acts)
         reverse_state_local = reverse_state
         if node.get("reverse", False) and not has_reverse_act:
@@ -1049,8 +1279,10 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
             full_l = bd.get("length", 0.0)
             off_x = bd.get("full_offset_x_in", 0.0)
             off_y = bd.get("full_offset_y_in", 0.0)
-        corners = oriented_rect_corners_px(eff[i], eff_heading, full_w, full_l, off_x, off_y)
-        corners_inner = _shrink_poly(corners, inset_px=1.0)
+        corners = _full_geometry_poly_px(
+            cfg, eff[i], eff_heading, full_w, full_l, off_x, off_y, reshape_state=bool(reshape_state)
+        )
+        corners_inner = _inside_outline_poly(corners, GEOMETRY_OUTLINE_PX)
         is_oob = rect_oob(corners_inner, pad_px, WINDOW_WIDTH, WINDOW_HEIGHT)
         try:
             if int(cfg.get('ui', {}).get('show_field_objects', 1)) == 1:
@@ -1059,7 +1291,7 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
                         continue
                     if _name == 'long_goal_brace' and not show_braces:
                         continue
-                    poly_inner = _shrink_poly(_poly, inset_px=1.0)
+                    poly_inner = _inside_outline_poly(_poly, FIELD_OBJECT_OUTLINE_PX)
                     if polygons_intersect(corners_inner, poly_inner):
                         is_oob = True
                         break
@@ -1068,7 +1300,8 @@ def draw_geometry_borders(surface, nodes, cfg, init_heading):
         if collisions_only and not is_oob:
             continue
         color = RED if is_oob else GREY
-        pygame.draw.polygon(surface, color, corners, 2)
+        draw_corners = _inside_outline_poly(corners, GEOMETRY_OUTLINE_PX)
+        pygame.draw.polygon(surface, color, _poly_int_points(draw_corners), GEOMETRY_OUTLINE_PX)
 
 def draw_follow_geometry(surface, cfg, pos_px, heading_deg, reshape_state_live):
     """Draw robot geometry boxes that follow motion."""
@@ -1085,24 +1318,10 @@ def draw_follow_geometry(surface, cfg, pos_px, heading_deg, reshape_state_live):
         gl = bd.get("length", 0.0)
         off_x = bd.get("full_offset_x_in", 0.0)
         off_y = bd.get("full_offset_y_in", 0.0)
-    g_corners = oriented_rect_corners_px(pos_px, heading_deg, gw, gl, off_x, off_y)
-    def _shrink_poly(poly, inset_px=1.0):
-        """Handle shrink poly."""
-        if not poly or inset_px <= 0:
-            return poly
-        cx = sum(p[0] for p in poly) / len(poly)
-        cy = sum(p[1] for p in poly) / len(poly)
-        shrunk = []
-        for (x, y) in poly:
-            dx, dy = x - cx, y - cy
-            dist = (dx * dx + dy * dy) ** 0.5
-            if dist <= 1e-6:
-                shrunk.append((x, y))
-                continue
-            scale = max(0.0, (dist - inset_px) / dist)
-            shrunk.append((cx + dx * scale, cy + dy * scale))
-        return shrunk
-    g_corners_inner = _shrink_poly(g_corners, inset_px=1.0)
+    g_corners = _full_geometry_poly_px(
+        cfg, pos_px, heading_deg, gw, gl, off_x, off_y, reshape_state=bool(reshape_state_live)
+    )
+    g_corners_inner = _inside_outline_poly(g_corners, GEOMETRY_OUTLINE_PX)
     g_oob = rect_oob(g_corners_inner, pad_px, WINDOW_WIDTH, WINDOW_HEIGHT)
     try:
         if int(cfg.get('ui', {}).get('show_field_objects', 1)) == 1:
@@ -1111,14 +1330,21 @@ def draw_follow_geometry(surface, cfg, pos_px, heading_deg, reshape_state_live):
                     continue
                 if _name == 'long_goal_brace' and not show_braces:
                     continue
-                poly_inner = _shrink_poly(_poly, inset_px=1.0)
+                poly_inner = _inside_outline_poly(_poly, FIELD_OBJECT_OUTLINE_PX)
                 if polygons_intersect(g_corners_inner, poly_inner):
                     g_oob = True
                     break
     except Exception:
         pass
-    pygame.draw.polygon(surface, RED if g_oob else GREY, g_corners, 2)
+    full_color = RED if g_oob else GREY
+    g_draw = _inside_outline_poly(g_corners, GEOMETRY_OUTLINE_PX)
+    pygame.draw.polygon(surface, full_color, _poly_int_points(g_draw), GEOMETRY_OUTLINE_PX)
     dtw = bd.get("dt_width", bd.get("width", 0.0))
     dtl = bd.get("dt_length", bd.get("length", 0.0))
     dt_corners = oriented_rect_corners_px(pos_px, heading_deg, dtw, dtl, 0.0, 0.0)
-    pygame.draw.polygon(surface, WHITE, dt_corners, 2)
+    dt_draw = _inside_outline_poly(dt_corners, GEOMETRY_OUTLINE_PX)
+    pygame.draw.polygon(surface, WHITE, _poly_int_points(dt_draw), GEOMETRY_OUTLINE_PX)
+    wheel_diam_raw = cfg.get("robot_physics", {}).get("diameter", 2.75)
+    if isinstance(wheel_diam_raw, dict):
+        wheel_diam_raw = wheel_diam_raw.get("value", 2.75)
+    _draw_drivetrain_corner_boxes(surface, dt_corners, heading_deg, full_color, wheel_diam_raw)

@@ -775,14 +775,60 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         routine_name = "autonomous"
     
     defaults = {
+        "AttLib": {
+            "wait": "pros::delay({MS});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}}, {ASYNC});",
+            "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}}, {ASYNC});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}}, {ASYNC});",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, attlib::DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .direction = attlib::AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}}, {ASYNC});",
+            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {{.forwards = {FORWARDS}}}, {ASYNC});",
+            "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+            "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+            "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+            "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+            "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
+            "reshape_on": "// RESHAPE ON state={STATE}",
+            "reshape_off": "// RESHAPE OFF state={STATE}",
+            "reshape": "// RESHAPE state={STATE}",
+            "reverse_on": "// reverse handled inline",
+            "reverse_off": "// reverse handled inline",
+            "tbuffer": "pros::delay({MS});",
+            "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+            "marker_wait_done": "chassis.waitUntilDone();",
+            "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
+        },
+        "Atticus": {
+            "wait": "pros::delay({MS});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}}, {ASYNC});",
+            "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}}, {ASYNC});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}}, {ASYNC});",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}}, {ASYNC});",
+            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {{.forwards = {FORWARDS}}}, {ASYNC});",
+            "atticus_immediate": "localizer.applyImmediateCorrectionAuto();",
+            "atticus_wall_trim_start": "localizer.correctThetaFromWallAuto();",
+            "atticus_wall_trim_end": "localizer.endThetaWallAlignment();",
+            "atticus_rough_wall_start": "localizer.startRoughWallTraverseAuto();",
+            "atticus_rough_wall_end": "localizer.endRoughWallTraverse();",
+            "reshape_on": "// RESHAPE ON state={STATE}",
+            "reshape_off": "// RESHAPE OFF state={STATE}",
+            "reshape": "// RESHAPE state={STATE}",
+            "reverse_on": "// reverse handled inline",
+            "reverse_off": "// reverse handled inline",
+            "tbuffer": "pros::delay({MS});",
+            "marker_wait": "chassis.waitUntil({MARKER_DIST_IN});",
+            "marker_wait_done": "chassis.waitUntilDone();",
+            "setpose": "chassis.setPose({X_IN}, {Y_IN}, {HEADING_DEG});"
+        },
         "LemLib": {
             "wait": "task::sleep({MS});",
-            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
-            "turn_global": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
-            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}});",
-            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}});",
-            "swing": "chassis.swingToHeading({HEADING_DEG}, lemlib::DriveSide::{SIDE}, {TIMEOUT_MS}, {{.minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}});",
-            "path_follow": "chassis.follow({PATH_ASSET}, {LOOKAHEAD}, {TIMEOUT_MS}, {FORWARDS});",
+            "move": "chassis.moveToPoint({X_IN}, {Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}}, {ASYNC});",
+            "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}}, {ASYNC});",
+            "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}}, {ASYNC});",
+            "pose": "chassis.moveToPose({X_IN}, {Y_IN}, {HEADING_DEG}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .lead = {LEAD_IN}, .minSpeed = {DRIVE_MIN_SPEED}, .maxSpeed = {DRIVE_MAX_SPEED}, .earlyExitRange = {DRIVE_EARLY_EXIT}}}, {ASYNC});",
+            "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {{.forwards = {FORWARDS}, .direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}}, {ASYNC});",
+            "path_follow": "chassis.follow(\"{PATH_NAME}\", {TIMEOUT_MS}, {LOOKAHEAD}, {{.forwards = {FORWARDS}}}, {ASYNC});",
             "reshape_on": "// RESHAPE ON state={STATE}",
             "reshape_off": "// RESHAPE OFF state={STATE}",
             "reshape": "// RESHAPE state={STATE}",
@@ -873,10 +919,44 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     tpls = dict(defaults.get(style, defaults["Custom"]))
     stored_tpl = cfg.get("codegen", {}).get("templates", {}).get(style, {})
     tpls.update(stored_tpl)
-    if style == "LemLib" and "swing" not in tpls:
-        tpls["swing"] = defaults["LemLib"]["swing"]
+    for _k, _v in list(tpls.items()):
+        if isinstance(_v, str) and "async = {ASYNC}" in _v:
+            tpls[_k] = _v.replace("async = {ASYNC}", "{ASYNC}")
+    atticus_like_styles = ("LemLib", "Atticus", "AttLib")
+    if style in atticus_like_styles:
+        legacy_turn_swing_tpls = {
+            "Atticus": {
+                "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+            },
+            "AttLib": {
+                "turn_global": "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, attlib::DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = attlib::AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+            },
+            "LemLib": {
+                "turn_global": (
+                    "chassis.turnToPoint({TARGET_X_IN}, {TARGET_Y_IN}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                    "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                ),
+                "turn_local": "chassis.turnToHeading({HEADING_DEG}, {TIMEOUT_MS}, {.minSpeed = {TURN_MIN_SPEED}, .earlyExitRange = {TURN_EARLY_EXIT}}, {ASYNC});",
+                "swing": "chassis.swingToPoint({TARGET_Y_IN}, {TARGET_X_IN}, DriveSide::{LOCKED_SIDE}, {TIMEOUT_MS}, {.direction = AngularDirection::{DIR}, .minSpeed = {SWING_MIN_SPEED}, .earlyExitRange = {SWING_EARLY_EXIT}}, {ASYNC});",
+            },
+        }
+        legacy_map = legacy_turn_swing_tpls.get(style, {})
+        for _tpl_key, _legacy_val in legacy_map.items():
+            _current = tpls.get(_tpl_key)
+            if isinstance(_legacy_val, (tuple, list, set)):
+                _match = _current in _legacy_val
+            else:
+                _match = _current == _legacy_val
+            if _match:
+                tpls[_tpl_key] = defaults[style][_tpl_key]
+    if style in atticus_like_styles and "swing" not in tpls:
+        tpls["swing"] = defaults[style]["swing"]
     optional_keys = ["reverse_on", "reverse_off", "reshape_on", "reshape_off", "setpose", "path_follow", "marker_wait", "marker_wait_done"]
-    if style != "LemLib":
+    if style not in atticus_like_styles:
         optional_keys += ["pose", "swing"]
     active_opt = stored_tpl.get("__optional__", None)
     if isinstance(active_opt, list) and "reshape" in active_opt:
@@ -903,7 +983,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     pad_factor = float(opts.get("pad_factor", 1.0) or 1.0)
     min_s = float(opts.get("min_timeout_s", 0.0) or 0.0)
     motion_mode = modes.get("motion", "move")
-    turn_mode = modes.get("turn", "turn_global" if style == "LemLib" else "turn_local")
+    turn_mode = modes.get("turn", "turn_global" if style in atticus_like_styles else "turn_local")
 
     def _opt_num(key: str, default: float) -> float:
         """Parse numeric config option (supports {'value': ...} style)."""
@@ -1103,12 +1183,14 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
     if omit_defaults:
         cleanup_defaults = {
             "FORWARDS": True,
+            "ASYNC": True,
             "LEAD_IN": 0.0,
             "MOVE_SPEED": "",
             "TURN_SPEED": "",
             "PATH_MIN_SPEED": min_speed_cmd,
             "PATH_MAX_SPEED": max_speed_cmd,
             "DRIVE_MIN_SPEED": 0,
+            "DRIVE_MAX_SPEED": 127.0,
             "TURN_MIN_SPEED": 0,
             "SWING_MIN_SPEED": 0,
             "DRIVE_EARLY_EXIT": 0.0,
@@ -1191,6 +1273,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "DRIVE_EARLY_EXIT",
             "TURN_EARLY_EXIT",
             "SWING_EARLY_EXIT",
+            "ASYNC",
         }
 
         def _is_exit_conditions_call(token_key: str) -> bool:
@@ -1297,7 +1380,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         if OMIT_SENTINEL in line:
             line = re.sub(r"\s*=\s*__OMIT__", "", line)
             line = line.replace(OMIT_SENTINEL, "")
-        line = re.sub(r",\s*\{\s*\}", "", line)
+        # Keep empty options structs when followed by non-default args (e.g. async=false),
+        # but drop trailing empty structs once all following optional args were omitted.
+        line = re.sub(r",\s*\{\s*\}(?=\s*\))", "", line)
         line = re.sub(r",\s*,", ", ", line)
         line = re.sub(r"\(\s*,", "(", line)
         line = re.sub(r",\s*\)", ")", line)
@@ -1434,6 +1519,101 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             continue
         preset_map[name.lower()] = p
     preset_state = {"reshape": False}
+    _waituntil_re = re.compile(r"\bwait\s*until(?:done)?\b", re.IGNORECASE)
+
+    def _text_uses_waituntil(value) -> bool:
+        """Check whether text/template includes waitUntil/waitUntilDone."""
+        if value is None:
+            return False
+        try:
+            parts = _normalize_tpl(value)
+        except Exception:
+            parts = [str(value)]
+        for part in parts:
+            try:
+                if _waituntil_re.search(str(part) or ""):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _preset_uses_waituntil(preset: dict) -> bool:
+        """Check whether any preset template path includes waitUntil."""
+        if not isinstance(preset, dict):
+            return False
+        for key in ("template", "action", "on", "off", "case_default"):
+            if _text_uses_waituntil(preset.get(key, "")):
+                return True
+        case_list = preset.get("cases", [])
+        if isinstance(case_list, dict):
+            case_list = [{"template": v} for v in case_list.values()]
+        if isinstance(case_list, list):
+            for case_item in case_list:
+                if isinstance(case_item, dict) and _text_uses_waituntil(case_item.get("template", "")):
+                    return True
+        return False
+
+    _preset_waituntil_cache = {}
+
+    def _preset_name_uses_waituntil(name: str) -> bool:
+        """Cached waitUntil lookup for mechanism preset names."""
+        key = str(name or "").strip().lower()
+        if not key:
+            return False
+        if key in _preset_waituntil_cache:
+            return _preset_waituntil_cache[key]
+        _preset_waituntil_cache[key] = _preset_uses_waituntil(preset_map.get(key, {}))
+        return _preset_waituntil_cache[key]
+
+    marker_wait_uses_waituntil = _text_uses_waituntil(tpls.get("marker_wait", ""))
+    marker_wait_done_uses_waituntil = _text_uses_waituntil(tpls.get("marker_wait_done", ""))
+
+    def _enabled_edge_events(seg: dict) -> list:
+        """Return enabled edge events for a segment."""
+        events = seg.get("edge_events", [])
+        if not isinstance(events, list):
+            return []
+        out = []
+        for ev in events:
+            if isinstance(ev, dict) and ev.get("enabled", True):
+                out.append(ev)
+        return out
+
+    def _actions_use_waituntil(actions) -> bool:
+        """Check whether marker action payload explicitly uses waitUntil."""
+        if not isinstance(actions, list):
+            return False
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            kind = str(act.get("kind", "code")).strip().lower()
+            if kind == "code":
+                if _text_uses_waituntil(act.get("code", "")):
+                    return True
+            elif kind == "preset":
+                if _preset_name_uses_waituntil(str(act.get("name", ""))):
+                    return True
+        return False
+
+    def _segment_uses_waituntil(seg: dict) -> bool:
+        """True when this segment has enabled marker flow that waits on motion."""
+        events = _enabled_edge_events(seg)
+        if not events:
+            return False
+        if marker_wait_uses_waituntil or marker_wait_done_uses_waituntil:
+            return True
+        for ev in events:
+            if _actions_use_waituntil(ev.get("actions", [])):
+                return True
+        return False
+
+    def _segment_async_token(seg: dict) -> str:
+        """ASYNC token value for this segment."""
+        st = str(seg.get("type", "")).strip().lower()
+        is_motion = st in ("move", "pose", "path", "face", "turn", "swing")
+        if not is_motion:
+            return "true"
+        return "true" if _segment_uses_waituntil(seg) else "false"
 
     def _render_tpl_lines(tpl_val, tokens):
         """Handle render tpl lines."""
@@ -1445,6 +1625,87 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             if line.strip():
                 out_lines.append(line)
         return out_lines
+
+    def _normalize_toggle_state(state) -> str:
+        """Normalize preset toggle state to on/off/toggle/empty."""
+        if state is None:
+            return ""
+        if isinstance(state, bool):
+            return "on" if state else "off"
+        s = str(state).strip().lower()
+        if not s:
+            return ""
+        if s in ("on", "1", "true", "yes", "enable", "enabled"):
+            return "on"
+        if s in ("off", "0", "false", "no", "disable", "disabled"):
+            return "off"
+        if s == "toggle":
+            return "toggle"
+        return ""
+
+    def _normalize_dsr_sensor_token(value: object) -> str:
+        """Normalize DSR sensor tokens like RIGHT or DistanceSensorId::RIGHT."""
+        token = str(value or "").strip()
+        if not token:
+            return ""
+        token = re.split(r"[\s,;/|+]+", token, maxsplit=1)[0]
+        token = token.split("::")[-1]
+        token = token.strip().upper()
+        alias_map = {
+            "F": "FRONT",
+            "FR": "FRONT",
+            "FRONT": "FRONT",
+            "R": "RIGHT",
+            "RT": "RIGHT",
+            "RIGHT": "RIGHT",
+            "B": "BACK",
+            "BK": "BACK",
+            "BACK": "BACK",
+            "L": "LEFT",
+            "LT": "LEFT",
+            "LEFT": "LEFT",
+            "AUTO": "",
+            "ALL": "",
+            "ANY": "",
+        }
+        return alias_map.get(token, token)
+
+    def _normalize_dsr_sensor_tokens(value: object, values: object = None) -> list:
+        """Normalize up to two requested DSR sensor tokens."""
+        raw_parts = []
+        if isinstance(values, list) and values:
+            raw_parts.extend(values)
+        elif value not in (None, ""):
+            raw_parts.append(value)
+        tokens = []
+        seen = set()
+        for part in raw_parts:
+            for raw_token in re.split(r"[\s,;/|+]+", str(part or "").strip()):
+                token = _normalize_dsr_sensor_token(raw_token)
+                if not token or token in seen:
+                    continue
+                tokens.append(token)
+                seen.add(token)
+                if len(tokens) >= 2:
+                    return tokens
+        return tokens
+
+    def _render_dsr_action(act: dict) -> list:
+        """Render the built-in DSR command without relying on editable presets."""
+        value = str(act.get("value", "") or "").strip()
+        if not value:
+            values = act.get("values", [])
+            if isinstance(values, list):
+                value = " ".join(str(v).strip() for v in values if str(v).strip())
+        sensor_tokens = _normalize_dsr_sensor_tokens(value, act.get("values", []))
+        if len(sensor_tokens) >= 2:
+            return [f"distanceSensorCorrection(DistanceSensorId::{sensor_tokens[0]}, DistanceSensorId::{sensor_tokens[1]});"]
+        if len(sensor_tokens) == 1:
+            return [f"distanceSensorCorrection(DistanceSensorId::{sensor_tokens[0]});"]
+        auto_tpl = str(tpls.get("atticus_immediate", "") or "").strip()
+        if auto_tpl:
+            return _render_tpl_lines(auto_tpl, {})
+        return ["localizer.applyImmediateCorrectionAuto();"]
 
     def _render_marker_actions(actions):
         """Handle render marker actions."""
@@ -1458,6 +1719,9 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             if kind == "preset":
                 name = str(act.get("name", "")).strip()
                 key = name.lower()
+                if key == "dsr":
+                    out_lines.extend(_render_dsr_action(act))
+                    continue
                 preset = preset_map.get(key)
                 if not preset:
                     out_lines.append(f"// marker: unknown preset '{name}'")
@@ -1477,7 +1741,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 value1 = values[0] if len(values) > 0 else ""
                 value2 = values[1] if len(values) > 1 else ""
                 value3 = values[2] if len(values) > 2 else ""
-                state = str(act.get("state", "") or "").strip().lower()
+                state = _normalize_toggle_state(act.get("state", None))
                 tokens = {
                     "VALUE": value,
                     "VALUE1": value1,
@@ -1489,13 +1753,16 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 if mode == "toggle":
                     if state not in ("on", "off", "toggle", ""):
                         state = "toggle"
+                    current = bool(preset_state.get(key, preset.get("default", False)))
                     if state == "on":
                         next_state = True
                     elif state == "off":
                         next_state = False
                     else:
-                        current = bool(preset_state.get(key, preset.get("default", False)))
                         next_state = not current
+                    if next_state == current:
+                        preset_state[key] = next_state
+                        continue
                     preset_state[key] = next_state
                     tpl_key = "on" if next_state else "off"
                     tpl_val = preset.get(tpl_key, "")
@@ -1683,6 +1950,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             "HEADING_DEG": 0, "HEADING_RAD": 0, "TURN_DELTA_DEG": 0, "TURN_DELTA_RAD": 0,
             "TARGET_X_IN": 0, "TARGET_Y_IN": 0,
             "FORWARDS": "true", "FORWARD_PARAM": "{.forwards = true}",
+            "ASYNC": "true",
             "DIR": "AUTO",
             "SIDE": "LEFT", "SIDE_LC": "left",
             "LOCKED_SIDE": "LEFT", "LOCKED_SIDE_LC": "left",
@@ -1916,6 +2184,14 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             emit_jar_constants(move_type, tokens, cap, settle_err, settle_time_adj)
             _add_settle_timeout(tokens, settle_time_adj, SETTLE_TIMEOUT_PAD_MS)
         return cap, settle_err, settle_time_adj
+
+    def _emit_atticus_segment_start(seg: dict, tokens: dict):
+        """Wall-trim now uses explicit zero-time Atticus toggle segments."""
+        return None
+
+    def _emit_atticus_segment_end(seg: dict, tokens: dict):
+        """Wall-trim now uses explicit zero-time Atticus toggle segments."""
+        return None
     
     while i < len(timeline):
         seg = timeline[i]
@@ -1939,6 +2215,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
         tokens_base = {
             "MS": to_ms, "S": to_s, "TIMEOUT_MS": to_ms, "TIMEOUT_S": to_s,
             "STATE": _reshape_state_token(cfg, seg.get("state", 0)), "NAME": seg.get("name", ""),
+            "ASYNC": _segment_async_token(seg),
             "LOOKAHEAD": int(lookahead_in)
         }
         
@@ -1996,6 +2273,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                     "FORWARDS": "false" if seg.get("reverse") else "true",
                     "FORWARD_PARAM": "{.forwards = " + ("false" if seg.get("reverse") else "true") + "}",
                     "MOVE_SPEED": "" if seg.get("drive_speed_cmd") is None else round(max(0.0, min(127.0, float(seg.get("drive_speed_cmd")))), 3),
+                    "DRIVE_MAX_SPEED": 127.0 if seg.get("drive_speed_cmd") is None else round(max(0.0, min(127.0, float(seg.get("drive_speed_cmd")))), 3),
                     "HEADING_DEG": round(pose_h, 6),
                     "HEADING_RAD": round(pose_h * math.pi / 180.0, 9),
                     "LEAD_IN": round(float(seg.get("pose_lead_in", 0.0) or 0.0), 6),
@@ -2020,8 +2298,10 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 )
                 _apply_angle_units(tokens)
                 _emit_jar_defaults("drive", tokens)
+                _emit_atticus_segment_start(seg, tokens_base)
                 emit("pose", tokens)
                 _emit_edge_markers(seg, path_len_in if path_len_in > 0.0 else abs(dist_in), tokens_base, path_points=seg.get("path_points"))
+                _emit_atticus_segment_end(seg, tokens_base)
                 i += 1
                 continue
             segment_idx = seg.get("segment_idx", i)
@@ -2115,8 +2395,10 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             _apply_angle_units(tokens)
             _emit_jar_defaults("drive", tokens)
             if path_tpl_key:
+                _emit_atticus_segment_start(seg, tokens_base)
                 emit(path_tpl_key, tokens)
                 _emit_edge_markers(seg, path_len_in, tokens_base, path_points=seg.get("path_points"))
+                _emit_atticus_segment_end(seg, tokens_base)
             
             i += 1
         elif st == "move":
@@ -2133,6 +2415,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "FORWARDS": "false" if seg.get("reverse") else "true",
                 "FORWARD_PARAM": "{.forwards = " + ("false" if seg.get("reverse") else "true") + "}",
                 "MOVE_SPEED": "" if seg.get("drive_speed_cmd") is None else round(max(0.0, min(127.0, float(seg.get("drive_speed_cmd")))), 3),
+                "DRIVE_MAX_SPEED": 127.0 if seg.get("drive_speed_cmd") is None else round(max(0.0, min(127.0, float(seg.get("drive_speed_cmd")))), 3),
                 "HEADING_DEG": round(face_disp, 6),
                 "HEADING_RAD": round(face_disp * math.pi / 180.0, 9),
                 "LEAD_IN": round(float(seg.get("pose_lead_in", 0.0) or 0.0), 6),
@@ -2156,8 +2439,10 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             )
             _apply_angle_units(tokens)
             _emit_jar_defaults("drive", tokens)
+            _emit_atticus_segment_start(seg, tokens_base)
             emit(move_tpl_key, tokens)
             _emit_edge_markers(seg, dist_in, tokens_base)
+            _emit_atticus_segment_end(seg, tokens_base)
             i += 1
         
         elif st == "pose":
@@ -2175,6 +2460,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "FORWARDS": "false" if seg.get("reverse") else "true",
                 "FORWARD_PARAM": "{.forwards = " + ("false" if seg.get("reverse") else "true") + "}",
                 "MOVE_SPEED": "" if seg.get("drive_speed_cmd") is None else round(max(0.0, min(127.0, float(seg.get("drive_speed_cmd")))), 3),
+                "DRIVE_MAX_SPEED": 127.0 if seg.get("drive_speed_cmd") is None else round(max(0.0, min(127.0, float(seg.get("drive_speed_cmd")))), 3),
                 "HEADING_DEG": round(pose_h, 6),
                 "HEADING_RAD": round(pose_h * math.pi / 180.0, 9),
                 "LEAD_IN": round(float(seg.get("pose_lead_in", 0.0) or 0.0), 6),
@@ -2208,8 +2494,10 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             )
             _apply_angle_units(tokens)
             _emit_jar_defaults("drive", tokens)
+            _emit_atticus_segment_start(seg, tokens_base)
             emit(pose_tpl_key, tokens)
             _emit_edge_markers(seg, dist_in, tokens_base)
+            _emit_atticus_segment_end(seg, tokens_base)
             i += 1
         
         elif st == "face":
@@ -2222,6 +2510,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 target_pos = seg.get("p1", seg.get("pos", (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)))
             target_x_in, target_y_in = field_coords_in(target_pos)
             tokens = dict(tokens_base)
+            turn_forwards = "false" if bool(seg.get("reverse", False)) else "true"
             tokens.update({
                 "HEADING_DEG": round(h_disp, 6),
                 "HEADING_RAD": round(h_disp * math.pi / 180.0, 9),
@@ -2229,6 +2518,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "TURN_DELTA_RAD": round(delta_heading * math.pi / 180.0, 9),
                 "TARGET_X_IN": round(target_x_in, 6),
                 "TARGET_Y_IN": round(target_y_in, 6),
+                "FORWARDS": turn_forwards,
+                "FORWARD_PARAM": "{.forwards = " + turn_forwards + "}",
                 "TURN_SPEED": "" if seg.get("turn_speed_dps") is None else round(float(seg.get("turn_speed_dps")), 6),
                 "TURN_MAX_V": "",
                 "TURN_SETTLE_ERR": "",
@@ -2263,6 +2554,20 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             out_lines = _render_marker_actions(seg.get("actions", []))
             if out_lines:
                 lines.extend(out_lines)
+            i += 1
+
+        elif st == "atticus_correction":
+            mode = str(seg.get("mode", "")).strip().lower()
+            if mode == "immediate":
+                emit("atticus_immediate", tokens_base)
+            elif mode == "wall_trim_start":
+                emit("atticus_wall_trim_start", tokens_base)
+            elif mode == "wall_trim_end":
+                emit("atticus_wall_trim_end", tokens_base)
+            elif mode == "rough_wall_start":
+                emit("atticus_rough_wall_start", tokens_base)
+            elif mode == "rough_wall_end":
+                emit("atticus_rough_wall_end", tokens_base)
             i += 1
         
         elif st == "swing":
@@ -2301,6 +2606,7 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             locked_side = _opp_side(side_token)
 
             tokens = dict(tokens_base)
+            swing_forwards = "false" if bool(seg.get("reverse_start", seg.get("reverse", False))) else "true"
             tokens.update({
                 "HEADING_DEG": round(h_disp, 6),
                 "HEADING_RAD": round(h_disp * math.pi / 180.0, 9),
@@ -2308,6 +2614,8 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
                 "TURN_DELTA_RAD": round(delta_heading * math.pi / 180.0, 9),
                 "TARGET_X_IN": round(target_x_in, 6),
                 "TARGET_Y_IN": round(target_y_in, 6),
+                "FORWARDS": swing_forwards,
+                "FORWARD_PARAM": "{.forwards = " + swing_forwards + "}",
                 "DIR": dir_token,
                 "SIDE": side_token,
                 "SIDE_LC": side_token.lower(),
@@ -2360,6 +2668,11 @@ def build_export_lines_with_paths(cfg, timeline, routine_name="autonomous", init
             except Exception:
                 state_num = 2 if str(state_raw).strip().lower() in ("2", "on", "true", "yes", "reshaped") else 1
             next_state = (state_num == 2)
+            current_state = bool(preset_state.get("reshape", False))
+            if next_state == current_state:
+                preset_state["reshape"] = next_state
+                i += 1
+                continue
             tokens = dict(tokens_base)
             tokens["STATE"] = _reshape_state_token(cfg, 2 if next_state else 1)
             reshape_key = "reshape_on" if next_state else "reshape_off"
