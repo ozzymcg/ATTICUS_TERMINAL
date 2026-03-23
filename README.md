@@ -42,6 +42,7 @@ Atticus Terminal includes an **Atticus tab** for configuring the simulator-side 
    - `py main.py` (Windows) or `python3 main.py` (macOS/Linux)
 
 ### Notes by Platform
+- If installation fails, it may be because you aren't using python 3.12 or 3.11, as they hate pygame right now.
 - On Windows, avoid the Microsoft Store "app execution alias" `python.exe` (it often breaks venv/build tooling). Prefer a python.org install and use `py ...`.
 - Linux may require a tkinter package from your distro (for example `python3-tk`).
 - On macOS, SDL (pygame) and Tk can conflict if SDL initializes first; this app now pre-initializes Tk on macOS to avoid `SDLApplication macOSVersion` crashes.
