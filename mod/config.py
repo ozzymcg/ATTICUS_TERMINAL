@@ -346,33 +346,7 @@ DEFAULT_CONFIG = {
             },
             "profiles": {}
         },
-        "motion_profiles": {},
-        "atticus_pack": {
-            "enabled": {"value": 1},
-            "auto_convert_unsupported": {"value": 0},
-            "strict_validation": {"value": 1},
-            "emit_localizer_adapter": {"value": 1},
-            "corridor_defaults": {
-                "enabled": {"value": 1},
-                "half_width_in": {"value": 8.0},
-                "soft_log_penalty": {"value": 0.25}
-            },
-            "scheduling": {
-                "ess_resample_ratio": {"value": 0.5},
-                "batch_size": {"value": 3},
-                "watchdog_budget_ms": {"value": 8},
-                "kld_enabled": {"value": 1},
-                "kld_n_min": {"value": 250},
-                "kld_n_max": {"value": 500}
-            },
-            "cgr_lite": {
-                "enabled": {"value": 1},
-                "top_k": {"value": 8},
-                "max_iters": {"value": 2},
-                "budget_ms": {"value": 1.5},
-                "apply_on": {"value": "finalize_only"}
-            }
-        }
+        "motion_profiles": {}
     },
     "physics_constants": {
         "load_factor": {"value": 0.9},
@@ -581,8 +555,7 @@ def save_config(cfg_dict: dict) -> bool:
                 "path_columns": {"value": cfg_dict.get("codegen", {}).get("path_columns", "{X}, {Y}, {COMMAND}")},
                 "mech_presets": cfg_dict.get("codegen", {}).get("mech_presets", []),
                 "calibration": cfg_dict.get("codegen", {}).get("calibration", {}),
-                "motion_profiles": cfg_dict.get("codegen", {}).get("motion_profiles", {}),
-                "atticus_pack": _wrap_tree(cfg_dict.get("codegen", {}).get("atticus_pack", {}))
+                "motion_profiles": cfg_dict.get("codegen", {}).get("motion_profiles", {})
             },
             "physics_constants": {
                 k: wrap(float(v))
@@ -734,10 +707,6 @@ def reload_cfg() -> dict:
         "mech_presets": codegen_raw.get("mech_presets", []),
         "calibration": codegen_raw.get("calibration", {}),
         "motion_profiles": codegen_raw.get("motion_profiles", {}),
-        "atticus_pack": _merge_defaults(
-            DEFAULT_CONFIG.get("codegen", {}).get("atticus_pack", {}),
-            codegen_raw.get("atticus_pack", {}),
-        ),
     }
     phys_raw = raw.get("physics_constants", {})
     phys_defaults = DEFAULT_CONFIG.get("physics_constants", {})

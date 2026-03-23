@@ -80,9 +80,6 @@ from mod import ui
 from mod import mcl as mcl_mod
 from mod import mcl_codegen
 from mod import mcl_tuning as mcl_tuning_mod
-from mod import atticus_pack_codegen
-from mod import atticus_runlog as atticus_runlog_mod
-from mod import atticus_diagnostics as atticus_diag_mod
 
 # macOS Tk/SDL guard:
 # If SDL (pygame) initializes NSApp first, modern Tk can crash with
@@ -6090,146 +6087,11 @@ def open_settings_window():
             + chosen
         )
 
-    def _export_atticus_efficiency_pack():
-        """Export Atticus generated pack (runner/config/plan/source adapter)."""
-        try:
-            on_update()
-        except Exception:
-            pass
-        def _cfg_val(v, default):
-            if isinstance(v, dict) and "value" in v:
-                return v.get("value", default)
-            return v if v is not None else default
-        try:
-            tl = build_timeline_with_buffers()
-        except Exception as e:
-            messagebox.showerror("Export Efficiency Pack", f"Could not build timeline:\n{e}")
-            return
-        default_dir = os.path.join(os.getcwd(), "export", "atticus_pack")
-        chosen = filedialog.askdirectory(
-            parent=top,
-            initialdir=default_dir if os.path.isdir(default_dir) else os.getcwd(),
-            title="Select Atticus Efficiency Pack export directory"
-        )
-        if not chosen:
-            return
-        pack_cfg = ((CFG.get("codegen", {}) if isinstance(CFG, dict) else {}).get("atticus_pack", {}) if isinstance(CFG, dict) else {})
-        auto_convert = bool(int(_cfg_val(pack_cfg.get("auto_convert_unsupported"), 0)))
-        strict_validation = bool(int(_cfg_val(pack_cfg.get("strict_validation"), 1)))
-        emit_adapter = bool(int(_cfg_val(pack_cfg.get("emit_localizer_adapter"), 1)))
-        try:
-            report = atticus_pack_codegen.write_efficiency_pack(
-                CFG,
-                tl,
-                chosen,
-                routine_name="autonomous",
-                auto_convert_unsupported=auto_convert,
-                strict_validation=strict_validation,
-                emit_localizer_adapter=emit_adapter,
-            )
-        except Exception as e:
-            messagebox.showerror("Export Efficiency Pack", f"Failed to export:\n{e}")
-            return
-        issues = report.get("issues", []) if isinstance(report, dict) else []
-        warn_count = sum(1 for i in issues if isinstance(i, dict) and str(i.get("severity", "")).lower() == "warning")
-        messagebox.showinfo(
-            "Export Efficiency Pack",
-            "Generated atticus_generated artifacts in:\n"
-            + chosen
-            + f"\n\nProject hash: {report.get('project_hash', 'n/a')}\nWarnings: {warn_count}"
-        )
-
-    def _import_atticus_runlog():
-        """Import .atlrun and show replay scrubber + diagnostics."""
-        path = filedialog.askopenfilename(
-            parent=top,
-            title="Import Atticus runlog",
-            filetypes=[("Atticus runlog", "*.atlrun"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            header, frames = atticus_runlog_mod.parse_runlog(path)
-            issues = atticus_diag_mod.run_diagnostics(frames)
-            summary = atticus_diag_mod.build_diagnostic_summary(frames)
-        except Exception as e:
-            messagebox.showerror("Import Runlog", f"Failed to import runlog:\n{e}")
-            return
-
-        win = tk.Toplevel(top)
-        win.title(f"Runlog Replay - {os.path.basename(path)}")
-        win.geometry("760x520")
-        win.transient(top)
-
-        info_var = tk.StringVar(
-            value=(
-                f"Schema {header.major}.{header.minor} | Frames: {len(frames)} | "
-                f"Avg peakedness: {summary.get('avg_peakedness', 0.0):.3f} | "
-                f"Avg ESS: {summary.get('avg_ess_ratio', 0.0):.3f} | "
-                f"Applied: {int(summary.get('corrections_applied', 0.0))} | "
-                f"Blocked(w/reason): {int(summary.get('corrections_blocked_with_reason', 0.0))}"
-            )
-        )
-        ttk.Label(win, textvariable=info_var, justify="left").pack(fill="x", padx=10, pady=(10, 6))
-
-        frame_text = tk.Text(win, height=8, wrap="word")
-        frame_text.pack(fill="x", padx=10, pady=(0, 6))
-        frame_text.configure(state="disabled")
-
-        issues_text = tk.Text(win, height=12, wrap="word")
-        issues_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        issues_text.configure(state="disabled")
-
-        def _set_text(widget, content: str):
-            widget.configure(state="normal")
-            widget.delete("1.0", "end")
-            widget.insert("1.0", content)
-            widget.configure(state="disabled")
-
-        def _render(idx: int):
-            if not frames:
-                _set_text(frame_text, "No frames in runlog.")
-                _set_text(issues_text, "No diagnostics.")
-                return
-            i = max(0, min(len(frames) - 1, idx))
-            f = frames[i]
-            corr_reasons = atticus_diag_mod.decode_correction_reasons(int(f.flags))
-            corr_applied = atticus_diag_mod.correction_applied_from_flags(int(f.flags), float(f.alpha))
-            _set_text(
-                frame_text,
-                (
-                    f"t={f.time_ms} ms | seg={f.seg_idx} trig={f.trig_idx} flags=0x{f.flags:08x}\n"
-                    f"pose=({f.pose_x:.2f}, {f.pose_y:.2f}, {f.pose_theta:.1f}) "
-                    f"fused=({f.fused_x:.2f}, {f.fused_y:.2f}, {f.fused_theta:.1f})\n"
-                    f"alpha={f.alpha:.3f} conf={f.confidence:.3f} slip={f.slip:.2f} late_ms={f.late_ms:.2f}\n"
-                    f"N={f.particle_count:.1f} Neff={f.neff:.2f} ESS={f.ess_ratio:.3f} peaked={f.peakedness:.3f}\n"
-                    f"correction={'APPLIED' if corr_applied else 'BLOCKED'} | reasons="
-                    f"{', '.join(corr_reasons) if corr_reasons else 'none'}"
-                ),
-            )
-            local = [it for it in issues if abs(it.time_ms - f.time_ms) <= 80]
-            if not local:
-                _set_text(issues_text, "No nearby diagnostic issues.")
-            else:
-                lines = []
-                for it in local[:64]:
-                    lines.append(
-                        f"[{it.severity}] {it.code} @ {it.time_ms}ms seg={it.seg_idx}: {it.message}"
-                    )
-                _set_text(issues_text, "\n".join(lines))
-
-        scrub = ttk.Scale(win, from_=0, to=max(0, len(frames) - 1), orient="horizontal")
-        scrub.pack(fill="x", padx=10, pady=(0, 8))
-        scrub.configure(command=lambda v: _render(int(float(v))))
-        _render(0)
-
     export_frame = ttk.LabelFrame(mcl_body, text="MCL PROS Code Generation (EXPERIMENTAL)")
     export_frame.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
     export_frame.columnconfigure(1, weight=1)
     _row(export_frame, 0, "Export:", ttk.Button(export_frame, text="Export MCL Code...", command=_export_mcl_codegen),
          "Generate MCL core + runtime wrapper for PROS.")
-    _row(export_frame, 1, "Efficiency Pack:", ttk.Button(export_frame, text="Export Atticus Pack...", command=_export_atticus_efficiency_pack),
-         "Generate atticus_generated runtime plan/config/runner integration artifacts.")
     mcl_tuning_info_lbl = ttk.Label(
         export_frame,
         text="Tuning mode enables .mcllog session logging for the microSD wizard. Turn ON when collecting tuning runs, OFF for normal competition exports.",
@@ -6260,8 +6122,6 @@ def open_settings_window():
     mcl_tuning_status_lbl = ttk.Label(export_frame, textvariable=mcl_tune_status_var, wraplength=420, justify="left")
     _row(export_frame, 7, "Session:", mcl_tuning_status_lbl,
          "Status for the latest imported tuning session.")
-    _row(export_frame, 8, "Runlog:", ttk.Button(export_frame, text="Import .atlrun...", command=_import_atticus_runlog),
-         "Import Atticus binary runlog, replay frames, and view diagnostics.")
 
     def _refresh_mcl_export_wrap(_evt=None):
         """Handle refresh mcl export wrap."""

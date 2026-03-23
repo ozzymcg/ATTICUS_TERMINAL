@@ -1,4 +1,27 @@
 {
+  "reshape_label": {
+    "value": "Reshape"
+  },
+  "field_objects": {
+    "enabled": {
+      "value": 1
+    },
+    "collide": {
+      "value": 1
+    },
+    "thickness_in": {
+      "value": 3.5
+    },
+    "long_goal_len_in": {
+      "value": 48.8
+    },
+    "center_goal_len_in": {
+      "value": 22.6
+    },
+    "matchloader_size_in": {
+      "value": 3.5
+    }
+  },
   "robot_physics": {
     "weight": {
       "value": 12.0
@@ -40,6 +63,66 @@
       "value": 0.05
     }
   },
+  "offsets": {
+    "offset_1_in": {
+      "value": 5.0
+    },
+    "offset_2_in": {
+      "value": 15.125
+    },
+    "padding_in": {
+      "value": 1.5
+    }
+  },
+  "ui": {
+    "show_hitboxes": {
+      "value": 1
+    },
+    "show_hitbox_conflicts_only": {
+      "value": 1
+    },
+    "auto_oob_fix": {
+      "value": 1
+    },
+    "time_ms": {
+      "value": 0
+    },
+    "show_field_objects": {
+      "value": 1
+    },
+    "show_node_numbers": {
+      "value": 1
+    }
+  },
+  "path_config": {
+    "lookahead_in": {
+      "value": 10.35
+    },
+    "min_speed_cmd": {
+      "value": 30.0
+    },
+    "max_speed_cmd": {
+      "value": 127.0
+    },
+    "simulate_pursuit": {
+      "value": 1.0
+    }
+  },
+  "field_centric": {
+    "value": 1
+  },
+  "distance_units": {
+    "value": 0
+  },
+  "angle_units": {
+    "value": 0
+  },
+  "initial_heading_deg": {
+    "value": 0.0
+  },
+  "gear_ratio": {
+    "value": 18.0
+  },
   "bot_dimensions": {
     "width": {
       "value": 14.0
@@ -72,70 +155,15 @@
       "offset_y_in": {
         "value": 0.0
       }
+    },
+    "dtposition_offset": {
+      "x": {
+        "value": 0.0
+      },
+      "y": {
+        "value": 1.5
+      }
     }
-  },
-  "offsets": {
-    "offset_1_in": {
-      "value": 5.0
-    },
-    "offset_2_in": {
-      "value": 15.125
-    },
-    "padding_in": {
-      "value": 1.5
-    }
-  },
-  "path_config": {
-    "lookahead_in": {
-      "value": 10.35
-    },
-    "min_speed_cmd": {
-      "value": 30.0
-    },
-    "max_speed_cmd": {
-      "value": 127.0
-    },
-    "simulate_pursuit": {
-      "value": 1.0
-    }
-  },
-  "field_centric": {
-    "value": 1
-  },
-  "distance_units": {
-    "value": 0
-  },
-  "angle_units": {
-    "value": 0
-  },
-  "initial_heading_deg": {
-    "value": 0.0
-  },
-  "gear_ratio": {
-    "value": 18.0
-  },
-  "ui": {
-    "show_hitboxes": {
-      "value": 1
-    },
-    "show_hitbox_conflicts_only": {
-      "value": 1
-    },
-    "auto_oob_fix": {
-      "value": 1
-    },
-    "time_ms": {
-      "value": 0
-    },
-    "show_field_objects": {
-      "value": 1
-    },
-    "show_node_numbers": {
-      "value": 1
-    }
-  },
-  "reshape_label": {
-    "value": "Reshape"
   },
   "codegen": {
     "style": {
@@ -283,69 +311,7 @@
       },
       "profiles": {}
     },
-    "motion_profiles": {},
-    "atticus_pack": {
-      "enabled": {
-        "value": 1
-      },
-      "auto_convert_unsupported": {
-        "value": 0
-      },
-      "strict_validation": {
-        "value": 1
-      },
-      "emit_localizer_adapter": {
-        "value": 1
-      },
-      "corridor_defaults": {
-        "enabled": {
-          "value": 1
-        },
-        "half_width_in": {
-          "value": 8.0
-        },
-        "soft_log_penalty": {
-          "value": 0.25
-        }
-      },
-      "scheduling": {
-        "ess_resample_ratio": {
-          "value": 0.5
-        },
-        "batch_size": {
-          "value": 3
-        },
-        "watchdog_budget_ms": {
-          "value": 8
-        },
-        "kld_enabled": {
-          "value": 1
-        },
-        "kld_n_min": {
-          "value": 250
-        },
-        "kld_n_max": {
-          "value": 500
-        }
-      },
-      "cgr_lite": {
-        "enabled": {
-          "value": 1
-        },
-        "top_k": {
-          "value": 8
-        },
-        "max_iters": {
-          "value": 2
-        },
-        "budget_ms": {
-          "value": 1.5
-        },
-        "apply_on": {
-          "value": "finalize_only"
-        }
-      }
-    }
+    "motion_profiles": {}
   },
   "physics_constants": {
     "load_factor": {
@@ -521,11 +487,11 @@
         "sigma_max_mm": {
           "value": 120.0
         },
-        "conf_sigma_scale": {
-          "value": 1.0
-        },
         "min_sensor_weight": {
           "value": 1e-06
+        },
+        "conf_sigma_scale": {
+          "value": 1.0
         },
         "w_hit": {
           "value": 0.9
@@ -587,9 +553,6 @@
         "fov_switch_mm": {
           "value": 203.0
         },
-        "raycast_bucket_in": {
-          "value": 12.0
-        },
         "gate_mm": {
           "value": 150.0
         },
@@ -599,8 +562,8 @@
         "gate_penalty": {
           "value": 0.05
         },
-        "gate_reject_ratio": {
-          "value": 0.9
+        "raycast_bucket_in": {
+          "value": 12.0
         },
         "likelihood_field": {
           "resolution_in": {
@@ -609,6 +572,9 @@
           "max_bytes": {
             "value": 262144
           }
+        },
+        "gate_reject_ratio": {
+          "value": 0.9
         }
       },
       "imu": {
@@ -1357,6 +1323,15 @@
       "object_mode": {
         "value": 1
       },
+      "object_clip_free_in": {
+        "value": 0.5
+      },
+      "object_clip_max_in": {
+        "value": 2.0
+      },
+      "object_clip_sigma_in": {
+        "value": 0.75
+      },
       "grid_type": {
         "value": "quadrant"
       },
@@ -1392,6 +1367,9 @@
       }
     },
     "confidence": {
+      "metric": {
+        "value": "peakedness"
+      },
       "threshold": {
         "value": 0.0
       },

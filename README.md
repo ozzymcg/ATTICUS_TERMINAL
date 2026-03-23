@@ -29,33 +29,6 @@ Atticus Terminal is a VEX Robotics autonomous editor that lets you express **int
 Atticus Terminal includes an **MCL tab** for configuring an optional **Monte Carlo Localization w/ Extended Kalman Filter** drift-correction system, plus an automatic tuning system via microSD that support importing logs and exporting configuration/runtime artifacts.
 See pre-exported docs/API of this system in the ProsMCL folder.
 
-## LemLib + Atticus Efficiency Pack (Export Target)
-
-The MCL tab now also includes:
-
-- **Export Atticus Pack...** to generate `atticus_generated/*` runtime artifacts:
-  - `atticus_config.hpp`
-  - `atticus_motion_schedule.hpp` (`FAST/NORMAL/PRECISE`)
-  - `atticus_auton_plan.hpp` (segments/triggers/corridors/finalize modes)
-  - `atticus_drive_ff.hpp` and optional `atticus_drive_lut.bin`
-  - `atticus_startup.cpp` bootstrap glue
-- **Import .atlrun...** to open replay + diagnostics (confidence/ESS/Neff, slip, watchdog pressure, trigger timing).
-  Replay also decodes correction gate reasons from runlog flags (blocked: stale/lost/safe-window/jump/confidence/etc., applied when gates pass).
-
-Key runtime contracts exported by this path:
-
-- localizer host interface is `ILocalizationSource` (externally ticked safe)
-- confidence lock is `peakedness = 1 - ESS_ratio`
-- bounded scheduling policy (`ESS`/`KLD`/watchdog/batch caps) is emitted from config
-- generated startup/bootstrap uses generated config builders directly (`buildAddonRuntimeConfig`, `buildDriveLimiterConfig`) so normal flow requires zero manual config edits
-- corridor defaults are spec-locked (`half_width_in = 8.0`, `soft_log_penalty = 0.25`) unless overridden per segment
-- edge marker fractions (`t` on segment) are converted at export to deterministic runtime units (in/deg/ms)
-- edge trigger actions accept both list-style (`actions: [...]`) and inline forms (`kind/code`, `action`, `action_id`) for backward compatibility
-- unsupported motion auto-conversion is off by default (safe export blocks until fixed unless explicitly enabled)
-- path-follow segments are explicitly rejected by Efficiency Pack export (`path_not_supported_in_efficiency_pack`) unless you explicitly convert them first
-
----
-
 ## Quick Start (git clone)
 
 1. Clone this repository.
