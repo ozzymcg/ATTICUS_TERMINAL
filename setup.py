@@ -19,7 +19,7 @@ def collect_data_files():
         if rel.parts and rel.parts[0] in {"build", "dist"}:
             continue
         dest = str(Path("atticus_terminal_data") / rel.parent).replace("\\", "/")
-        items.append((dest, [str(path)]))
+        items.append((dest, [str(rel)]))
     return items
 
 setup(
